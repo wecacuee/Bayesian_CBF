@@ -56,17 +56,7 @@ def rad2deg(rad):
     return rad / np.pi * 180
 
 
-def plot_env_pendulum(#parameters
-        theta0=5*np.pi/6,
-        omega0=0,
-        tau=0.01,
-        m=1,
-        g=10,
-        l=1,
-        numSteps=1000,
-        control=control_trivial):
-    damge_perc,time_vec,theta_vec,omega_vec,u_vec = env_pendulum(
-        theta0,omega0,tau,m,g,l,numSteps, control=control)
+def plot_results(time_vec, omega_vec, theta_vec, u_vec):
     #plot thetha
     fig, axs = plt.subplots(2,2)
     axs[0,0].plot(time_vec, rad2deg(theta_vec),
@@ -86,6 +76,21 @@ def plot_env_pendulum(#parameters
     fig.suptitle("Pendulum")
     fig.subplots_adjust(wspace=0.31)
     plt.show()
+
+
+def run_pendulum_experiment(#parameters
+        theta0=5*np.pi/6,
+        omega0=0,
+        tau=0.01,
+        m=1,
+        g=10,
+        l=1,
+        numSteps=1000,
+        control=control_trivial):
+    damge_perc,time_vec,theta_vec,omega_vec,u_vec = env_pendulum(
+        theta0,omega0,tau,m,g,l,numSteps, control=control)
+    plot_results(time_vec, omega_vec, theta_vec, u_vec)
+
 
 def learn_dynamics(
         theta0=3*np.pi/4,
@@ -196,5 +201,5 @@ def control_cbf_clf(theta, w,
 
 
 if __name__ == '__main__':
-    plot_env_pendulum(control=control_trivial)
-    plot_env_pendulum(control=control_cbf_clf)
+    run_pendulum_experiment(control=control_trivial)
+    run_pendulum_experiment(control=control_cbf_clf)

@@ -80,7 +80,7 @@ def plot_results(time_vec, omega_vec, theta_vec, u_vec):
 
 def run_pendulum_experiment(#parameters
         theta0=5*np.pi/6,
-        omega0=0,
+        omega0=-0.01,
         tau=0.01,
         m=1,
         g=10,
@@ -172,19 +172,18 @@ def control_cbf_clf(theta, w,
     b_total = np.vstack([b(theta, w) for b in [b_clf, b_sr,b_col]])
 
     # u0 = l*g*sin(theta)
-    # uopt = l*g*sin(theta)
+    # uopt = 0.1*g
     # contraints = A_total.dot(uopt) - b_total
     # assert contraints[0] <= 0
     # assert contraints[1] <= 0
     # assert contraints[2] <= 0
 
-    use_clf = True
-    if use_clf:
+    if False:
         A_total_rho = np.hstack((A_total, np.zeros((A_total.shape[0], 1))))
         A_total_rho[0, -1] = -1
         from cvxopt import matrix
-        P_rho = np.array([[100., 0],
-                        [0, 10000.]])
+        P_rho = np.array([[1., 0],
+                          [0, 100.]])
         q_rho = np.array([0., 0.])
         u_rho = cvxopt_solve_qp(P_rho, q_rho,
                             G=A_total_rho,
@@ -194,12 +193,12 @@ def control_cbf_clf(theta, w,
     else:
         u = cvxopt_solve_qp(np.array([[1.]]),
                             np.array([0.]),
-                            G=A_total[1:],
-                            h=b_total[1:])
+                            G=A_total[0],
+                            h=b_total[0])
         return u
 
 
 
 if __name__ == '__main__':
-    run_pendulum_experiment(control=control_trivial)
+    #run_pendulum_experiment(control=control_trivial)
     run_pendulum_experiment(control=control_cbf_clf)

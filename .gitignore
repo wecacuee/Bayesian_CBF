@@ -1,0 +1,4 @@
+/.tox
+*.pyc
+*.txt
+/bayes_cbf.egg-info/PKG-INFO

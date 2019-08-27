@@ -10,7 +10,7 @@ def control_trivial(theta, w, m=None, l=None, g=None):
     assert m is not None
     assert l is not None
     assert g is not None
-    u = 2*m*g*sin(theta)
+    u = m*g*sin(theta)
     return u
 
 
@@ -90,12 +90,13 @@ def run_pendulum_experiment(#parameters
     damge_perc,time_vec,theta_vec,omega_vec,u_vec = env_pendulum(
         theta0,omega0,tau,m,g,l,numSteps, control=control)
     plot_results(time_vec, omega_vec, theta_vec, u_vec)
+    return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
 
 
 def learn_dynamics(
         theta0=3*np.pi/4,
         omega0=0,
-        tau=0.01,
+        tau=0.001,
         m=1,
         g=10,
         l=1,
@@ -191,14 +192,18 @@ def control_cbf_clf(theta, w,
         u = u_rho[0]
         return u
     else:
+        A_clf_val = np.array([[A_clf(theta, w)]],  dtype='f8')
+        b_clf_val = np.array([b_clf(theta, w)], dtype='f8')
         u = cvxopt_solve_qp(np.array([[1.]]),
                             np.array([0.]),
-                            G=A_total[0],
-                            h=b_total[0])
+                            G=A_clf_val,
+                            h=b_clf_val)
+        assert A_clf_val.dot(u) - b_clf_val <= 0
+        
         return u
 
 
 
 if __name__ == '__main__':
     #run_pendulum_experiment(control=control_trivial)
-    run_pendulum_experiment(control=control_cbf_clf)
+    (damge_perc,time_vec,theta_vec,omega_vec,u_vec) = run_pendulum_experiment(control=control_cbf_clf)

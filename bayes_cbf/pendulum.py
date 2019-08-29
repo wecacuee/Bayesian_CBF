@@ -85,7 +85,7 @@ def run_pendulum_experiment(#parameters
         m=1,
         g=10,
         l=1,
-        numSteps=1000,
+        numSteps=7000,
         control=control_trivial):
     damge_perc,time_vec,theta_vec,omega_vec,u_vec = env_pendulum(
         theta0,omega0,tau,m,g,l,numSteps, control=control)
@@ -145,7 +145,8 @@ def control_cbf_clf(theta, w,
                     delta_col=np.pi/8,
                     m=None,
                     l=None,
-                    g=None):
+                    g=None,
+                    clf_only=False):
     assert m is not None
     assert l is not None
     assert g is not None
@@ -179,28 +180,27 @@ def control_cbf_clf(theta, w,
     # assert contraints[1] <= 0
     # assert contraints[2] <= 0
 
-    if False:
-        A_total_rho = np.hstack((A_total, np.zeros((A_total.shape[0], 1))))
-        A_total_rho[0, -1] = -1
-        from cvxopt import matrix
-        P_rho = np.array([[1., 0],
+
+    A_total_rho = np.hstack((A_total, np.zeros((A_total.shape[0], 1))))
+    A_total_rho[0, -1] = -1
+    from cvxopt import matrix
+    if clf_only:
+        P_rho = np.array([[50., 0],
                           [0, 100.]])
         q_rho = np.array([0., 0.])
         u_rho = cvxopt_solve_qp(P_rho, q_rho,
-                            G=A_total_rho,
-                            h=b_total)
-        u = u_rho[0]
-        return u
+                            G=A_total_rho[0:1,:],
+                            h=b_total[0])
     else:
-        A_clf_val = np.array([[A_clf(theta, w)]],  dtype='f8')
-        b_clf_val = np.array([b_clf(theta, w)], dtype='f8')
-        u = cvxopt_solve_qp(np.array([[1.]]),
-                            np.array([0.]),
-                            G=A_clf_val,
-                            h=b_clf_val)
-        assert A_clf_val.dot(u) - b_clf_val <= 0
-        
-        return u
+        P_rho = np.array([[50., 0],
+                          [0, 1000.]])
+        q_rho = np.array([0., 0.])
+        u_rho = cvxopt_solve_qp(P_rho, q_rho,
+                                G=A_total_rho,
+                                h=b_total)
+
+    u = u_rho[0]
+    return u
 
 
 

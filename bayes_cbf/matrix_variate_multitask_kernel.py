@@ -2,59 +2,31 @@
 
 import torch
 
-from gpytorch.kernels import MultitaskKernel, IndexKernel
+from gpytorch.kernels import MultitaskKernel, IndexKernel, Kernel
 from gpytorch.lazy import (KroneckerProductLazyTensor, BlockDiagLazyTensor,
-                           InterpolatedLazyTensor, lazify, NonLazyTensor)
-
-# https://github.com/yulkang/pylabyk/blob/master/numpytorch.py
-# Apache licence https://github.com/yulkang/pylabyk/blob/master/LICENSE
-def attach_dim(v, n_dim_to_prepend=0, n_dim_to_append=0):
-    return v.reshape(
-        torch.Size([1] * n_dim_to_prepend)
-        + v.shape
-        + torch.Size([1] * n_dim_to_append))
-
-# https://github.com/yulkang/pylabyk/blob/master/numpytorch.py
-# Apache licence https://github.com/yulkang/pylabyk/blob/master/LICENSE
-def block_diag(m):
-    """
-    Make a block diagonal matrix along dim=-3
-    EXAMPLE:
-    block_diag(torch.ones(4,3,2))
-    should give a 12 x 8 matrix with blocks of 3 x 2 ones.
-    Prepend batch dimensions if needed.
-    You can also give a list of matrices.
-    :type m: torch.Tensor, list
-    :rtype: torch.Tensor
-    """
-    if type(m) is list:
-        m = torch.cat([m1.unsqueeze(-3) for m1 in m], -3)
-
-    d = m.dim()
-    n = m.shape[-3]
-    siz0 = m.shape[:-3]
-    siz1 = m.shape[-2:]
-    m2 = m.unsqueeze(-2)
-    eye = attach_dim(torch.eye(n).unsqueeze(-2), d - 3, 1)
-    return (m2 * eye).reshape(
-        siz0 + torch.Size(torch.tensor(siz1) * n)
-    )
+                           InterpolatedLazyTensor, lazify, NonLazyTensor,
+                           cat as lazycat)
+import gpytorch.settings as gpsettings
 
 
-def _eval_covar_matrix(covar_factor, log_var):
-    return covar_factor.matmul(covar_factor.transpose(-1, -2)) + log_var.exp().diag()
-
-
-class MatrixVariateIndexKernel(IndexKernel):
+class MatrixVariateIndexKernel(Kernel):
     """
     Wraps IndexKernel to represent
     https://en.wikipedia.org/wiki/Matrix_normal_distribution
 
+    P(X | M, U, V) = exp(-0.5 tr[ V⁻¹ (X - M)ᵀ U⁻¹ (X-M) ] ) / √((2π)ⁿᵖ|V|ⁿ|U|ᵖ)
+
+    vec(X) ~ 𝒩(M, V ⊗ U)
+
+    This kernel represents the covariance_matrix V ⊗ U given V and U.
     """
-    def __init__(self, idxkernel_rows, idxkernel_cols):
-        super(MatrixVariateIndexKernel, self).__init__(num_tasks=1)
-        self.U = idxkernel_rows
-        self.V = idxkernel_cols
+    def __init__(self, U : IndexKernel, V: IndexKernel):
+        super(MatrixVariateIndexKernel, self).__init__()
+        self.U = U
+        self.V = V
+        n = self.U.raw_var.size(-1)
+        p = self.V.raw_var.size(-1)
+        self.matshape = (n,p)
 
     @property
     def covar_matrix(self):
@@ -66,7 +38,8 @@ class MatrixVariateIndexKernel(IndexKernel):
         assert i1.dtype in (torch.int64, torch.int32)
         assert i2.dtype in (torch.int64, torch.int32)
         covar_matrix = self.covar_matrix
-        res = InterpolatedLazyTensor(base_lazy_tensor=covar_matrix, left_interp_indices=i1, right_interp_indices=i2)
+        res = InterpolatedLazyTensor(base_lazy_tensor=covar_matrix,
+                                     left_interp_indices=i1, right_interp_indices=i2)
         return res
 
 
@@ -102,14 +75,13 @@ class MatrixVariateKernel(MultitaskKernel):
             Prior to use for task kernel. See :class:`gpytorch.kernels.IndexKernel` for details.
     """
 
-    def __init__(self, task_covar_module, data_covar_module, decoder, num_tasks, rank=1, task_covar_prior=None, **kwargs):
+    def __init__(self, task_covar_module, data_covar_module, decoder, **kwargs):
         """
         """
         super(MultitaskKernel, self).__init__(**kwargs)
         self.task_covar_module = task_covar_module
-        self.decoder = decoder
         self.data_covar_module = data_covar_module
-        self.num_tasks = num_tasks
+        self.decoder = decoder
 
 
 class HetergeneousMatrixVariateKernel(MatrixVariateKernel):
@@ -118,20 +90,22 @@ class HetergeneousMatrixVariateKernel(MatrixVariateKernel):
         B = M1s.shape[:-1]
         M1s = M1s[..., 0]
         idxs1 = torch.nonzero(M1s - torch.ones_like(M1s))
-        idxend1 = torch.min(idxs1) if idxs1.numel() else M1s.size(-1)
+        idxend1 = torch.min(idxs1).item() if idxs1.numel() else M1s.size(-1)
         # assume sorted
         assert (M1s[..., idxend1:] == 0).all()
         U1s = U1[..., :idxend1, :]
 
         M2s = M2s[..., 0]
         idxs2 = torch.nonzero(M2s - torch.ones_like(M2s))
-        idxend2 = torch.min(idxs2) if idxs2.numel() else M2s.size(-1)
+        idxend2 = torch.min(idxs2).item() if idxs2.numel() else M2s.size(-1)
         # assume sorted
         assert (M2s[..., idxend2:] == 0).all()
         U2s = U2[..., :idxend2, :]
 
         H1 = BlockDiagLazyTensor(NonLazyTensor(U1s.unsqueeze(1)))
+        #if gpsettings.debug.on(): H1.evaluate()
         H2 = BlockDiagLazyTensor(NonLazyTensor(U2s.unsqueeze(1)))
+        #if gpsettings.debug.on(): H2.evaluate()
 
         Kxx = covar_xx
         # If M1, M2 = (1, 1)
@@ -139,25 +113,30 @@ class HetergeneousMatrixVariateKernel(MatrixVariateKernel):
         V = self.task_covar_module.V.covar_matrix
         U = self.task_covar_module.U.covar_matrix
         Kij_xx_11 = KroneckerProductLazyTensor(
-            H1 @ KroneckerProductLazyTensor(Kxx[:idxend1, :idxend1], V) @ H2.t(), U)
+            H1 @ KroneckerProductLazyTensor(Kxx[:idxend1, :idxend2], V) @ H2.t(), U)
+        #Kij_xx_11.evaluate()
 
         if idxend1 < M1s.size(-1):
             # elif M1, M2 = (1, 0)
             #    H₁ᵀ [ k_x* ⊗ B ] ⊗ A
+            k_xx_12 = Kxx[:idxend1, idxend2:]
             Kij_xx_12 = KroneckerProductLazyTensor(
-                H1 @ KroneckerProductLazyTensor(k_xx, V) , U)
+                H1 @ KroneckerProductLazyTensor(k_xx_12, V) , U)
+            #Kij_xx_12.evaluate()
 
             # elif M1, M2 = (0, 1)
             #    [ k_x* ⊗ B ] H₂ ⊗ A
             Kij_xx_21 = Kij_xx_12.t()
             # else M1, M2 = (0, 0)
             #    [ k_** ⊗ B ] ⊗ A
-            Kij_xx_22 = KronKroneckerProductLazyTensor(KroneckerProductLazyTensor(k_xx, V), U)
-            covar_i = self.task_covar_module.covar_matrix
-            if len(x1.shape[:-2]):
-                covar_i = covar_i.repeat(*x1.shape[:-2], 1, 1)
-            return torch.cat([torch.cat([Kij_xx_11, Kij_xx_12], dim=1),
-                            torch.cat([Kij_xx_21, Kij_xx_22], dim=1)], dim=0)
+            k_xx_22 = Kxx[idxend1:, idxend2:]
+            Kij_xx_22 = KroneckerProductLazyTensor(
+                KroneckerProductLazyTensor(k_xx_22, V), U)
+            #Kij_xx_22.evaluate()
+            out = lazycat([lazycat([Kij_xx_11, Kij_xx_12], dim=1),
+                            lazycat([Kij_xx_21, Kij_xx_22], dim=1)], dim=0)
+            #out.evaluate()
+            return out
 
         return Kij_xx_11
 

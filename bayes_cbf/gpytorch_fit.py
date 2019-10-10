@@ -1,49 +1,13 @@
 import torch
 
-from gpytorch.likelihoods import MultitaskGaussianLikelihood
-from gpytorch.mlls import ExactMarginalLogLikelihood
-
-from bayes_cbf.matrix_variate_multitask_model import MatrixVariateGP
-
-def GPTrain(X, U, Y):
-    # Initialize model and likelihood
-    # Noise model for GPs
-    likelihood = MultitaskGaussianLikelihood(num_tasks=X.size(-1))
-    # Actual model
-    model = MatrixVariateGP(X, U, Y, likelihood)
-
-    # Find optimal model hyperparameters
-    model.train()
-    likelihood.train()
-
-    # Use the adam optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.1)
-
-    # "Loss" for GPs - the marginal log likelihood
-    # num_data refers to the amount of training data
-    # mll = VariationalELBO(likelihood, model, Y.numel())
-    mll = ExactMarginalLogLikelihood(likelihood, model)
-    training_iter = 50
-    for i in range(training_iter):
-        # Zero backpropped gradients from previous iteration
-        optimizer.zero_grad()
-        # Get predictive output
-        output = model(*model.train_inputs)
-        # Calc loss and backprop gradients
-        loss = -mll(output, Y)
-        loss.backward()
-        print('Iter %d/%d - Loss: %.3f' % (i + 1, training_iter, loss.item()))
-        optimizer.step()
-
-    return model
-
-
-def GPPredict(model, x, u):
-    return model(x).matmul(u)
-
+from bayes_cbf.matrix_variate_multitask_model import DynamicModelGP
 
 def test_GP_train_predict(n=2, m=3, dt = 0.001):
     import numpy as np
+    # np.random.seed(4)
+    # torch.manual_seed(0)
+    # torch.backends.cudnn.deterministic = True
+    # torch.backends.cudnn.benchmark = False
 
     A = np.random.rand(n,n)
     def f(x):
@@ -66,7 +30,7 @@ def test_GP_train_predict(n=2, m=3, dt = 0.001):
     g.B = B
 
     # Collect training data
-    D = 10
+    D = 30
     U = np.random.rand(D, m)
     X = np.zeros((D+1, n))
     X[0, :] = np.random.rand(n)
@@ -82,25 +46,27 @@ def test_GP_train_predict(n=2, m=3, dt = 0.001):
     np.random.shuffle(shuffled_order)
     train_indices = shuffled_order[:int(D*0.8)]
     test_indices = shuffled_order[int(D*0.8):]
-    Xtrain = X[train_indices, :]
-    XdotTrain = Xdot[train_indices, :]
-    Utrain = U[train_indices, :]
 
-    # Test train split
-    Xtest = X[test_indices, :]
-    XdotTest = Xdot[test_indices, :]
-    Utest = U[test_indices, :]
+    # Train data
+    Xtrain, Utrain, XdotTrain = [Mat[train_indices, :]
+                                 for Mat in (X, U, Xdot)]
 
-    FModel = GPTrain(torch.from_numpy(Xtrain).float(),
-                     torch.from_numpy(Utrain).float(),
-                     torch.from_numpy(XdotTrain).float())
-    MXUtest = torch.cat([torch.zeros((Xtest.shape[0], 1), dtype=torch.float32),
-                         torch.from_numpy(Xtest).float(),
-                         torch.zeros((Xtest.shape[0], 1+Utest.shape[1]), dtype=torch.float32)],
-                        dim=1)
-    FModel.eval()
-    np.allclose(FModel(MXUtest).mean().numpy(),
-                np.concatenate(((np.f.A @ Xtest.T).reshape(n, -1, D), g.B @ Xtest.T)), axis=1)
+    # Call the training routine
+    dgp = DynamicModelGP()
+    dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=200, lr=0.1)
+
+    # Test data
+    Xtest, Utest, XdotTest = [Mat[test_indices, :]
+                              for Mat in (X, U, Xdot)]
+
+    FXTexpected = np.concatenate(((f.A @ Xtest.T).T.reshape(-1, 1, n),
+                               (g.B @ Xtest.T).T.reshape(-1, m, n)), axis=1)
+    FXTmean, FXTcov = dgp.F(Xtest)
+    error = np.linalg.norm(FXTmean[:] - FXTexpected[:])
+    print("norm(actual - expected) / norm = {} / {}"
+          .format(error, np.linalg.norm(FXTexpected[:])))
+    assert np.allclose(FXTmean, FXTexpected)
+
 
 if __name__ == '__main__':
     test_GP_train_predict()

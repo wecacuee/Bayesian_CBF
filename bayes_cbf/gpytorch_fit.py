@@ -68,10 +68,10 @@ def test_GP_train_predict(n=2, m=3, dt = 0.001):
                               for Mat in (X, U, Xdot)]
 
     FXTexpected = np.concatenate(((f.A @ Xtest.T).T.reshape(-1, 1, n),
-                               (g.B @ Xtest.T).T.reshape(-1, m, n)), axis=1)
+                                  (g.B @ Xtest.T).T.reshape(-1, m, n)), axis=1)
     FXTmean, FXTcov = dgp.F(Xtest)
     error = np.linalg.norm(FXTmean[:] - FXTexpected[:])
-    print("norm(actual - expected) / norm = {} / {}"
+    print("Test norm(actual - expected) / norm = {} / {}"
           .format(error, np.linalg.norm(FXTexpected[:])))
     assert np.allclose(FXTmean, FXTexpected)
 

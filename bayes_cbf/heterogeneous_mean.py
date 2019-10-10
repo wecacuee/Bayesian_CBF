@@ -25,9 +25,9 @@ class HetergeneousMatrixVariateMean(MultitaskMean):
         mp1 = UH.size(-1)
         n   = X.size(-1)
         mu  = mu.reshape(-1, mp1, n)
-        XdotMean = UH.unsqueeze(-2) @ mu # D x n
-        output = XdotMean.reshape(list(B) + [-1])
+        XdotMean = UH.unsqueeze(-2) @ mu[:idxend, ...] # D x n
+        output = XdotMean.reshape(idxend, -1)
         if Ms.size(-1) != idxend:
-            FMean = mu.reshape(list(B) + [-1])
+            Fmean = mu[idxend:, ...].reshape(Ms.size(-1) - idxend, -1)
             output = torch.cat([output, Fmean])
         return output

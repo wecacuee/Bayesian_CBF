@@ -94,7 +94,12 @@ def test_GP_train_predict(n=2, m=3, dt = 0.001):
     FModel = GPTrain(torch.from_numpy(Xtrain).float(),
                      torch.from_numpy(Utrain).float(),
                      torch.from_numpy(XdotTrain).float())
-    np.allclose(FModel(Xtest).mean().numpy(),
+    MXUtest = torch.cat([torch.zeros((Xtest.shape[0], 1), dtype=torch.float32),
+                         torch.from_numpy(Xtest).float(),
+                         torch.zeros((Xtest.shape[0], 1+Utest.shape[1]), dtype=torch.float32)],
+                        dim=1)
+    FModel.eval()
+    np.allclose(FModel(MXUtest).mean().numpy(),
                 np.concatenate(((np.f.A @ Xtest.T).reshape(n, -1, D), g.B @ Xtest.T)), axis=1)
 
 if __name__ == '__main__':

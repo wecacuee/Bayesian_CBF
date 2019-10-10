@@ -45,8 +45,8 @@ class MatrixVariateGP(ExactGP):
             num_tasks=num_tasks)
 
         task_covar = MatrixVariateIndexKernel(
-                IndexKernel(num_tasks=num_tasks),
-                IndexKernel(num_tasks=num_tasks),
+                IndexKernel(num_tasks=n),
+                IndexKernel(num_tasks=1+m),
             )
         input_covar = ScaleKernel(RBFKernel())
         self.covar_module = HetergeneousMatrixVariateKernel(
@@ -59,6 +59,5 @@ class MatrixVariateGP(ExactGP):
         mean_x = self.mean_module(x)
         with gpsettings.lazily_evaluate_kernels(False):
             covar_x = self.covar_module(x)
-        import pdb; pdb.set_trace()
         return MultitaskMultivariateNormal(mean_x, covar_x)
 

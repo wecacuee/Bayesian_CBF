@@ -3,7 +3,8 @@
 import torch
 
 from gpytorch.kernels import MultitaskKernel, IndexKernel
-from gpytorch.lazy import KroneckerProductLazyTensor, BlockDiagLazyTensor, InterpolatedLazyTensor, lazify
+from gpytorch.lazy import (KroneckerProductLazyTensor, BlockDiagLazyTensor,
+                           InterpolatedLazyTensor, lazify, NonLazyTensor)
 
 # https://github.com/yulkang/pylabyk/blob/master/numpytorch.py
 # Apache licence https://github.com/yulkang/pylabyk/blob/master/LICENSE
@@ -105,6 +106,7 @@ class MatrixVariateKernel(MultitaskKernel):
         """
         """
         super(MultitaskKernel, self).__init__(**kwargs)
+        self.task_covar_module = task_covar_module
         self.decoder = decoder
         self.data_covar_module = data_covar_module
         self.num_tasks = num_tasks
@@ -128,30 +130,36 @@ class HetergeneousMatrixVariateKernel(MatrixVariateKernel):
         assert (M2s[..., idxend2:] == 0).all()
         U2s = U2[..., :idxend2, :]
 
-        import pdb; pdb.set_trace()
-        H1 = BlockDiagLazyTensor(U1s)
-        H2 = BlockDiagLazyTensor(U2s)
+        H1 = BlockDiagLazyTensor(NonLazyTensor(U1s.unsqueeze(1)))
+        H2 = BlockDiagLazyTensor(NonLazyTensor(U2s.unsqueeze(1)))
 
         Kxx = covar_xx
         # If M1, M2 = (1, 1)
         #    H₁ᵀ [ K ⊗ B ] H₂ ⊗ A
-        Kij_xx_11 = H1 @ KroneckerProductLazyTensor(Kxx, B) @ H2 @ A
+        V = self.task_covar_module.V.covar_matrix
+        U = self.task_covar_module.U.covar_matrix
+        Kij_xx_11 = KroneckerProductLazyTensor(
+            H1 @ KroneckerProductLazyTensor(Kxx[:idxend1, :idxend1], V) @ H2.t(), U)
 
-        # elif M1, M2 = (1, 0)
-        #    H₁ᵀ [ K ⊗ B ] ⊗ A
-        Kij_xx_12 = H1 @ KroneckerProductLazyTensor(Kxx, B) @ H2 @ A
+        if idxend1 < M1s.size(-1):
+            # elif M1, M2 = (1, 0)
+            #    H₁ᵀ [ k_x* ⊗ B ] ⊗ A
+            Kij_xx_12 = KroneckerProductLazyTensor(
+                H1 @ KroneckerProductLazyTensor(k_xx, V) , U)
 
-        # elif M1, M2 = (0, 1)
-        #    [ K ⊗ B ] H₂ ⊗ A
-        Kij_xx_21 = Kij_12.t()
-        # else M1, M2 = (0, 0)
-        #    [ K ⊗ B ] ⊗ A
-        Kij_xx_22 = KronKroneckerProductLazyTensor(KroneckerProductLazyTensor(Kxx, B), A)
-        covar_i = self.task_covar_module.covar_matrix
-        if len(x1.shape[:-2]):
-            covar_i = covar_i.repeat(*x1.shape[:-2], 1, 1)
-        return torch.cat([torch.cat([Kij_xx_11, Kij_xx_12], dim=1),
-                          torch.cat([Kij_xx_21, Kij_xx_22], dim=1)], dim=0)
+            # elif M1, M2 = (0, 1)
+            #    [ k_x* ⊗ B ] H₂ ⊗ A
+            Kij_xx_21 = Kij_xx_12.t()
+            # else M1, M2 = (0, 0)
+            #    [ k_** ⊗ B ] ⊗ A
+            Kij_xx_22 = KronKroneckerProductLazyTensor(KroneckerProductLazyTensor(k_xx, V), U)
+            covar_i = self.task_covar_module.covar_matrix
+            if len(x1.shape[:-2]):
+                covar_i = covar_i.repeat(*x1.shape[:-2], 1, 1)
+            return torch.cat([torch.cat([Kij_xx_11, Kij_xx_12], dim=1),
+                            torch.cat([Kij_xx_21, Kij_xx_22], dim=1)], dim=0)
+
+        return Kij_xx_11
 
 
     def forward(self, mxu1, mxu2, diag=False, last_dim_is_batch=False, **params):

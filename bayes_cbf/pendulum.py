@@ -4,6 +4,7 @@ import numpy as np
 from numpy import cos, sin
 #plot the result
 import matplotlib.pyplot as plt
+from collections import namedtuple
 
 
 def control_trivial(theta, w, m=None, l=None, g=None):
@@ -92,33 +93,72 @@ def run_pendulum_experiment(#parameters
     plot_results(time_vec, omega_vec, theta_vec, u_vec)
     return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
 
+def learn_dynamics_gpytorch(
+        theta0=5*np.pi/6,
+        omega0=-0.01,
+        tau=0.01,
+        m=1,
+        g=10,
+        l=1,
+        numSteps=5000):
+
+    from gpytorch_fit import GPTorch
+    damge_perc,time_vec,theta_vec,omega_vec,u_vec = env_pendulum(
+        theta0,omega0,tau,m,g,l,numSteps, control=control_trivial)
 
 def learn_dynamics(
-        theta0=3*np.pi/4,
-        omega0=0,
-        tau=0.001,
+        theta0=5*np.pi/6,
+        omega0=-0.01,
+        tau=0.01,
         m=1,
         g=10,
         l=1,
         numSteps=5000):
     from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
+    from bayes_cbf.affine_kernel import AffineScaleKernel
     from sklearn.gaussian_process import GaussianProcessRegressor
-    damge_perc,time_vec,theta_vec,omega_vec,u_vec = env_pendulum(theta0,omega0,tau,m,g,l,numSteps)
-    kernel = 1.0 * RBF(length_scale=100.0, length_scale_bounds=(1e-2, 1e3)) \
+
+    kernel_x = 1.0 * RBF(length_scale=np.array([100.0, 100.0]),
+                         length_scale_bounds=(1e-2, 1e3)) \
         + WhiteKernel(noise_level=1, noise_level_bounds=(1e-10, 1e+1))
+    kernel_xu = AffineScaleKernel(kernel_x, 2)
 
-    total_data = np.vstack((theta_vec, omega_vec, u_vec)).T
-    Y= total_data[1:500,:2]
-    Z= total_data[:499,:] #-1 remember!
+    # xₜ₊₁ = F(xₜ)[1 u]
+    # where F(xₜ) = [f(xₜ), g(xₜ)]
 
-    gp = GaussianProcessRegressor(kernel=kernel,
-                                  alpha=0.0).fit(Z, Y)
+    damge_perc,time_vec,theta_vec,omega_vec,u_vec = env_pendulum(
+        theta0,omega0,tau,m,g,l,numSteps, control=control_trivial)
+    # X.shape = Nx2
+    X = np.vstack((theta_vec, omega_vec)).T
+    # XU.shape = Nx3
+    XU = np.hstack((X, u_vec.reshape(-1, 1)))
 
-    t99, cov = gp.predict(total_data[98:99,:], return_cov=True)
-    assert np.allclose(total_data[99], t99)
+    # compute discrete derivative
+    # dxₜ₊₁ = xₜ₊₁ - xₜ / dt
+    dX = (X[1:, :] - X[:-1, :]) / tau
 
-    t502, cov = gp.predict(total_data[501:502,:], return_cov=True)
-    assert np.allclose(total_data[502], t502)
+    # Do not need the full dataset . Take a small subset
+    N = 500
+    Y = dX[:N,:]
+    Z = XU[:N,:]
+
+    # Shuffle to make it IID
+    shuffled = np.random.randint(N, size=(N,))
+    Y_shuffled = Y[shuffled,:]
+    Z_shuffled = Z[shuffled,:]
+    gp = GaussianProcessRegressor(kernel=kernel_xu,
+                                  alpha=1e6).fit(Z_shuffled, Y_shuffled)
+
+    # within train set
+    dX_99, cov = gp.predict(XU[98:99,:], return_cov=True)
+    print("Train sample: ", dX_99, dX[99], cov)
+    assert np.allclose(dX[99], dX_99)
+
+    # out of train set
+    dX_Np2, cov = gp.predict(XU[N+1:N+2,:], return_cov=True)
+    print("Test sample: ", dX_Np2, dX_Np2, cov)
+    assert np.allclose(dX[N+1], dX_Np2)
+    return gp, dX, XU
 
 
 def cvxopt_solve_qp(P, q, G=None, h=None, A=None, b=None):
@@ -136,6 +176,9 @@ def cvxopt_solve_qp(P, q, G=None, h=None, A=None, b=None):
     return np.array(sol['x']).reshape((P.shape[1],))
 
 
+ControlAffine = namedtuple("ControlAffine",
+                           ["A", "b"])
+
 def control_cbf_clf(theta, w,
                     theta_c=np.pi/4,
                     c=1,
@@ -145,8 +188,7 @@ def control_cbf_clf(theta, w,
                     delta_col=np.pi/8,
                     m=None,
                     l=None,
-                    g=None,
-                    clf_only=False):
+                    g=None):
     assert m is not None
     assert l is not None
     assert g is not None
@@ -169,6 +211,24 @@ def control_cbf_clf(theta, w,
         return (gamma_col*(cos(delta_col)-cos(theta-theta_c))*w**2
                 + w**3*sin(theta-theta_c)
                 - (2*g*w*sin(theta)*(cos(delta_col)-cos(theta-theta_c)))/l)
+    return control_QP_cbf_clf(theta, w,
+                              ctrl_aff_clf=ControlAffine(A_clf, b_clf),
+                              ctrl_aff_cbfs=[ControlAffine(A_sr, b_sr),
+                                             ControlAffine(A_col, b_col)])
+
+
+def control_QP_cbf_clf(theta, w,
+                    ctrl_aff_clf,
+                    ctrl_aff_cbfs,
+                    clf_only=False):
+    """
+    Args:
+          A_cbfs: A tuple of CBF functions
+          b_cbfs: A tuple of CBF functions
+    """
+    A_clf, b_clf = ctrl_aff_clf
+    A_sr, b_sr = ctrl_aff_cbfs[0]
+    A_col, b_col = ctrl_aff_cbfs[1]
 
     A_total = np.vstack([A(theta, w) for A in [A_clf, A_sr,A_col]])
     b_total = np.vstack([b(theta, w) for b in [b_clf, b_sr,b_col]])

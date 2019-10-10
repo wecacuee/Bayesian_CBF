@@ -4,10 +4,13 @@ from bayes_cbf.matrix_variate_multitask_model import DynamicModelGP
 
 def test_GP_train_predict(n=2, m=3, dt = 0.001):
     import numpy as np
-    # np.random.seed(4)
-    # torch.manual_seed(0)
-    # torch.backends.cudnn.deterministic = True
-    # torch.backends.cudnn.benchmark = False
+    #chosen_seed = np.random.randint(100000)
+    chosen_seed = 18945
+    print(chosen_seed)
+    np.random.seed(chosen_seed)
+    torch.manual_seed(chosen_seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
     A = np.random.rand(n,n)
     def f(x):
@@ -30,16 +33,21 @@ def test_GP_train_predict(n=2, m=3, dt = 0.001):
     g.B = B
 
     # Collect training data
-    D = 30
+    D = 10
     U = np.random.rand(D, m)
     X = np.zeros((D+1, n))
     X[0, :] = np.random.rand(n)
     Xdot = np.zeros((D, n))
 
-    # Single trajectory
+    # # Single trajectory
+    # for i in range(D):
+    #     Xdot[i, :] = f(X[i, :]) + g(X[i, :]) @ U[i, :]
+    #     X[i+1, :] = X[i, :] + Xdot[i, :] * dt
+
+    # Idependent random mappings
+    X = np.random.rand(D, n)
     for i in range(D):
         Xdot[i, :] = f(X[i, :]) + g(X[i, :]) @ U[i, :]
-        X[i+1, :] = X[i, :] + Xdot[i, :] * dt
 
     # Test train split
     shuffled_order = np.arange(D)
@@ -53,7 +61,7 @@ def test_GP_train_predict(n=2, m=3, dt = 0.001):
 
     # Call the training routine
     dgp = DynamicModelGP()
-    dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=200, lr=0.1)
+    dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=500, lr=0.1)
 
     # Test data
     Xtest, Utest, XdotTest = [Mat[test_indices, :]

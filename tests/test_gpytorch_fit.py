@@ -3,7 +3,7 @@ import pytest
 
 from bayes_cbf.matrix_variate_multitask_model import DynamicModelGP
 
-def test_GP_train_predict(n=2, m=3, dt = 0.001):
+def test_GP_train_predict(n=2, m=3, dt = 0.001, deterministic=True):
     import numpy as np
     #chosen_seed = np.random.randint(100000)
     chosen_seed = 18945
@@ -16,8 +16,9 @@ def test_GP_train_predict(n=2, m=3, dt = 0.001):
     A = np.random.rand(n,n)
     def f(x):
         assert x.shape[-1] == n
-        cov = np.ones((n,n)) * 0.01
-        return np.random.multivariate_normal(A @ x, cov)
+        cov = np.eye(n) * 0.0001
+        return (A @ x if deterministic
+                else np.random.multivariate_normal(A @ x, cov))
     f.A = A
 
     B = np.random.rand(n, m, n)
@@ -26,11 +27,16 @@ def test_GP_train_predict(n=2, m=3, dt = 0.001):
         Returns n x m matrix
         """
         assert x.shape[-1] == n
-        cov_A = np.ones((n, n)) * 0.01
-        cov_B = np.ones((m, m)) * 0.02
+        cov_A = np.eye(n) * 0.0001
+        cov_B = np.eye(m) * 0.0002
         cov = np.kron(cov_A, cov_B)
 
-        return np.random.multivariate_normal((B @ x).flatten(), cov).reshape((n, m))
+        return (
+            B @ x if deterministic
+            else np.random.multivariate_normal(
+                    (B @ x).flatten(), cov
+            ).reshape((n, m))
+        )
     g.B = B
 
     # Collect training data
@@ -68,11 +74,18 @@ def test_GP_train_predict(n=2, m=3, dt = 0.001):
     Xtest, Utest, XdotTest = [Mat[test_indices, :]
                               for Mat in (X, U, Xdot)]
 
-    FXTexpected = np.concatenate(((f.A @ Xtest.T).T.reshape(-1, 1, n),
-                                  (g.B @ Xtest.T).T.reshape(-1, m, n)), axis=1)
+    UHtest = np.concatenate((np.ones((Utest.shape[0], 1)), Utest), axis=1)
+    FXTexpected = np.empty((Xtest.shape[0], 1+m, n))
+    for i in range(Xtest.shape[0]):
+        FXTexpected[i, ...] = np.concatenate(
+            (f(Xtest[i, :])[None, :], g(Xtest[i,  :]).T), axis=0)
+        assert np.allclose(XdotTest[i, :], FXTexpected[i, :, :].T @ UHtest[i, :])
+
+    #FXTexpected = np.concatenate(((f.A @ Xtest.T).T.reshape(-1, 1, n),
+    #                              (g.B @ Xtest.T).T.reshape(-1, m, n)), axis=1)
     FXTmean, FXTcov = dgp.F(Xtest)
-    error = np.linalg.norm(FXTmean[:] - FXTexpected[:])
-    print("Test norm(actual - expected) / norm = {} / {}"
+    error = np.linalg.norm((FXTmean - FXTexpected)[:])
+    print("Test ||actual - expected|| / ||expected|| = {} / {}"
           .format(error, np.linalg.norm(FXTexpected[:])))
     assert FXTmean == pytest.approx(FXTexpected)
 

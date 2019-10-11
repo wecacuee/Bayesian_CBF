@@ -1,6 +1,4 @@
 from typing import Any
-import operator
-from functools import reduce
 
 import logging
 LOG = logging.getLogger(__name__)
@@ -22,7 +20,24 @@ from gpytorch.mlls import ExactMarginalLogLikelihood
 from gpytorch.models import ExactGP
 import gpytorch.settings as gpsettings
 
-from bayes_cbf.matrix_variate_multitask_kernel import MatrixVariateIndexKernel, HetergeneousMatrixVariateKernel
+from bayes_cbf.matrix_variate_multitask_kernel import MatrixVariateIndexKernel, HetergeneousMatrixVariateKernel, prod
+
+
+class Namespace:
+    def __getattribute__(self, name):
+        val = object.__getattribute__(self, name)
+        if isinstance(val, Callable):
+            return staticmethod(val)
+        else:
+            return val
+
+class Arr(Namespace):
+    def cat(arrays, axis=0):
+        if isinstance(arrays[0], torch.Tensor):
+            X = torch.cat(arrays, dim=axis)
+        else:
+            X = np.concatenate(arrays, axis=axis)
+        return X
 
 
 class CatEncoder:
@@ -31,11 +46,11 @@ class CatEncoder:
 
     @classmethod
     def from_data(cls, *arrays):
-        self = cls(*[A.size(-1) for A in arrays])
+        self = cls(*[A.shape[-1] for A in arrays])
         return self, self.encode(*arrays)
 
     def encode(self, *arrays):
-        X = torch.cat(arrays, dim=-1)
+        X = Arr.cat(arrays, axis=-1)
         return X
 
     def decode(self, X):
@@ -65,10 +80,6 @@ class HeterogeneousGaussianLikelihood(_GaussianLikelihoodBase):
 
     def marginal(self, function_dist: MultivariateNormal, *params: Any, **kwargs: Any) -> MultivariateNormal:
         return function_dist
-
-
-def prod(L):
-    return reduce(operator.mul, L, 1)
 
 
 class HetergeneousMatrixVariateMean(MultitaskMean):

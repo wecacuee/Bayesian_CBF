@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
+import operator
+from functools import reduce
 
 import torch
 
 from gpytorch.kernels import MultitaskKernel, IndexKernel, Kernel
 from gpytorch.lazy import (KroneckerProductLazyTensor, BlockDiagLazyTensor,
                            InterpolatedLazyTensor, lazify, NonLazyTensor,
-                           cat as lazycat)
+                           LazyTensor, cat as lazycat)
 import gpytorch.settings as gpsettings
+
+
+def prod(L):
+    return reduce(operator.mul, L, 1)
 
 
 class MatrixVariateIndexKernel(Kernel):
@@ -24,8 +30,8 @@ class MatrixVariateIndexKernel(Kernel):
         super(MatrixVariateIndexKernel, self).__init__()
         self.U = U
         self.V = V
-        n = self.U.raw_var.size(-1)
-        p = self.V.raw_var.size(-1)
+        n = self.U.raw_var.shape[-1]
+        p = self.V.raw_var.shape[-1]
         self.matshape = (n,p)
 
     @property
@@ -49,7 +55,11 @@ def test_MatrixVariateIndexKernel(n=2, m=3):
     mvk(x,x).evaluate()
 
 
-class MatrixVariateKernel(MultitaskKernel):
+def ensurelazy(X):
+    return X if isinstance(X, LazyTensor) else NonLazyTensor(X)
+
+
+class MatrixVariateKernel(Kernel):
     """
     Kernel supporting Kronecker style matrix variate Gaussian processes (where every
     data point is evaluated at every task).
@@ -74,17 +84,31 @@ class MatrixVariateKernel(MultitaskKernel):
         task_covar_prior (:obj:`gpytorch.priors.Prior`):
             Prior to use for task kernel. See :class:`gpytorch.kernels.IndexKernel` for details.
     """
+    @property
+    def num_tasks(self):
+        return prod(self.task_covar_module.matshape)
 
     def __init__(self, task_covar_module, data_covar_module, decoder, **kwargs):
         """
         """
-        super(MultitaskKernel, self).__init__(**kwargs)
+        super().__init__(data_covar_module, **kwargs)
         self.task_covar_module = task_covar_module
         self.data_covar_module = data_covar_module
         self.decoder = decoder
 
 
 class HetergeneousMatrixVariateKernel(MatrixVariateKernel):
+    def num_outputs_per_input(self, mxu1, mxu2):
+        M1, X1, U1 = self.decoder.decode(mxu1)
+        M2, X2, U2 = self.decoder.decode(mxu2)
+
+        M1s = M1[..., 0]
+        idxs1 = torch.nonzero(M1s - torch.ones_like(M1s))
+        idxend1 = torch.min(idxs1).item() if idxs1.numel() else M1s.size(-1)
+
+        return (idxend1 * X1.shape[-1] + (M1s.size(-1) - idxend1) * prod(
+            self.task_covar_module.matshape) ) // M1s.size(-1)
+
     def mask_dependent_covar(self, M1s, U1, M2s, U2, covar_xx):
         # Assume M1s, M2s sorted descending
         B = M1s.shape[:-1]
@@ -107,11 +131,11 @@ class HetergeneousMatrixVariateKernel(MatrixVariateKernel):
         H2 = BlockDiagLazyTensor(NonLazyTensor(U2s.unsqueeze(1)))
         #if gpsettings.debug.on(): H2.evaluate()
 
-        Kxx = covar_xx
+        Kxx = ensurelazy(covar_xx)
         # If M1, M2 = (1, 1)
         #    H₁ᵀ [ K ⊗ B ] H₂ ⊗ A
-        V = self.task_covar_module.V.covar_matrix
-        U = self.task_covar_module.U.covar_matrix
+        V = ensurelazy(self.task_covar_module.V.covar_matrix)
+        U = ensurelazy(self.task_covar_module.U.covar_matrix)
         Kij_xx_11 = KroneckerProductLazyTensor(
             H1 @ KroneckerProductLazyTensor(Kxx[:idxend1, :idxend2], V) @ H2.t(), U)
         #Kij_xx_11.evaluate()

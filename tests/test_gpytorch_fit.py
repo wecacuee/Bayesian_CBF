@@ -1,4 +1,5 @@
 import torch
+import pytest
 
 from bayes_cbf.matrix_variate_multitask_model import DynamicModelGP
 
@@ -73,7 +74,7 @@ def test_GP_train_predict(n=2, m=3, dt = 0.001):
     error = np.linalg.norm(FXTmean[:] - FXTexpected[:])
     print("Test norm(actual - expected) / norm = {} / {}"
           .format(error, np.linalg.norm(FXTexpected[:])))
-    assert np.allclose(FXTmean, FXTexpected)
+    assert FXTmean == pytest.approx(FXTexpected)
 
 
 if __name__ == '__main__':

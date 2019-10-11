@@ -1,6 +1,9 @@
+import warnings
+
 import numpy as np
 import torch
 import pytest
+import gpytorch.settings as gpsettings
 
 from bayes_cbf.matrix_variate_multitask_model import DynamicModelGP
 
@@ -62,7 +65,7 @@ def test_GP_train_predict(n=2, m=3, dt = 0.001,
     g.B = B
 
     # Collect training data
-    D = 100
+    D = 200
     Xdot, X, U = sample_generator(f, g, D, n, m)
 
     # Test train split
@@ -77,7 +80,9 @@ def test_GP_train_predict(n=2, m=3, dt = 0.001,
 
     # Call the training routine
     dgp = DynamicModelGP()
-    dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=500, lr=0.1)
+    with gpsettings.max_cg_iterations(2000), warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50, lr=0.01)
 
     # Test data
     Xtest, Utest, XdotTest = [Mat[test_indices, :]
@@ -92,11 +97,12 @@ def test_GP_train_predict(n=2, m=3, dt = 0.001,
 
     #FXTexpected = np.concatenate(((f.A @ Xtest.T).T.reshape(-1, 1, n),
     #                              (g.B @ Xtest.T).T.reshape(-1, m, n)), axis=1)
-    FXTmean, FXTcov = dgp.F(Xtest)
-    error = np.linalg.norm((FXTmean - FXTexpected)[:])
-    print("Test ||actual - expected|| / ||expected|| = {} / {}"
-          .format(error, np.linalg.norm(FXTexpected[:])))
-    assert FXTmean == pytest.approx(FXTexpected)
+    FXTmean, FXTcov = dgp.predict(Xtest)
+
+    XdotGot = np.empty_like(XdotTest)
+    for i in range(Xtest.shape[0]):
+        XdotGot[i, :] = FXTmean[i, :, :].T @ UHtest[i, :]
+    assert XdotGot == pytest.approx(XdotTest, rel=0.05)
 
 
 if __name__ == '__main__':

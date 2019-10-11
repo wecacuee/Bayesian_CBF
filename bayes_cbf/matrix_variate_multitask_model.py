@@ -189,9 +189,9 @@ class DynamicModelGP:
             loss.backward()
             print('Iter %d/%d - Loss: %.3f' % (i + 1, training_iter, loss.item()))
             optimizer.step()
+        return self
 
-
-    def F(self, Xtest):
+    def predict(self, Xtest):
         Xtest = torch.from_numpy(Xtest).float()
         # Switch back to eval mode
         if self.model is None or self.likelihood is None:

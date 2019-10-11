@@ -1,9 +1,10 @@
+import numpy as np
 import torch
 import pytest
 
 from bayes_cbf.matrix_variate_multitask_model import DynamicModelGP
 
-def sample_generator_trajectory(D, n, m):
+def sample_generator_trajectory(f, g, D, n, m):
     U = np.random.rand(D, m)
     X = np.zeros((D+1, n))
     X[0, :] = np.random.rand(n)
@@ -13,7 +14,7 @@ def sample_generator_trajectory(D, n, m):
         Xdot[i, :] = f(X[i, :]) + g(X[i, :]) @ U[i, :]
         X[i+1, :] = X[i, :] + Xdot[i, :] * dt
 
-def sample_generator_independent(D, n, m):
+def sample_generator_independent(f, g, D, n, m):
     # Idependent random mappings
     U = np.random.rand(D, m)
     X = np.random.rand(D, n)
@@ -26,7 +27,6 @@ def sample_generator_independent(D, n, m):
 def test_GP_train_predict(n=2, m=3, dt = 0.001,
                           deterministic=True,
                           sample_generator=sample_generator_independent):
-    import numpy as np
     #chosen_seed = np.random.randint(100000)
     chosen_seed = 18945
     print(chosen_seed)
@@ -62,8 +62,8 @@ def test_GP_train_predict(n=2, m=3, dt = 0.001,
     g.B = B
 
     # Collect training data
-    D = 10
-    Xdot, X, U = sample_generator(D, n, m)
+    D = 100
+    Xdot, X, U = sample_generator(f, g, D, n, m)
 
     # Test train split
     shuffled_order = np.arange(D)

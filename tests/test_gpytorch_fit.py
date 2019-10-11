@@ -3,7 +3,29 @@ import pytest
 
 from bayes_cbf.matrix_variate_multitask_model import DynamicModelGP
 
-def test_GP_train_predict(n=2, m=3, dt = 0.001, deterministic=True):
+def sample_generator_trajectory(D, n, m):
+    U = np.random.rand(D, m)
+    X = np.zeros((D+1, n))
+    X[0, :] = np.random.rand(n)
+    Xdot = np.zeros((D, n))
+    # Single trajectory
+    for i in range(D):
+        Xdot[i, :] = f(X[i, :]) + g(X[i, :]) @ U[i, :]
+        X[i+1, :] = X[i, :] + Xdot[i, :] * dt
+
+def sample_generator_independent(D, n, m):
+    # Idependent random mappings
+    U = np.random.rand(D, m)
+    X = np.random.rand(D, n)
+    Xdot = np.zeros((D, n))
+    for i in range(D):
+        Xdot[i, :] = f(X[i, :]) + g(X[i, :]) @ U[i, :]
+    return Xdot, X, U
+
+
+def test_GP_train_predict(n=2, m=3, dt = 0.001,
+                          deterministic=True,
+                          sample_generator=sample_generator_independent):
     import numpy as np
     #chosen_seed = np.random.randint(100000)
     chosen_seed = 18945
@@ -41,20 +63,7 @@ def test_GP_train_predict(n=2, m=3, dt = 0.001, deterministic=True):
 
     # Collect training data
     D = 10
-    U = np.random.rand(D, m)
-    X = np.zeros((D+1, n))
-    X[0, :] = np.random.rand(n)
-    Xdot = np.zeros((D, n))
-
-    # # Single trajectory
-    # for i in range(D):
-    #     Xdot[i, :] = f(X[i, :]) + g(X[i, :]) @ U[i, :]
-    #     X[i+1, :] = X[i, :] + Xdot[i, :] * dt
-
-    # Idependent random mappings
-    X = np.random.rand(D, n)
-    for i in range(D):
-        Xdot[i, :] = f(X[i, :]) + g(X[i, :]) @ U[i, :]
+    Xdot, X, U = sample_generator(D, n, m)
 
     # Test train split
     shuffled_order = np.arange(D)

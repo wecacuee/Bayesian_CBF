@@ -7,7 +7,8 @@ import gpytorch.settings as gpsettings
 
 from bayes_cbf.matrix_variate_multitask_model import DynamicModelGP
 
-def sample_generator_trajectory(f, g, D, n, m):
+
+def sample_generator_trajectory(f, g, D, n, m, dt=0.001):
     U = np.random.rand(D, m)
     X = np.zeros((D+1, n))
     X[0, :] = np.random.rand(n)
@@ -16,6 +17,8 @@ def sample_generator_trajectory(f, g, D, n, m):
     for i in range(D):
         Xdot[i, :] = f(X[i, :]) + g(X[i, :]) @ U[i, :]
         X[i+1, :] = X[i, :] + Xdot[i, :] * dt
+    return Xdot, X, U
+
 
 def sample_generator_independent(f, g, D, n, m):
     # Idependent random mappings
@@ -27,9 +30,9 @@ def sample_generator_independent(f, g, D, n, m):
     return Xdot, X, U
 
 
-def test_GP_train_predict(n=2, m=3, dt = 0.001,
+def test_GP_train_predict(n=2, m=3,
                           deterministic=True,
-                          sample_generator=sample_generator_independent):
+                          sample_generator=sample_generator_trajectory):
     #chosen_seed = np.random.randint(100000)
     chosen_seed = 18945
     print(chosen_seed)
@@ -87,11 +90,12 @@ def test_GP_train_predict(n=2, m=3, dt = 0.001,
                               for Mat in (X, U, Xdot)]
 
     UHtest = np.concatenate((np.ones((Utest.shape[0], 1)), Utest), axis=1)
-    FXTexpected = np.empty((Xtest.shape[0], 1+m, n))
-    for i in range(Xtest.shape[0]):
-        FXTexpected[i, ...] = np.concatenate(
-            (f(Xtest[i, :])[None, :], g(Xtest[i,  :]).T), axis=0)
-        assert np.allclose(XdotTest[i, :], FXTexpected[i, :, :].T @ UHtest[i, :])
+    if deterministic:
+        FXTexpected = np.empty((Xtest.shape[0], 1+m, n))
+        for i in range(Xtest.shape[0]):
+            FXTexpected[i, ...] = np.concatenate(
+                (f(Xtest[i, :])[None, :], g(Xtest[i,  :]).T), axis=0)
+            assert np.allclose(XdotTest[i, :], FXTexpected[i, :, :].T @ UHtest[i, :])
 
     #FXTexpected = np.concatenate(((f.A @ Xtest.T).T.reshape(-1, 1, n),
     #                              (g.B @ Xtest.T).T.reshape(-1, m, n)), axis=1)

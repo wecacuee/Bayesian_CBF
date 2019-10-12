@@ -6,6 +6,7 @@ from numpy import cos, sin
 import matplotlib.pyplot as plt
 from collections import namedtuple
 
+from bayes_cbf.matrix_variate_multitask_model import DynamicModelGP
 
 def control_trivial(theta, w, m=None, l=None, g=None):
     assert m is not None
@@ -114,14 +115,14 @@ def learn_dynamics(
         g=10,
         l=1,
         numSteps=5000):
-    from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
-    from bayes_cbf.affine_kernel import AffineScaleKernel
-    from sklearn.gaussian_process import GaussianProcessRegressor
+    #from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
+    #from bayes_cbf.affine_kernel import AffineScaleKernel
+    #from sklearn.gaussian_process import GaussianProcessRegressor
 
-    kernel_x = 1.0 * RBF(length_scale=np.array([100.0, 100.0]),
-                         length_scale_bounds=(1e-2, 1e3)) \
-        + WhiteKernel(noise_level=1, noise_level_bounds=(1e-10, 1e+1))
-    kernel_xu = AffineScaleKernel(kernel_x, 2)
+    # kernel_x = 1.0 * RBF(length_scale=np.array([100.0, 100.0]),
+    #                      length_scale_bounds=(1e-2, 1e3)) \
+    #     + WhiteKernel(noise_level=1, noise_level_bounds=(1e-10, 1e+1))
+    # kernel_xu = AffineScaleKernel(kernel_x, 2)
 
     # xₜ₊₁ = F(xₜ)[1 u]
     # where F(xₜ) = [f(xₜ), g(xₜ)]
@@ -131,6 +132,8 @@ def learn_dynamics(
     # X.shape = Nx2
     X = np.vstack((theta_vec, omega_vec)).T
     # XU.shape = Nx3
+    U = u_vec.reshape(-1, 1)
+    UH = np.hstack((np.ones((U.shape[0], 1), dtype=U.dtype), U))
     XU = np.hstack((X, u_vec.reshape(-1, 1)))
 
     # compute discrete derivative
@@ -139,26 +142,28 @@ def learn_dynamics(
 
     # Do not need the full dataset . Take a small subset
     N = 500
-    Y = dX[:N,:]
-    Z = XU[:N,:]
-
     # Shuffle to make it IID
-    shuffled = np.random.randint(N, size=(N,))
-    Y_shuffled = Y[shuffled,:]
-    Z_shuffled = Z[shuffled,:]
-    gp = GaussianProcessRegressor(kernel=kernel_xu,
-                                  alpha=1e6).fit(Z_shuffled, Y_shuffled)
+    shuffled_range = np.arange(N)
+    np.random.shuffle(shuffled_range)
+    XdotTrain = dX[shuffled_range, :]
+    Xtrain = X[shuffled_range, :]
+    Utrain = U[shuffled_range, :]
+    #gp = GaussianProcessRegressor(kernel=kernel_xu,
+    #                              alpha=1e6).fit(Z_shuffled, Y_shuffled)
+    dgp = DynamicModelGP().fit(Xtrain, Utrain, XdotTrain)
 
     # within train set
-    dX_99, cov = gp.predict(XU[98:99,:], return_cov=True)
-    print("Train sample: ", dX_99, dX[99], cov)
+    FX_99, FXcov_99 = dgp.predict(X[98:99,:], return_cov=True)
+    dX_99 = FX_99[0, ...].T @ UH[98, :]
+    print("Train sample: ", dX_99, dX[99], FXcov_99)
     assert np.allclose(dX[99], dX_99)
 
     # out of train set
-    dX_Np2, cov = gp.predict(XU[N+1:N+2,:], return_cov=True)
-    print("Test sample: ", dX_Np2, dX_Np2, cov)
-    assert np.allclose(dX[N+1], dX_Np2)
-    return gp, dX, XU
+    FXNp1, FXNp1cov = dgp.predict(X[N+1:N+2,:], return_cov=True)
+    dX_Np1 = FXNp1[0, ...].T @ UH[N+1, :]
+    print("Test sample: ", dX_Np1, dX_Np1, cov)
+    assert np.allclose(dX[N+1], dX_Np1)
+    return dgp, dX, XU
 
 
 def cvxopt_solve_qp(P, q, G=None, h=None, A=None, b=None):
@@ -266,4 +271,5 @@ def control_QP_cbf_clf(theta, w,
 
 if __name__ == '__main__':
     #run_pendulum_experiment(control=control_trivial)
-    (damge_perc,time_vec,theta_vec,omega_vec,u_vec) = run_pendulum_experiment(control=control_cbf_clf)
+    #(damge_perc,time_vec,theta_vec,omega_vec,u_vec) = run_pendulum_experiment(control=control_cbf_clf)
+    learn_dynamics()

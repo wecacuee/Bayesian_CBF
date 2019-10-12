@@ -80,9 +80,7 @@ def test_GP_train_predict(n=2, m=3, dt = 0.001,
 
     # Call the training routine
     dgp = DynamicModelGP()
-    with gpsettings.max_cg_iterations(2000), warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50, lr=0.01)
+    dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50, lr=0.01)
 
     # Test data
     Xtest, Utest, XdotTest = [Mat[test_indices, :]

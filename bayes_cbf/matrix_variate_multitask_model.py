@@ -1,4 +1,5 @@
 from typing import Any
+import warnings
 
 import logging
 LOG = logging.getLogger(__name__)
@@ -24,6 +25,9 @@ from bayes_cbf.matrix_variate_multitask_kernel import MatrixVariateIndexKernel, 
 
 
 class Namespace:
+    """
+    Makes a class as a namespace for static functions
+    """
     def __getattribute__(self, name):
         val = object.__getattribute__(self, name)
         if isinstance(val, Callable):
@@ -31,7 +35,11 @@ class Namespace:
         else:
             return val
 
+
 class Arr(Namespace):
+    """
+    Namespace for functions that works for both numpy as pytorch
+    """
     def cat(arrays, axis=0):
         if isinstance(arrays[0], torch.Tensor):
             X = torch.cat(arrays, dim=axis)
@@ -41,6 +49,9 @@ class Arr(Namespace):
 
 
 class CatEncoder:
+    """
+    Encodes and decodes the arrays by concatenating them
+    """
     def __init__(self, *sizes):
         self.sizes = list(sizes)
 
@@ -59,10 +70,22 @@ class CatEncoder:
                   for s,e in zip(idxs[:-1], idxs[1:])]
         return arrays
 
-class HeterogeneousGaussianLikelihood(_GaussianLikelihoodBase):
+
+class IdentityLikelihood(_GaussianLikelihoodBase):
+    """
+    Dummy likelihood class that does not do anything. It tries to be as close
+    to identity as possible.
+
+    gpytorch.likelihoods.Likelihood is supposed to model p(y|f(x)).
+
+    GaussianLikelihood model this by y = f(x) + ε, ε ~ N(0, σ²)
+
+    IdentityLikelihood tries to model y = f(x) , without breaking the gpytorch
+    `exact_prediction_strategies` function which requires GaussianLikelihood.
+    """
     def __init__(self):
-        # NOTE: Do nothing
-        super().__init__(noise_covar=FixedGaussianNoise(noise=1e-4))
+        self.min_possible_noise = 1e-6
+        super().__init__(noise_covar=FixedGaussianNoise(noise=torch.tensor(self.min_possible_noise)))
 
     @property
     def noise(self):
@@ -72,17 +95,37 @@ class HeterogeneousGaussianLikelihood(_GaussianLikelihoodBase):
     def noise(self, _):
         LOG.warn("Ignore setting of noise")
 
-    def forward(self, function_samples: torch.Tensor, *params: Any, **kwargs: Any) -> base_distributions.Normal:
+    def forward(self, function_samples: torch.Tensor, *params: Any, **kwargs:
+                Any) -> base_distributions.Normal:
         # FIXME: How can we get the covariance of the function samples?
         return base_distributions.Normal(
             function_samples,
-            1e-4 * torch.eye(function_samples.size()))
+            self.min_possible_noise * torch.eye(function_samples.size()))
 
-    def marginal(self, function_dist: MultivariateNormal, *params: Any, **kwargs: Any) -> MultivariateNormal:
+    def marginal(self, function_dist: MultivariateNormal, *params: Any,
+                 **kwargs: Any) -> MultivariateNormal:
         return function_dist
 
 
 class HetergeneousMatrixVariateMean(MultitaskMean):
+    """
+    Computes a mean depending on the input.
+
+    Our mean can be the mean of either of the two related GaussianProcesses
+
+        Xdot = F(X)ᵀU
+
+    or
+
+        Y = F(X)ᵀ
+
+    We take input in the form
+
+        M, X, U = MXU
+
+    where M is the mask, where 1 value means we want Xdot = F(X)ᵀU, while 0
+    means that we want Y = F(X)ᵀ
+    """
     def __init__(self, mean_module, decoder, matshape, **kwargs):
         num_tasks = prod(matshape)
         super().__init__(mean_module, num_tasks, **kwargs)
@@ -114,6 +157,14 @@ class HetergeneousMatrixVariateMean(MultitaskMean):
 
 
 class DynamicsModelExactGP(ExactGP):
+    """
+    ExactGP Model to capture the heterogeneous gaussian process
+
+    Given MXU, M, X, U = MXU
+
+        Xdot = F(X)ᵀU    if M = 1
+        Y = F(X)ᵀ        if M = 0
+    """
     def __init__(self, Xtrain, Utrain, XdotTrain, likelihood, rank=1):
         self.matshape = (1+Utrain.size(-1), Xtrain.size(-1))
         self.decoder, MXUtrain = self.encode_from_XU(Xtrain, Utrain, 1)
@@ -150,23 +201,45 @@ class DynamicsModelExactGP(ExactGP):
         return MultivariateNormal(mean_x, covar_x)
 
 
+def default_device():
+    return 'cuda' if torch.cuda.is_available() else 'cpu'
+
+
 class DynamicModelGP:
-    def __init__(self):
+    """
+    Scikit like wrapper around learning and predicting GaussianProcessRegressor
+
+    Usage:
+    F(X), COV(F(X)) = DynamicModelGP()
+                        .fit(Xtrain, Utrain, XdotTrain)
+                        .predict(Xtest, return_cov=True)
+    """
+    def __init__(self, device=None, default_device=default_device):
         self.likelihood = None
         self.model = None
+        self.device = device or default_device()
 
-    def fit(self, Xtrain, Utrain, XdotTrain, training_iter = 50, lr=0.1):
+    def fit(self, *args, max_cg_iterations=2000, **kwargs):
+        with warnings.catch_warnings(), \
+              gpsettings.max_cg_iterations(max_cg_iterations):
+            warnings.simplefilter("ignore")
+            return self._fit_with_warnings(*args, **kwargs)
+
+    def _fit_with_warnings(self, Xtrain, Utrain, XdotTrain, training_iter = 50,
+                           lr=0.1):
         # Convert to torch
-        Xtrain = torch.from_numpy(Xtrain).float()
-        Utrain = torch.from_numpy(Utrain).float()
-        XdotTrain = torch.from_numpy(XdotTrain).float()
+        device = self.device
+        Xtrain = torch.from_numpy(Xtrain).float().to(device=device)
+        Utrain = torch.from_numpy(Utrain).float().to(device=device)
+        XdotTrain = torch.from_numpy(XdotTrain).float().to(device=device)
 
         # Initialize model and likelihood
         # Noise model for GPs
-        likelihood = self.likelihood = HeterogeneousGaussianLikelihood()
+        likelihood = self.likelihood = IdentityLikelihood()
         # Actual model
         model = self.model = DynamicsModelExactGP(Xtrain, Utrain,
-                                                  XdotTrain, likelihood)
+                                                  XdotTrain,
+                                                  likelihood).to(device=device)
 
         # Find optimal model hyperparameters
         model.train()
@@ -191,11 +264,12 @@ class DynamicModelGP:
             optimizer.step()
         return self
 
-    def predict(self, Xtest):
-        Xtest = torch.from_numpy(Xtest).float()
+    def predict(self, Xtest, return_cov=True):
+        device = self.device
+        Xtest = torch.from_numpy(Xtest).float().to(device=device)
         # Switch back to eval mode
         if self.model is None or self.likelihood is None:
-            raise RuntimeError("Call train before calling predict_F")
+            raise RuntimeError("Call fit() with training data before calling predict")
 
         self.model.eval()
         self.likelihood.eval()
@@ -204,6 +278,8 @@ class DynamicModelGP:
         _, MXUHtest = self.model.encode_from_XU(Xtest)
         output = self.model(MXUHtest)
 
-        return (output.mean.reshape(-1, *self.model.matshape).detach().numpy(),
-                output.covariance_matrix.detach().numpy())
+        mean, cov = (output.mean.reshape(-1, *self.model.matshape),
+                     output.covariance_matrix)
+        mean_np, cov_np = [arr.detach().cpu().numpy() for arr in (mean, cov)]
+        return (mean_np, cov_np) if return_cov else mean
 

@@ -19,6 +19,7 @@ from gpytorch.likelihoods.noise_models import FixedGaussianNoise
 from gpytorch.means import MultitaskMean, ConstantMean
 from gpytorch.mlls import ExactMarginalLogLikelihood
 from gpytorch.models import ExactGP
+from gpytorch.utils.memoize import cached
 import gpytorch.settings as gpsettings
 
 from bayes_cbf.matrix_variate_multitask_kernel import MatrixVariateIndexKernel, HetergeneousMatrixVariateKernel, prod
@@ -165,25 +166,31 @@ class DynamicsModelExactGP(ExactGP):
         Xdot = F(X)ᵀU    if M = 1
         Y = F(X)ᵀ        if M = 0
     """
-    def __init__(self, Xtrain, Utrain, XdotTrain, likelihood, rank=1):
-        self.matshape = (1+Utrain.size(-1), Xtrain.size(-1))
-        self.decoder, MXUtrain = self.encode_from_XU(Xtrain, Utrain, 1)
-        super(DynamicsModelExactGP, self).__init__(MXUtrain, XdotTrain.reshape(-1),
-                                              likelihood)
+    def __init__(self, x_dim, u_dim, likelihood, rank=1):
+        super().__init__(None, None, likelihood)
+        self.matshape = (1+u_dim, x_dim)
+        self.decoder = CatEncoder(1, x_dim, 1+u_dim)
         self.mean_module = HetergeneousMatrixVariateMean(
             ConstantMean(),
             self.decoder,
             self.matshape)
 
         task_covar = MatrixVariateIndexKernel(
-                IndexKernel(num_tasks=self.matshape[1]),
-                IndexKernel(num_tasks=self.matshape[0]),
-            )
+            IndexKernel(num_tasks=self.matshape[1]),
+            IndexKernel(num_tasks=self.matshape[0]),
+        )
         input_covar = ScaleKernel(RBFKernel())
         self.covar_module = HetergeneousMatrixVariateKernel(
             task_covar,
             input_covar,
             self.decoder)
+
+    def set_train_data(self, Xtrain, Utrain, XdotTrain):
+        assert self.matshape == (1+Utrain.shape[-1], Xtrain.shape[-1])
+        assert Xtrain.shape[-1] == XdotTrain.shape[-1]
+        _, MXUtrain = self.encode_from_XU(Xtrain, Utrain, 1)
+        super().set_train_data(inputs=(MXUtrain,),
+                               targets=(XdotTrain.reshape(-1),), strict=False)
 
     def encode_from_XU(self, Xtrain, Utrain=None, M=0):
         Mtrain = Xtrain.new_full([Xtrain.size(0), 1], M)
@@ -214,10 +221,16 @@ class DynamicModelGP:
                         .fit(Xtrain, Utrain, XdotTrain)
                         .predict(Xtest, return_cov=True)
     """
-    def __init__(self, device=None, default_device=default_device):
-        self.likelihood = None
-        self.model = None
+    def __init__(self, x_dim, u_dim, device=None, default_device=default_device):
         self.device = device or default_device()
+
+        # Initialize model and likelihood
+        # Noise model for GPs
+        self.likelihood = IdentityLikelihood()
+        # Actual model
+        self.model = DynamicsModelExactGP(
+            x_dim, u_dim, self.likelihood
+        ).to(device=self.device)
 
     def fit(self, *args, max_cg_iterations=2000, **kwargs):
         with warnings.catch_warnings(), \
@@ -227,23 +240,27 @@ class DynamicModelGP:
 
     def _fit_with_warnings(self, Xtrain, Utrain, XdotTrain, training_iter = 50,
                            lr=0.1):
-        # Convert to torch
+        if Xtrain.shape[0] == 0:
+            # Do nothing if no data
+            return self
+
         device = self.device
+        model = self.model
+        likelihood = self.likelihood
+
+        # Convert to torch
         Xtrain = torch.from_numpy(Xtrain).float().to(device=device)
         Utrain = torch.from_numpy(Utrain).float().to(device=device)
         XdotTrain = torch.from_numpy(XdotTrain).float().to(device=device)
 
-        # Initialize model and likelihood
-        # Noise model for GPs
-        likelihood = self.likelihood = IdentityLikelihood()
-        # Actual model
-        model = self.model = DynamicsModelExactGP(Xtrain, Utrain,
-                                                  XdotTrain,
-                                                  likelihood).to(device=device)
+        model.set_train_data(Xtrain, Utrain, XdotTrain)
 
-        # Find optimal model hyperparameters
+        # Set in train mode
         model.train()
         likelihood.train()
+
+        # Find optimal model hyperparameters
+
 
         # Use the adam optimizer
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -271,6 +288,7 @@ class DynamicModelGP:
         if self.model is None or self.likelihood is None:
             raise RuntimeError("Call fit() with training data before calling predict")
 
+        # Set in eval mode
         self.model.eval()
         self.likelihood.eval()
 

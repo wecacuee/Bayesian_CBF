@@ -5,6 +5,7 @@ from numpy import cos, sin
 #plot the result
 import matplotlib.pyplot as plt
 from collections import namedtuple
+from functools import partial
 
 from bayes_cbf.matrix_variate_multitask_model import DynamicModelGP
 
@@ -38,7 +39,7 @@ def env_pendulum(theta0,omega0,tau,m,g,l,numSteps, control=control_trivial):
     for i in range(numSteps):
         omega_old = omega
         theta_old = theta
-        u= control(theta, omega, m=m, g=g, l=l)
+        u= control(theta, omega)
         # update the values
         omega = omega_old - (g/l)*sin(theta_old)*tau+(u/(m*l))*tau
         theta = theta_old + omega*tau
@@ -90,22 +91,10 @@ def run_pendulum_experiment(#parameters
         numSteps=7000,
         control=control_trivial):
     damge_perc,time_vec,theta_vec,omega_vec,u_vec = env_pendulum(
-        theta0,omega0,tau,m,g,l,numSteps, control=control)
+        theta0,omega0,tau,m,g,l,numSteps, control=partial(control, m=m, g=g, l=l))
     plot_results(time_vec, omega_vec, theta_vec, u_vec)
     return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
 
-def learn_dynamics_gpytorch(
-        theta0=5*np.pi/6,
-        omega0=-0.01,
-        tau=0.01,
-        m=1,
-        g=10,
-        l=1,
-        numSteps=5000):
-
-    from gpytorch_fit import GPTorch
-    damge_perc,time_vec,theta_vec,omega_vec,u_vec = env_pendulum(
-        theta0,omega0,tau,m,g,l,numSteps, control=control_trivial)
 
 def learn_dynamics(
         theta0=5*np.pi/6,
@@ -128,7 +117,7 @@ def learn_dynamics(
     # where F(xₜ) = [f(xₜ), g(xₜ)]
 
     damge_perc,time_vec,theta_vec,omega_vec,u_vec = env_pendulum(
-        theta0,omega0,tau,m,g,l,numSteps, control=control_trivial)
+        theta0,omega0,tau,m,g,l,numSteps, control=partial(control_trivial, m=m, g=g, l=l))
     # X.shape = Nx2
     X = np.vstack((theta_vec, omega_vec)).T
     # XU.shape = Nx3
@@ -150,19 +139,19 @@ def learn_dynamics(
     Utrain = U[shuffled_range, :]
     #gp = GaussianProcessRegressor(kernel=kernel_xu,
     #                              alpha=1e6).fit(Z_shuffled, Y_shuffled)
-    dgp = DynamicModelGP().fit(Xtrain, Utrain, XdotTrain)
+    dgp = DynamicModelGP().fit(Xtrain, Utrain, XdotTrain, lr=0.01)
 
     # within train set
     FX_99, FXcov_99 = dgp.predict(X[98:99,:], return_cov=True)
     dX_99 = FX_99[0, ...].T @ UH[98, :]
     print("Train sample: ", dX_99, dX[99], FXcov_99)
-    assert np.allclose(dX[99], dX_99)
+    assert np.allclose(dX[99], dX_99, rtol=0.01, atol=0.01)
 
     # out of train set
     FXNp1, FXNp1cov = dgp.predict(X[N+1:N+2,:], return_cov=True)
     dX_Np1 = FXNp1[0, ...].T @ UH[N+1, :]
-    print("Test sample: ", dX_Np1, dX_Np1, cov)
-    assert np.allclose(dX[N+1], dX_Np1)
+    print("Test sample: ", dX_Np1, dX_Np1, FXNp1cov)
+    assert np.allclose(dX[N+1], dX_Np1, rtol=0.01, atol=0.01)
     return dgp, dX, XU
 
 
@@ -216,10 +205,56 @@ def control_cbf_clf(theta, w,
         return (gamma_col*(cos(delta_col)-cos(theta-theta_c))*w**2
                 + w**3*sin(theta-theta_c)
                 - (2*g*w*sin(theta)*(cos(delta_col)-cos(theta-theta_c)))/l)
+
     return control_QP_cbf_clf(theta, w,
                               ctrl_aff_clf=ControlAffine(A_clf, b_clf),
                               ctrl_aff_cbfs=[ControlAffine(A_sr, b_sr),
                                              ControlAffine(A_col, b_col)])
+
+
+def control_cbf_clf_learned(theta_, w_,
+                            theta_c=np.pi/4,
+                            c=1,
+                            gamma_sr=1,
+                            delta_sr=10,
+                            gamma_col=1,
+                            delta_col=np.pi/8):
+    def f_g(theta, w):
+        X = np.array([[theta, w]])
+        FXT = dgp.predict(X, return_cov=False)
+        fx = FXT[0, 0, :]
+        gx = FXT[0, 1:, :].T
+        return fx, gx
+
+    def V_clf(theta, w):
+        return w**2 / 2 + (1-np.cos(theta))
+
+    def grad_V_clf(theta, w):
+        return np.array([np.sin(theta), w])
+
+    def A_clf(theta, w):
+        return grad_V_clf(theta, w) @ f_g(theta, w)[1]
+
+    def b_clf(theta, w):
+        return - grad_V_clf(theta, w) @ f_g(theta, w)[0] - c * V_clf(theta, w)
+
+
+    def h_col(theta, w):
+        return (np.cos(delta_col) - np.cos(theta - theta_c))*w**2
+
+    def grad_h_col(theta, w):
+        return np.array([w**2*np.sin(theta - theta_c),
+                         2*w*(np.cos(delta_col) - np.cos(theta - theta_c))])
+
+    def A_col(theta, w):
+        return grad_h_col @ f_g(theta, w)[1]
+
+    def b_col(theta, w):
+        return - grad_h_col @ f_g(theta, w)[0] - gamma_col * h_col
+
+    return control_QP_cbf_clf(theta_, w_,
+                              ctrl_aff_clf=ControlAffine(A_clf, b_clf),
+                              ctrl_aff_cbfs=[ControlAffine(A_col, b_col)])
 
 
 def control_QP_cbf_clf(theta, w,

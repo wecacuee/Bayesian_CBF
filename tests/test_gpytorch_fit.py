@@ -82,7 +82,7 @@ def test_GP_train_predict(n=2, m=3,
                                  for Mat in (X, U, Xdot)]
 
     # Call the training routine
-    dgp = DynamicModelGP()
+    dgp = DynamicModelGP(Xtrain.shape[-1], Utrain.shape[-1])
     dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50, lr=0.01)
 
     # Test data

@@ -190,7 +190,7 @@ class DynamicsModelExactGP(ExactGP):
         assert Xtrain.shape[-1] == XdotTrain.shape[-1]
         _, MXUtrain = self.encode_from_XU(Xtrain, Utrain, 1)
         super().set_train_data(inputs=(MXUtrain,),
-                               targets=(XdotTrain.reshape(-1),), strict=False)
+                               targets=XdotTrain.reshape(-1), strict=False)
 
     def encode_from_XU(self, Xtrain, Utrain=None, M=0):
         Mtrain = Xtrain.new_full([Xtrain.size(0), 1], M)

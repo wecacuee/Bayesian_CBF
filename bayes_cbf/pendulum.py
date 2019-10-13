@@ -8,7 +8,7 @@ from numpy import cos, sin
 #plot the result
 import matplotlib.pyplot as plt
 
-from bayes_cbf.matrix_variate_multitask_model import DynamicModelGP
+from bayes_cbf.dynamics_model import DynamicModelGP
 
 def control_trivial(theta, w, m=None, l=None, g=None):
     assert m is not None
@@ -260,6 +260,12 @@ class ControlCBFCLFLearned:
         gx = FXTmean[0, 1:, :].T
         return fx, gx
 
+    def f(self, theta, w):
+        return self.f_g(theta, w)[0]
+
+    def g(self, theta, w):
+        return self.f_g(theta, w)[1]
+
     def V_clf(self, theta, w):
         return w**2 / 2 + (1-np.cos(theta))
 
@@ -267,11 +273,11 @@ class ControlCBFCLFLearned:
         return np.array([np.sin(theta), w])
 
     def A_clf(self, theta, w):
-        return self.grad_V_clf(theta, w) @ self.f_g(theta, w)[1]
+        return self.grad_V_clf(theta, w) @ self.g(theta, w)
 
     def b_clf(self, theta, w):
         c = self.c
-        return - self.grad_V_clf(theta, w) @ self.f_g(theta, w)[0] - c * self.V_clf(theta, w)
+        return - self.grad_V_clf(theta, w) @ self.f(theta, w) - c * self.V_clf(theta, w)
 
 
     def h_col(self, theta, w):
@@ -286,11 +292,11 @@ class ControlCBFCLFLearned:
                         2*w*(np.cos(delta_col) - np.cos(theta - theta_c))])
 
     def A_col(self, theta, w):
-        return self.grad_h_col(theta, w) @ self.f_g(theta, w)[1]
+        return self.grad_h_col(theta, w) @ self.g(theta, w)
 
     def b_col(self, theta, w):
         gamma_col = self.gamma_col
-        return - self.grad_h_col(theta, w) @ self.f_g(theta, w)[0] - gamma_col * self.h_col(theta, w)
+        return - self.grad_h_col(theta, w) @ self.f(theta, w) - gamma_col * self.h_col(theta, w)
 
     def train(self):
         if not len(self.Xtrain):
@@ -346,10 +352,13 @@ def control_QP_cbf_clf(theta, w,
         P_rho = np.array([[50., 0],
                           [0, 1000.]])
         q_rho = np.array([0., 0.])
-        u_rho = cvxopt_solve_qp(P_rho, q_rho,
-                                G=A_total_rho,
-                                h=b_total)
+        try:
+            u_rho = cvxopt_solve_qp(P_rho, q_rho,
+                                    G=A_total_rho,
+                                    h=b_total)
 
+        except ValueError:
+            u_rho = np.zeros_like(q_rho)
     u = u_rho[0]
     return u
 

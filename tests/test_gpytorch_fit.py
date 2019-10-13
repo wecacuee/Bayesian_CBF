@@ -5,7 +5,7 @@ import torch
 import pytest
 import gpytorch.settings as gpsettings
 
-from bayes_cbf.matrix_variate_multitask_model import DynamicModelGP
+from bayes_cbf.dynamics_model import DynamicModelGP
 
 
 def sample_generator_trajectory(f, g, D, n, m, dt=0.001):
@@ -80,14 +80,15 @@ def test_GP_train_predict(n=2, m=3,
     # Train data
     Xtrain, Utrain, XdotTrain = [Mat[train_indices, :]
                                  for Mat in (X, U, Xdot)]
-
-    # Call the training routine
-    dgp = DynamicModelGP(Xtrain.shape[-1], Utrain.shape[-1])
-    dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50, lr=0.01)
-
     # Test data
     Xtest, Utest, XdotTest = [Mat[test_indices, :]
                               for Mat in (X, U, Xdot)]
+
+    # Call the training routine
+    dgp = DynamicModelGP(Xtrain.shape[-1], Utrain.shape[-1])
+    # Test prior
+    _ = dgp.predict(Xtest, return_cov=False)
+    dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50, lr=0.01)
 
     UHtest = np.concatenate((np.ones((Utest.shape[0], 1)), Utest), axis=1)
     if deterministic:

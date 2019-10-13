@@ -14,7 +14,10 @@ setup(name="bayes_cbf",
       packages=find_packages(),
       tests_require=['pytest', 'scipy'],
       cmdclass = {'test': Pytest},
-      install_requires=['matplotlib', 'cvxopt', 'gpytorch', 'torch',
+      install_requires=['matplotlib', 'cvxopt',
+                        #'gpytorch==fractional-outputs-per-inputs',
+                        'gpytorch @ git+https://github.com/wecacuee/gpytorch.git@fractional-outputs-per-input',
+                        'torch',
                         'torch-vision', 'pyro-ppl'],
       entry_points={
           'console_scripts': [
@@ -22,5 +25,6 @@ setup(name="bayes_cbf",
               'run_pendulum_control_cbf_clf = bayes_cbf.pendulum:run_pendulum_control_cbf_clf',
               'pendulum_learn_dynamics = bayes_cbf.pendulum:learn_dynamics',
               'pendulum_control_online_learning = bayes_cbf.pendulum:run_pendulum_control_online_learning'
+
           ]}
 )

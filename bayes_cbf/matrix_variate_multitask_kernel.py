@@ -82,8 +82,7 @@ class MatrixVariateKernel(Kernel):
         rank (int):
             Rank of index kernel to use for task covariance matrix.
         task_covar_prior (:obj:`gpytorch.priors.Prior`):
-            Prior to use for task kernel. See :class:`gpytorch.kernels.IndexKernel` for details.
-    """
+            Prior to use for task kernel. See :class:`gpytorch.kernels.IndexKernel` for details."""
     @property
     def num_tasks(self):
         return prod(self.task_covar_module.matshape)
@@ -100,14 +99,34 @@ class MatrixVariateKernel(Kernel):
 class HetergeneousMatrixVariateKernel(MatrixVariateKernel):
     def num_outputs_per_input(self, mxu1, mxu2):
         M1, X1, U1 = self.decoder.decode(mxu1)
-        M2, X2, U2 = self.decoder.decode(mxu2)
 
         M1s = M1[..., 0]
         idxs1 = torch.nonzero(M1s - torch.ones_like(M1s))
         idxend1 = torch.min(idxs1).item() if idxs1.numel() else M1s.size(-1)
+        train_size = idxend1 * X1.shape[-1]
+        test_size = (M1s.size(-1) - idxend1) * prod(self.task_covar_module.matshape)
+        return (train_size +  test_size) / M1s.size(-1)
 
-        return (idxend1 * X1.shape[-1] + (M1s.size(-1) - idxend1) * prod(
-            self.task_covar_module.matshape) ) // M1s.size(-1)
+    def kernel1(self, Kxx, H1, H2, V, U):
+        # If M1, M2 = (1, 1)
+        #    H₁ᵀ [ K ⊗ B ] H₂ ⊗ A
+        Kij_xx_11 = KroneckerProductLazyTensor(
+            H1 @ KroneckerProductLazyTensor(Kxx, V) @ H2.t(), U)
+        return Kij_xx_11
+
+    def kernel2(self, Kxx, V, U):
+        # if M1, M2 = (0, 0)
+        #    [ k_** ⊗ B ] ⊗ A
+        Kij_xx_22 = KroneckerProductLazyTensor(
+            KroneckerProductLazyTensor(Kxx, V), U)
+        return Kij_xx_22
+
+    def correlation_kernel_12(self, Kxx, H1, V, U):
+        # elif M1, M2 = (1, 0)
+        #    H₁ᵀ [ k_x* ⊗ B ] ⊗ A
+        Kij_xx_12 = KroneckerProductLazyTensor(
+            H1 @ KroneckerProductLazyTensor(Kxx, V) , U)
+        return Kij_xx_12
 
     def mask_dependent_covar(self, M1s, U1, M2s, U2, covar_xx):
         # Assume M1s, M2s sorted descending
@@ -126,43 +145,32 @@ class HetergeneousMatrixVariateKernel(MatrixVariateKernel):
         assert (M2s[..., idxend2:] == 0).all()
         U2s = U2[..., :idxend2, :]
 
-        H1 = BlockDiagLazyTensor(NonLazyTensor(U1s.unsqueeze(1)))
-        #if gpsettings.debug.on(): H1.evaluate()
-        H2 = BlockDiagLazyTensor(NonLazyTensor(U2s.unsqueeze(1)))
-        #if gpsettings.debug.on(): H2.evaluate()
-
-        Kxx = ensurelazy(covar_xx)
-        # If M1, M2 = (1, 1)
-        #    H₁ᵀ [ K ⊗ B ] H₂ ⊗ A
         V = ensurelazy(self.task_covar_module.V.covar_matrix)
         U = ensurelazy(self.task_covar_module.U.covar_matrix)
-        Kij_xx_11 = KroneckerProductLazyTensor(
-            H1 @ KroneckerProductLazyTensor(Kxx[:idxend1, :idxend2], V) @ H2.t(), U)
-        #Kij_xx_11.evaluate()
+        Kxx = ensurelazy(covar_xx)
+        k_xx_22 = Kxx[idxend1:, idxend2:]
+        if k_xx_22.numel():
+            Kij_xx_22 = self.kernel2(k_xx_22, V, U)
 
-        if idxend1 < M1s.size(-1):
-            # elif M1, M2 = (1, 0)
-            #    H₁ᵀ [ k_x* ⊗ B ] ⊗ A
+        k_xx_11 = Kxx[:idxend1, :idxend2]
+        if k_xx_11.numel():
+            H1 = BlockDiagLazyTensor(NonLazyTensor(U1s.unsqueeze(1)))
+            H2 = BlockDiagLazyTensor(NonLazyTensor(U2s.unsqueeze(1)))
+            Kij_xx_11 = self.kernel1(k_xx_11, H1, H2, V, U)
+
+        if k_xx_11.numel() and k_xx_22.numel():
             k_xx_12 = Kxx[:idxend1, idxend2:]
-            Kij_xx_12 = KroneckerProductLazyTensor(
-                H1 @ KroneckerProductLazyTensor(k_xx_12, V) , U)
-            #Kij_xx_12.evaluate()
-
-            # elif M1, M2 = (0, 1)
-            #    [ k_x* ⊗ B ] H₂ ⊗ A
-            Kij_xx_21 = Kij_xx_12.t()
-            # else M1, M2 = (0, 0)
-            #    [ k_** ⊗ B ] ⊗ A
-            k_xx_22 = Kxx[idxend1:, idxend2:]
-            Kij_xx_22 = KroneckerProductLazyTensor(
-                KroneckerProductLazyTensor(k_xx_22, V), U)
-            #Kij_xx_22.evaluate()
-            out = lazycat([lazycat([Kij_xx_11, Kij_xx_12], dim=1),
-                            lazycat([Kij_xx_21, Kij_xx_22], dim=1)], dim=0)
-            #out.evaluate()
-            return out
-
-        return Kij_xx_11
+            Kij_xx_12 = self.correlation_kernel_12(k_xx_12, H1, V, U)
+            k_xx_21 = Kxx[idxend1:, :idxend2]
+            Kij_xx_21 = self.correlation_kernel_12(k_xx_21.t(), H2, V, U).t()
+            return lazycat([lazycat([Kij_xx_11, Kij_xx_12], dim=1),
+                            lazycat([Kij_xx_21, Kij_xx_22], dim=1)],
+                           dim=0)
+        elif k_xx_22.numel():
+            return Kij_xx_22
+        else:
+            assert k_xx_11.numel()
+            return Kij_xx_11
 
 
     def forward(self, mxu1, mxu2, diag=False, last_dim_is_batch=False, **params):

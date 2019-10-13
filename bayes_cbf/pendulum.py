@@ -255,7 +255,7 @@ class ControlCBFCLFLearned:
 
     def f_g(self, theta, w):
         X = np.array([[theta, w]])
-        FXTmean, FXTcov = self.dgp.predict(X, return_cov=False)
+        FXTmean = self.dgp.predict(X, return_cov=False)
         fx = FXTmean[0, 0, :]
         gx = FXTmean[0, 1:, :].T
         return fx, gx

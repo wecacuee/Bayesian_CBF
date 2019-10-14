@@ -1,3 +1,4 @@
+import os.path as osp
 import warnings
 
 import numpy as np
@@ -29,12 +30,11 @@ def sample_generator_independent(f, g, D, n, m):
         Xdot[i, :] = f(X[i, :]) + g(X[i, :]) @ U[i, :]
     return Xdot, X, U
 
-
-def test_GP_train_predict(n=2, m=3,
+def test_GP_train_predict(n=2, m=1,
                           deterministic=True,
                           sample_generator=sample_generator_trajectory):
     #chosen_seed = np.random.randint(100000)
-    chosen_seed = 18945
+    chosen_seed = 52648
     print(chosen_seed)
     np.random.seed(chosen_seed)
     torch.manual_seed(chosen_seed)
@@ -68,7 +68,7 @@ def test_GP_train_predict(n=2, m=3,
     g.B = B
 
     # Collect training data
-    D = 200
+    D = 20
     Xdot, X, U = sample_generator(f, g, D, n, m)
 
     # Test train split
@@ -108,5 +108,24 @@ def test_GP_train_predict(n=2, m=3,
     assert XdotGot == pytest.approx(XdotTest, rel=0.05)
 
 
+def relpath(path,
+            root=osp.dirname(__file__) or '.'):
+    return osp.join(root, path)
+
+
+def test_control_affine_gp(
+        datasrc=relpath('data/Xtrain_Utrain_X_interpolate_lazy_tensor_error.npz')):
+    loaded_data = np.load(datasrc)
+    Xtrain = loaded_data['Xtrain']
+    Utrain = loaded_data['Utrain']
+    Xtest = loaded_data['X']
+    XdotTrain = Xtrain[1:, :] - Xtrain[:-1, :]
+    dgp = DynamicModelGP(Xtrain.shape[-1], Utrain.shape[-1])
+    dgp.fit(Xtrain[:-1, :], Utrain, XdotTrain)
+    dgp.predict(Xtest)
+
+
+
 if __name__ == '__main__':
     test_GP_train_predict()
+    #test_control_affine_gp()

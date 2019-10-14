@@ -60,7 +60,7 @@ def ensurelazy(X):
 
 
 class MatrixVariateKernel(Kernel):
-    """
+    r"""
     Kernel supporting Kronecker style matrix variate Gaussian processes (where every
     data point is evaluated at every task).
 
@@ -105,9 +105,13 @@ class HetergeneousMatrixVariateKernel(MatrixVariateKernel):
         idxend1 = torch.min(idxs1).item() if idxs1.numel() else M1s.size(-1)
         train_size = idxend1 * X1.shape[-1]
         test_size = (M1s.size(-1) - idxend1) * prod(self.task_covar_module.matshape)
-        return (train_size +  test_size) / M1s.size(-1)
+        ret = (train_size +  test_size) // M1s.size(-1)
+        ret_float = (train_size + test_size) / M1s.size(-1)
+        assert ret == ret_float
+        return ret
 
     def kernel1(self, Kxx, H1, H2, V, U):
+        # TODO: Make this a separate module
         # If M1, M2 = (1, 1)
         #    H₁ᵀ [ K ⊗ B ] H₂ ⊗ A
         Kij_xx_11 = KroneckerProductLazyTensor(
@@ -115,6 +119,7 @@ class HetergeneousMatrixVariateKernel(MatrixVariateKernel):
         return Kij_xx_11
 
     def kernel2(self, Kxx, V, U):
+        # TODO: Make this a separate module
         # if M1, M2 = (0, 0)
         #    [ k_** ⊗ B ] ⊗ A
         Kij_xx_22 = KroneckerProductLazyTensor(
@@ -122,6 +127,7 @@ class HetergeneousMatrixVariateKernel(MatrixVariateKernel):
         return Kij_xx_22
 
     def correlation_kernel_12(self, Kxx, H1, V, U):
+        # TODO: Make this a separate module
         # elif M1, M2 = (1, 0)
         #    H₁ᵀ [ k_x* ⊗ B ] ⊗ A
         Kij_xx_12 = KroneckerProductLazyTensor(
@@ -160,12 +166,18 @@ class HetergeneousMatrixVariateKernel(MatrixVariateKernel):
 
         if k_xx_11.numel() and k_xx_22.numel():
             k_xx_12 = Kxx[:idxend1, idxend2:]
+            assert k_xx_12.numel()
             Kij_xx_12 = self.correlation_kernel_12(k_xx_12, H1, V, U)
+
             k_xx_21 = Kxx[idxend1:, :idxend2]
+            assert k_xx_21.numel()
             Kij_xx_21 = self.correlation_kernel_12(k_xx_21.t(), H2, V, U).t()
-            return lazycat([lazycat([Kij_xx_11, Kij_xx_12], dim=1),
+
+            Kij_xx = lazycat([lazycat([Kij_xx_11, Kij_xx_12], dim=1),
                             lazycat([Kij_xx_21, Kij_xx_22], dim=1)],
-                           dim=0)
+                             dim=0)
+            #Kij_xx.evaluate()
+            return Kij_xx
         elif k_xx_22.numel():
             return Kij_xx_22
         else:

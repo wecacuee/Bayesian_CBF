@@ -32,11 +32,13 @@ class HetergeneousMatrixVariateMean(MultitaskMean):
         self.matshape = matshape
 
     def mean1(self, UH, mu):
+        # TODO: Make this a separate module
         XdotMean = UH.unsqueeze(-2) @ mu # D x n
         output = XdotMean.reshape(-1)
         return output
 
     def mean2(self, mu):
+        # TODO: Make this a separate module
         return mu.reshape(-1)
 
     def forward(self, MXU):

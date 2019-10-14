@@ -17,6 +17,7 @@ setup(name="bayes_cbf",
       install_requires=['matplotlib', 'cvxopt',
                         #'gpytorch==fractional-outputs-per-inputs',
                         'gpytorch @ git+https://github.com/wecacuee/gpytorch.git@fractional-outputs-per-input',
+                        #'gpytorch==v0.3.5',
                         'torch',
                         'torch-vision', 'pyro-ppl'],
       entry_points={

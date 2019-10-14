@@ -301,6 +301,7 @@ class ControlCBFCLFLearned:
     def train(self):
         if not len(self.Xtrain):
             return
+        assert len(self.Xtrain) == len(self.Utrain), "Call train when Xtrain and Utrain are balanced"
         Xtrain = np.array(self.Xtrain)
         Utrain = np.array(self.Utrain)
         XdotTrain = Xtrain[1:, :] - Xtrain[:-1, :]
@@ -358,7 +359,7 @@ def control_QP_cbf_clf(theta, w,
                                     h=b_total)
 
         except ValueError:
-            u_rho = np.zeros_like(q_rho)
+            u_rho = np.random.rand(*q_rho.shape)
     u = u_rho[0]
     return u
 

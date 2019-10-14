@@ -125,14 +125,14 @@ class DynamicsModelExactGP(ExactGP):
             self.decoder,
             self.matshape)
 
-        task_covar = MatrixVariateIndexKernel(
+        self.task_covar = MatrixVariateIndexKernel(
             IndexKernel(num_tasks=self.matshape[1]),
             IndexKernel(num_tasks=self.matshape[0]),
         )
-        input_covar = ScaleKernel(RBFKernel())
+        self.input_covar = ScaleKernel(RBFKernel())
         self.covar_module = HetergeneousMatrixVariateKernel(
-            task_covar,
-            input_covar,
+            self.task_covar,
+            self.input_covar,
             self.decoder)
 
     def set_train_data(self, Xtrain, Utrain, XdotTrain):

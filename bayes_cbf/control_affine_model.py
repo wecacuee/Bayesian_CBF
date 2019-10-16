@@ -107,7 +107,7 @@ class IdentityLikelihood(_GaussianLikelihoodBase):
 
 
 
-class DynamicsModelExactGP(ExactGP):
+class ControlAffineExactGP(ExactGP):
     """
     ExactGP Model to capture the heterogeneous gaussian process
 
@@ -162,12 +162,12 @@ def default_device():
     return 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
-class DynamicModelGP:
+class ControlAffineRegressor:
     """
     Scikit like wrapper around learning and predicting GaussianProcessRegressor
 
     Usage:
-    F(X), COV(F(X)) = DynamicModelGP()
+    F(X), COV(F(X)) = ControlAffineRegressor()
                         .fit(Xtrain, Utrain, XdotTrain)
                         .predict(Xtest, return_cov=True)
     """
@@ -178,7 +178,7 @@ class DynamicModelGP:
         # Noise model for GPs
         self.likelihood = IdentityLikelihood()
         # Actual model
-        self.model = DynamicsModelExactGP(
+        self.model = ControlAffineExactGP(
             x_dim, u_dim, self.likelihood
         ).to(device=self.device)
 
@@ -214,6 +214,10 @@ class DynamicModelGP:
 
         # Use the adam optimizer
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(
+            optimizer,
+            milestones=(torch.tensor([0.3, 0.6, 0.8, 0.90])*training_iter).tolist())
+
 
         # "Loss" for GPs - the marginal log likelihood
         # num_data refers to the amount of training data
@@ -227,8 +231,11 @@ class DynamicModelGP:
             # Calc loss and backprop gradients
             loss = -mll(output, XdotTrain.reshape(-1))
             loss.backward()
-            print('Iter %d/%d - Loss: %.3f' % (i + 1, training_iter, loss.item()))
+            print('Iter %d/%d - Loss: %.3f, lr: %.3g' % (i + 1, training_iter,
+                                                         loss.item(),
+                                                         scheduler.get_lr()[0]))
             optimizer.step()
+            scheduler.step()
         return self
 
     def predict(self, Xtest, return_cov=True):

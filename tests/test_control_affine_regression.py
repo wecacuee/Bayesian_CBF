@@ -6,7 +6,7 @@ import torch
 import pytest
 import gpytorch.settings as gpsettings
 
-from bayes_cbf.dynamics_model import DynamicModelGP
+from bayes_cbf.control_affine_model import ControlAffineRegressor
 
 
 def sample_generator_trajectory(f, g, D, n, m, dt=0.001):
@@ -85,7 +85,7 @@ def test_GP_train_predict(n=2, m=1,
                               for Mat in (X, U, Xdot)]
 
     # Call the training routine
-    dgp = DynamicModelGP(Xtrain.shape[-1], Utrain.shape[-1])
+    dgp = ControlAffineRegressor(Xtrain.shape[-1], Utrain.shape[-1])
     # Test prior
     _ = dgp.predict(Xtest, return_cov=False)
     dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50, lr=0.01)
@@ -120,7 +120,7 @@ def test_control_affine_gp(
     Utrain = loaded_data['Utrain']
     Xtest = loaded_data['X']
     XdotTrain = Xtrain[1:, :] - Xtrain[:-1, :]
-    dgp = DynamicModelGP(Xtrain.shape[-1], Utrain.shape[-1])
+    dgp = ControlAffineRegressor(Xtrain.shape[-1], Utrain.shape[-1])
     dgp.fit(Xtrain[:-1, :], Utrain, XdotTrain)
     dgp.predict(Xtest)
 

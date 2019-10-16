@@ -8,7 +8,7 @@ from numpy import cos, sin
 #plot the result
 import matplotlib.pyplot as plt
 
-from bayes_cbf.dynamics_model import DynamicModelGP
+from bayes_cbf.control_affine_model import ControlAffineRegressor
 
 def control_trivial(theta, w, m=None, l=None, g=None):
     assert m is not None
@@ -143,7 +143,7 @@ def learn_dynamics(
     Utrain = U[shuffled_range, :]
     #gp = GaussianProcessRegressor(kernel=kernel_xu,
     #                              alpha=1e6).fit(Z_shuffled, Y_shuffled)
-    dgp = DynamicModelGP(Xtrain.shape[-1], Utrain.shape[-1]
+    dgp = ControlAffineRegressor(Xtrain.shape[-1], Utrain.shape[-1]
              ).fit(Xtrain, Utrain, XdotTrain, lr=0.01)
 
     # within train set
@@ -247,7 +247,7 @@ class ControlCBFCLFLearned:
                  delta_sr=10,
                  gamma_col=1,
                  delta_col=np.pi/8,
-                 train_every_n_steps=10
+                 train_every_n_steps=50
     ):
         self.Xtrain = []
         self.Utrain = []

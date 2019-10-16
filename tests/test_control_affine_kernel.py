@@ -8,7 +8,7 @@ from scipy.linalg import block_diag
 from gpytorch.kernels import Kernel
 
 from bayes_cbf.matrix_variate_multitask_kernel import HetergeneousMatrixVariateKernel, MatrixVariateIndexKernel
-from bayes_cbf.dynamics_model import CatEncoder
+from bayes_cbf.control_affine_model import CatEncoder
 
 
 class ConstantIndexKernel(Kernel):

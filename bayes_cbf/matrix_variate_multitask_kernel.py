@@ -107,8 +107,7 @@ class HetergeneousMatrixVariateKernel(MatrixVariateKernel):
         test_size = (M1s.size(-1) - idxend1) * prod(self.task_covar_module.matshape)
         ret = (train_size +  test_size) // M1s.size(-1)
         ret_float = (train_size + test_size) / M1s.size(-1)
-        assert ret == ret_float
-        return ret
+        return ret_float
 
     def kernel1(self, Kxx, H1, H2, V, U):
         # TODO: Make this a separate module

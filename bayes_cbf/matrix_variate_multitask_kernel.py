@@ -185,6 +185,8 @@ class HetergeneousMatrixVariateKernel(MatrixVariateKernel):
 
 
     def forward(self, mxu1, mxu2, diag=False, last_dim_is_batch=False, **params):
+        assert not torch.isnan(mxu1).any()
+        assert not torch.isnan(mxu2).any()
         M1, X1, U1 = self.decoder.decode(mxu1)
         M2, X2, U2 = self.decoder.decode(mxu2)
 
@@ -192,5 +194,11 @@ class HetergeneousMatrixVariateKernel(MatrixVariateKernel):
             raise RuntimeError("MultitaskKernel does not accept the last_dim_is_batch argument.")
         #covar_i = self.mask_dependent_covar(self, M1, U1, M2, U2)
         covar_x = lazify(self.data_covar_module.forward(X1, X2, **params))
+        #if torch.rand(1).item() < 0.1:
+        #    for name, value in self.data_covar_module.named_parameters():
+        #            print(name, value)
+
+        for name, value in self.data_covar_module.named_parameters():
+            assert not torch.isnan(value).any()
         res = self.mask_dependent_covar(M1, U1, M2, U2, covar_x)
         return res.diag() if diag else res

@@ -42,6 +42,7 @@ class HetergeneousMatrixVariateMean(MultitaskMean):
         return mu.reshape(-1)
 
     def forward(self, MXU):
+        assert not torch.isnan(MXU).any()
         B = MXU.shape[:-1]
 
         Ms, _, UH = self.decoder.decode(MXU)
@@ -51,6 +52,7 @@ class HetergeneousMatrixVariateMean(MultitaskMean):
         idxend = torch.min(idxs) if idxs.numel() else Ms.size(-1)
         mu = torch.cat([sub_mean(MXU).unsqueeze(-1)
                         for sub_mean in self.base_means], dim=-1)
+        assert not torch.isnan(mu).any()
         mu  = mu.reshape(-1, *self.matshape)
         output = None
         if idxend != 0:

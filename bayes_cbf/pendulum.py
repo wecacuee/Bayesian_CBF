@@ -1,4 +1,8 @@
 # stable pendulum
+import logging
+LOG = logging.getLogger(__name__)
+LOG.setLevel(logging.INFO)
+
 import inspect
 from collections import namedtuple
 from functools import partial, wraps
@@ -10,6 +14,7 @@ import matplotlib.pyplot as plt
 
 from bayes_cbf.control_affine_model import ControlAffineRegressor
 
+
 def control_trivial(theta, w, m=None, l=None, g=None):
     assert m is not None
     assert l is not None
@@ -18,42 +23,87 @@ def control_trivial(theta, w, m=None, l=None, g=None):
     return u
 
 
-def env_pendulum(theta0,omega0,tau,m,g,l,numSteps, controller=control_trivial):
+def control_random(theta, w, m=None, l=None, g=None):
+    assert m is not None
+    assert l is not None
+    assert g is not None
+    return 0.005 * m * g *np.random.rand() + m*g*sin(theta)
 
 
-    # initialize vectors
-    time_vec = np.zeros(numSteps)
-    theta_vec = np.zeros(numSteps)
-    omega_vec = np.zeros(numSteps)
-    u_vec = np.zeros(numSteps)
-    #damage indicator
-    damage_vec = np.zeros(numSteps)
+def plot_2D_f_func(f_func,
+                   axes_gen = lambda FX: plt.subplots(1, FX.shape[-1])[1],
+                   theta_range = slice(-np.pi, np.pi, np.pi/20),
+                   w_range = slice(-np.pi, np.pi,np.pi/20),
+                   axtitle="f(x)[{i}]"):
+    # Plot true f(x)
+    theta_w_grid = np.mgrid[theta_range, w_range]
+    FX = f_func(theta_w_grid.transpose(1, 2, 0))
+    axs = axes_gen(FX)
+    for i in range(FX.shape[-1]):
+        ctf0 = axs[i].contourf(theta_w_grid[0, ...], theta_w_grid[1, ...],
+                               FX[:, :, i])
+        plt.colorbar(ctf0, ax=axs[i])
+        axs[i].set_title(axtitle.format(i=i))
+        axs[i].set_ylabel("ω")
+        axs[i].set_xlabel("θ")
 
-    # set initial conditions
 
-    theta = theta0
-    omega = omega0
-    time = 0
+class PendulumEnv:
+    def __init__(self,tau,m,g,l):
+        self.tau = tau
+        self.m = m
+        self.g = g
+        self.l = l
 
-    # begin time-stepping
+    def f_func(self, X):
+        tau, m, g, l = (self.tau, self.m, self.g, self.l)
+        X = np.asarray(X)
+        theta_old, omega_old = X[..., 0:1], X[..., 1:2]
+        omega =  - (g/l)*sin(theta_old)*tau + omega_old
+        theta = theta_old + omega_old*tau
+        return np.concatenate([theta, omega], axis=-1)
 
-    for i in range(numSteps):
-        omega_old = omega
-        theta_old = theta
-        u= controller(theta, omega)
-        # update the values
-        omega = omega_old - (g/l)*sin(theta_old)*tau+(u/(m*l))*tau
-        theta = theta_old + omega*tau
-        # record the values
-        time_vec[i] = tau*i
-        omega_vec[i] = omega
-        u_vec[i] = u
-        #record and normalize theta to be in -pi to pi range
-        theta_vec[i] = (((theta+np.pi) % (2*np.pi)) - np.pi)
-        if 0<theta_vec[i]<np.pi/4:
-            damage_vec[i]=1
-    damge_perc=damage_vec.sum() * 100/numSteps
-    return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
+    def g_func(self, _):
+        tau, m, g, l = (self.tau, self.m, self.g, self.l)
+        return np.array([[0], [m*l*tau]])
+
+    def __call__(self, theta0, omega0, numSteps=500, controller=control_trivial):
+        tau, m, g, l = (self.tau, self.m, self.g, self.l)
+
+        # initialize vectors
+        time_vec = np.zeros(numSteps)
+        theta_vec = np.zeros(numSteps)
+        omega_vec = np.zeros(numSteps)
+        u_vec = np.zeros(numSteps)
+        #damage indicator
+        damage_vec = np.zeros(numSteps)
+
+        # set initial conditions
+
+        theta = theta0
+        omega = omega0
+        time = 0
+
+        # begin time-stepping
+
+        for i in range(numSteps):
+            omega_old = omega
+            theta_old = theta
+            u= controller(theta, omega)
+            # update the values
+            # omega = omega_old - (g/l)*sin(theta_old)*tau+(u/(m*l))*tau
+            # theta = theta_old + omega_old*tau
+            theta, omega = self.f_func((theta_old, omega_old)) + self.g_func((theta_old, omega_old)) @ np.array([u])
+            # record the values
+            time_vec[i] = tau*i
+            omega_vec[i] = omega
+            u_vec[i] = u
+            #record and normalize theta to be in -pi to pi range
+            theta_vec[i] = (((theta+np.pi) % (2*np.pi)) - np.pi)
+            if 0<theta_vec[i]<np.pi/4:
+                damage_vec[i]=1
+        damge_perc=damage_vec.sum() * 100/numSteps
+        return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
 
 
 def rad2deg(rad):
@@ -94,8 +144,8 @@ def run_pendulum_experiment(#parameters
         controller=control_trivial):
     if ground_truth_model:
         controller = partial(controller, m=m, g=g, l=l)
-    damge_perc,time_vec,theta_vec,omega_vec,u_vec = env_pendulum(
-        theta0,omega0,tau,m,g,l,numSteps, controller=controller)
+    damge_perc,time_vec,theta_vec,omega_vec,u_vec = PendulumEnv(tau, m, g, l)(
+        theta0,omega0, numSteps, controller=controller)
     plot_results(time_vec, omega_vec, theta_vec, u_vec)
     return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
 
@@ -103,11 +153,11 @@ def run_pendulum_experiment(#parameters
 def learn_dynamics(
         theta0=5*np.pi/6,
         omega0=-0.01,
-        tau=0.01,
+        tau=0.05,
         m=1,
         g=10,
         l=1,
-        numSteps=5000):
+        numSteps=300):
     #from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
     #from bayes_cbf.affine_kernel import AffineScaleKernel
     #from sklearn.gaussian_process import GaussianProcessRegressor
@@ -120,8 +170,11 @@ def learn_dynamics(
     # xₜ₊₁ = F(xₜ)[1 u]
     # where F(xₜ) = [f(xₜ), g(xₜ)]
 
-    damge_perc,time_vec,theta_vec,omega_vec,u_vec = env_pendulum(
-        theta0,omega0,tau,m,g,l,numSteps, controller=partial(control_trivial, m=m, g=g, l=l))
+    pend_env = PendulumEnv(tau,m,g,l)
+    damge_perc,time_vec,theta_vec,omega_vec,u_vec = pend_env(
+        theta0,omega0, numSteps, controller=partial(control_random, m=m, g=g, l=l))
+    plot_results(time_vec, omega_vec, theta_vec, u_vec)
+
     # X.shape = Nx2
     X = np.vstack((theta_vec, omega_vec)).T
     # XU.shape = Nx3
@@ -134,7 +187,7 @@ def learn_dynamics(
     dX = (X[1:, :] - X[:-1, :]) / tau
 
     # Do not need the full dataset . Take a small subset
-    N = 500
+    N = min(numSteps-1, 500)
     # Shuffle to make it IID
     shuffled_range = np.arange(N)
     np.random.shuffle(shuffled_range)
@@ -143,8 +196,9 @@ def learn_dynamics(
     Utrain = U[shuffled_range, :]
     #gp = GaussianProcessRegressor(kernel=kernel_xu,
     #                              alpha=1e6).fit(Z_shuffled, Y_shuffled)
-    dgp = ControlAffineRegressor(Xtrain.shape[-1], Utrain.shape[-1]
-             ).fit(Xtrain, Utrain, XdotTrain, lr=0.01)
+    dgp = ControlAffineRegressor(
+        Xtrain.shape[-1], Utrain.shape[-1]
+    ).fit(Xtrain, Utrain, XdotTrain, lr=0.01)
 
     # within train set
     FX_99, FXcov_99 = dgp.predict(X[98:99,:], return_cov=True)
@@ -157,6 +211,15 @@ def learn_dynamics(
     dX_Np1 = FXNp1[0, ...].T @ UH[N+1, :]
     print("Test sample: expected:{}, got:{}, cov:{}".format( dX[N+1], dX_Np1, FXNp1cov))
     assert np.allclose(dX[N+1], dX_Np1, rtol=0.01, atol=0.01)
+
+    # Plot True f_func
+    fig, axes = plt.subplots(2,2)
+    plot_2D_f_func(pend_env.f_func, axes_gen=lambda FX: axes[0, :],
+                   axtitle="True f(x)[{i}]")
+    # Plot learned f_func
+    plot_2D_f_func(dgp.predict, axes_gen=lambda FX: axes[1, :],
+                   axtitle="Learned f(x)[{i}]")
+    plt.show()
     return dgp, dX, XU
 
 
@@ -251,7 +314,7 @@ class ControlCBFCLFLearned:
     ):
         self.Xtrain = []
         self.Utrain = []
-        self.dgp = DynamicModelGP(x_dim, u_dim)
+        self.dgp = ControlAffineRegressor(x_dim, u_dim)
 
     def f_g(self, theta, w):
         X = np.array([[theta, w]])
@@ -305,6 +368,7 @@ class ControlCBFCLFLearned:
         Xtrain = np.array(self.Xtrain)
         Utrain = np.array(self.Utrain)
         XdotTrain = Xtrain[1:, :] - Xtrain[:-1, :]
+        LOG.info("Training model with datasize {}".format(XdotTrain.shape[0]))
         self.dgp.fit(Xtrain[:-1, :], Utrain[:-1, :], XdotTrain)
 
     def controller(self, theta, w):
@@ -357,10 +421,9 @@ def control_QP_cbf_clf(theta, w,
             u_rho = cvxopt_solve_qp(P_rho, q_rho,
                                     G=A_total_rho,
                                     h=b_total)
-
+            u = u_rho[0] if u_rho is not None else np.random.rand()
         except ValueError:
-            u_rho = np.random.rand(*q_rho.shape)
-    u = u_rho[0]
+            u = np.random.rand()
     return u
 
 
@@ -379,5 +442,5 @@ def run_pendulum_control_online_learning():
 if __name__ == '__main__':
     #run_pendulum_control_trival()
     #run_pendulum_control_cbf_clf()
-    #learn_dynamics()
-    run_pendulum_control_online_learning()
+    learn_dynamics()
+    #run_pendulum_control_online_learning()

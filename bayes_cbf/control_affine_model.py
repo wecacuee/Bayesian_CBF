@@ -228,9 +228,16 @@ class ControlAffineRegressor:
             optimizer.zero_grad()
             # Get predictive output
             output = model(*model.train_inputs)
+            for p in model.parameters(recurse=True):
+                assert not torch.isnan(p).any()
             # Calc loss and backprop gradients
             loss = -mll(output, XdotTrain.reshape(-1))
+            assert not torch.isnan(loss).any()
             loss.backward()
+            for p in model.parameters(recurse=True):
+                if p.grad is not None:
+                    assert not torch.isnan(p.grad).any()
+
             print('Iter %d/%d - Loss: %.3f, lr: %.3g' % (i + 1, training_iter,
                                                          loss.item(),
                                                          scheduler.get_lr()[0]))

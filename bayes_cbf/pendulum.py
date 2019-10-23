@@ -11,6 +11,8 @@ import numpy as np
 from numpy import cos, sin
 #plot the result
 import matplotlib.pyplot as plt
+from matplotlib import rc as mplibrc
+mplibrc('text', usetex=True)
 
 from bayes_cbf.control_affine_model import ControlAffineRegressor
 
@@ -27,25 +29,25 @@ def control_random(theta, w, m=None, l=None, g=None):
     assert m is not None
     assert l is not None
     assert g is not None
-    return 0.005 * m * g *np.random.rand() + m*g*sin(theta)
+    return m * g *np.abs(np.random.rand())*np.sign(np.sin(theta)) #+ m*g*sin(theta)
 
 
 def plot_2D_f_func(f_func,
                    axes_gen = lambda FX: plt.subplots(1, FX.shape[-1])[1],
                    theta_range = slice(-np.pi, np.pi, np.pi/20),
-                   w_range = slice(-np.pi, np.pi,np.pi/20),
+                   omega_range = slice(-np.pi, np.pi,np.pi/20),
                    axtitle="f(x)[{i}]"):
     # Plot true f(x)
-    theta_w_grid = np.mgrid[theta_range, w_range]
-    FX = f_func(theta_w_grid.transpose(1, 2, 0))
+    theta_omega_grid = np.mgrid[theta_range, omega_range]
+    FX = f_func(theta_omega_grid.transpose(1, 2, 0))
     axs = axes_gen(FX)
     for i in range(FX.shape[-1]):
-        ctf0 = axs[i].contourf(theta_w_grid[0, ...], theta_w_grid[1, ...],
+        ctf0 = axs[i].contourf(theta_omega_grid[0, ...], theta_omega_grid[1, ...],
                                FX[:, :, i])
         plt.colorbar(ctf0, ax=axs[i])
         axs[i].set_title(axtitle.format(i=i))
-        axs[i].set_ylabel("ω")
-        axs[i].set_xlabel("θ")
+        axs[i].set_ylabel("$\omega$")
+        axs[i].set_xlabel("$\theta$")
 
 
 class PendulumEnv:
@@ -173,7 +175,6 @@ def learn_dynamics(
     pend_env = PendulumEnv(tau,m,g,l)
     damge_perc,time_vec,theta_vec,omega_vec,u_vec = pend_env(
         theta0,omega0, numSteps, controller=partial(control_random, m=m, g=g, l=l))
-    plot_results(time_vec, omega_vec, theta_vec, u_vec)
 
     # X.shape = Nx2
     X = np.vstack((theta_vec, omega_vec)).T
@@ -200,11 +201,39 @@ def learn_dynamics(
         Xtrain.shape[-1], Utrain.shape[-1]
     ).fit(Xtrain, Utrain, XdotTrain, lr=0.01)
 
+    # Plot the pendulum trajectory
+    plot_results(time_vec, omega_vec, theta_vec, u_vec)
+    # Plot True f_func
+    fig, axes = plt.subplots(3,2)
+
+    omega_range=slice(np.min(omega_vec), np.max(omega_vec),
+                      (np.max(omega_vec) - np.min(omega_vec)) / 20)
+    plot_2D_f_func(pend_env.f_func,
+                   axes_gen=lambda FX: axes[0, :],
+                   omega_range=omega_range,
+                   axtitle="True f(x)[{i}]")
+    # Plot learned f_func
+    def learned_f_func(X):
+        shape = X.shape
+        FX = dgp.f_func(X.reshape(-1, shape[-1]))
+        return FX.reshape(*shape[:-1], -1)
+
+    plot_2D_f_func(learned_f_func,
+                   axes_gen=lambda FX: axes[1, :],
+                   omega_range=omega_range,
+                   axtitle="Learned f(x)[{i}]")
+    axes[2, 0].plot(Xtrain[:, 0], Xtrain[:, 1], marker='*', linestyle='')
+    axes[2, 0].set_ylabel("$\omega$")
+    axes[2, 0].set_xlabel("$\theta$")
+    fig.subplots_adjust(wspace=0.3,hspace=0.4)
+    plt.show()
+
     # within train set
-    FX_99, FXcov_99 = dgp.predict(X[98:99,:], return_cov=True)
-    dX_99 = FX_99[0, ...].T @ UH[98, :]
-    print("Train sample: expected:{}, got:{}, cov:{}".format(dX_99, dX[99], FXcov_99))
-    assert np.allclose(dX[99], dX_99, rtol=0.01, atol=0.01)
+    FX_98, FXcov_98 = dgp.predict(X[98:99,:], return_cov=True)
+    dX_98 = FX_98[0, ...].T @ UH[98, :]
+    #dXcov_98 = UH[98, :] @ FXcov_98 @ UH[98, :]
+    print("Train sample: expected:{}, got:{}, cov:{}".format(dX[98], dX_98, FXcov_98))
+    assert np.allclose(dX[98], dX_98, rtol=0.01, atol=0.01)
 
     # out of train set
     FXNp1, FXNp1cov = dgp.predict(X[N+1:N+2,:], return_cov=True)
@@ -212,14 +241,6 @@ def learn_dynamics(
     print("Test sample: expected:{}, got:{}, cov:{}".format( dX[N+1], dX_Np1, FXNp1cov))
     assert np.allclose(dX[N+1], dX_Np1, rtol=0.01, atol=0.01)
 
-    # Plot True f_func
-    fig, axes = plt.subplots(2,2)
-    plot_2D_f_func(pend_env.f_func, axes_gen=lambda FX: axes[0, :],
-                   axtitle="True f(x)[{i}]")
-    # Plot learned f_func
-    plot_2D_f_func(dgp.predict, axes_gen=lambda FX: axes[1, :],
-                   axtitle="Learned f(x)[{i}]")
-    plt.show()
     return dgp, dX, XU
 
 

@@ -264,3 +264,21 @@ class ControlAffineRegressor:
                      output.covariance_matrix)
         mean_np, cov_np = [arr.detach().cpu().numpy() for arr in (mean, cov)]
         return (mean_np, cov_np) if return_cov else mean_np
+
+    def f_func(self, Xtest, return_cov=False):
+        if return_cov:
+            mean_FxT, cov_FxT = self.predict(Xtest, return_cov=return_cov)
+            cov_fx = cov_FxT[:, :1, :1]
+        else:
+            mean_FxT = self.predict(Xtest, return_cov=return_cov)
+        mean_fx = mean_FxT[:, 0, :]
+        return (mean_fx, cov_fx) if return_cov else mean_fx
+
+    def g_func(self, Xtest, return_cov=False):
+        if return_cov:
+            mean_FxT, cov_FxT = self.predict(Xtest, return_cov=return_cov)
+            cov_gx = cov_FxT[:, 1:, 1:]
+        else:
+            mean_FxT = self.predict(Xtest, return_cov=return_cov)
+        mean_gx = mean_FxT[:, 1:, :]
+        return (mean_gx, cov_gx) if return_cov else mean_gx

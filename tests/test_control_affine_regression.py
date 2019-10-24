@@ -3,11 +3,38 @@ import warnings
 from functools import partial
 
 import numpy as np
+import matplotlib.pyplot as plt
 import torch
 import pytest
 import gpytorch.settings as gpsettings
 
 from bayes_cbf.control_affine_model import ControlAffineRegressor
+
+
+def rad2deg(rad):
+    return rad / np.pi * 180
+
+
+def plot_results(time_vec, omega_vec, theta_vec, u_vec):
+    #plot thetha
+    fig, axs = plt.subplots(2,2)
+    axs[0,0].plot(time_vec, rad2deg(theta_vec),
+                  ":", label = "theta (degrees)",color="blue")
+    axs[0,0].set_ylabel("theta (degrees)")
+    axs[0,1].plot(time_vec, omega_vec,":", label = "omega (rad/s)",color="blue")
+    axs[0,1].set_ylabel("omega")
+    axs[1,0].plot(time_vec, u_vec,":", label = "u",color="blue")
+    axs[1,0].set_ylabel("u")
+
+    axs[1,1].plot(time_vec, np.cos(theta_vec),":", label="cos(theta)", color="blue")
+    axs[1,1].set_ylabel("cos/sin(theta)")
+    axs[1,1].plot(time_vec, np.sin(theta_vec),":", label="sin(theta)", color="red")
+    axs[1,1].set_ylabel("sin(theta)")
+    axs[1,1].legend()
+
+    fig.suptitle("Pendulum")
+    fig.subplots_adjust(wspace=0.31)
+    plt.show()
 
 
 def sample_generator_trajectory(f, g, D, n, m, dt=0.001):
@@ -119,6 +146,11 @@ def test_GP_train_predict(n=2, m=3,
     Xdot, X, U = sample_generator(dynamics_model.f,
                                   dynamics_model.g,
                                   D, n, m)
+    if X.shape[-1] == 2 and U.shape[-1] == 1:
+        plot_results(np.arange(U.shape[0]),
+                     omega_vec=X[:-1, 0],
+                     theta_vec=X[:-1, 1],
+                     u_vec=U[:, 0])
 
     # Test train split
     shuffled_order = np.arange(D)

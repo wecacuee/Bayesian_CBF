@@ -100,7 +100,7 @@ class PendulumEnv:
             # Update as model
             Xold = np.array([theta_old, omega_old])
             Xdot = self.f_func(Xold) + self.g_func(Xold) @ np.array([u])
-            theta_prop, omega_prop = Xdot * tau + Xold
+            theta_prop, omega_prop = Xold + Xdot * tau
             assert np.allclose(omega_direct, omega_prop, atol=1e-6, rtol=1e-4)
             assert np.allclose(theta_direct, theta_prop, atol=1e-6, rtol=1e-4)
             theta, omega = theta_prop, omega_prop

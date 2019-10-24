@@ -282,3 +282,17 @@ class ControlAffineRegressor:
             mean_FxT = self.predict(Xtest, return_cov=return_cov)
         mean_gx = mean_FxT[:, 1:, :]
         return (mean_gx, cov_gx) if return_cov else mean_gx
+
+    def state_dict(self):
+        return dict(model=self.model.state_dict(),
+                    likelihood=self.likelihood.state_dict())
+
+    def load_state_dict(self, state_dict):
+        self.model.load_state_dict(state_dict['model'])
+        self.likelihood.load_state_dict(state_dict['likelihood'])
+
+    def save(self, path='/tmp/saved.pickle'):
+        torch.save(self.state_dict(), path)
+
+    def load(self, path='/tmp/saved.pickle'):
+        self.load_state_dict(torch.load(path))

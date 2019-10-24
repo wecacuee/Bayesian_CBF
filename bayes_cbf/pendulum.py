@@ -29,7 +29,7 @@ def control_random(theta, w, m=None, l=None, g=None):
     assert m is not None
     assert l is not None
     assert g is not None
-    return m * g *np.abs(np.random.rand())*np.sign(np.sin(theta)) #+ m*g*sin(theta)
+    return control_trivial(theta, w, m=m, l=l, g=g) * np.abs(np.random.rand()) + np.random.rand()
 
 
 def plot_2D_f_func(f_func,
@@ -46,28 +46,30 @@ def plot_2D_f_func(f_func,
                                FX[:, :, i])
         plt.colorbar(ctf0, ax=axs[i])
         axs[i].set_title(axtitle.format(i=i))
-        axs[i].set_ylabel("$\omega$")
-        axs[i].set_xlabel("$\theta$")
+        axs[i].set_ylabel(r"$\omega$")
+        axs[i].set_xlabel(r"$\theta$")
 
 
 class PendulumEnv:
-    def __init__(self,tau,m,g,l):
+    def __init__(self, tau, m,g,l):
         self.tau = tau
         self.m = m
         self.g = g
         self.l = l
 
     def f_func(self, X):
-        tau, m, g, l = (self.tau, self.m, self.g, self.l)
+        m, g, l = (self.m, self.g, self.l)
         X = np.asarray(X)
         theta_old, omega_old = X[..., 0:1], X[..., 1:2]
-        omega =  - (g/l)*sin(theta_old)*tau + omega_old
-        theta = theta_old + omega_old*tau
-        return np.concatenate([theta, omega], axis=-1)
+        return np.concatenate([omega_old,
+                               - (g/l)*sin(theta_old)], axis=-1)
 
     def g_func(self, _):
-        tau, m, g, l = (self.tau, self.m, self.g, self.l)
-        return np.array([[0], [m*l*tau]])
+        m, g, l = (self.m, self.g, self.l)
+        return np.array([[0], [1/(m*l)]])
+
+    def dynamics_model(self, X, U):
+        return self.f_func(X) + (self.g_func(X) @ U.T).T
 
     def __call__(self, theta0, omega0, numSteps=500, controller=control_trivial):
         tau, m, g, l = (self.tau, self.m, self.g, self.l)
@@ -93,9 +95,16 @@ class PendulumEnv:
             theta_old = theta
             u= controller(theta, omega)
             # update the values
-            # omega = omega_old - (g/l)*sin(theta_old)*tau+(u/(m*l))*tau
-            # theta = theta_old + omega_old*tau
-            theta, omega = self.f_func((theta_old, omega_old)) + self.g_func((theta_old, omega_old)) @ np.array([u])
+            omega_direct = omega_old - (g/l)*sin(theta_old)*tau+(u/(m*l))*tau
+            theta_direct = theta_old + omega_old*tau
+            # Update as model
+            Xold = np.array([theta_old, omega_old])
+            Xdot = self.f_func(Xold) + self.g_func(Xold) @ np.array([u])
+            theta_prop, omega_prop = Xdot * tau + Xold
+            assert np.allclose(omega_direct, omega_prop, atol=1e-6, rtol=1e-4)
+            assert np.allclose(theta_direct, theta_prop, atol=1e-6, rtol=1e-4)
+            theta, omega = theta_prop, omega_prop
+            #theta, omega = theta_direct, omega_direct
             # record the values
             time_vec[i] = tau*i
             omega_vec[i] = omega
@@ -141,7 +150,7 @@ def run_pendulum_experiment(#parameters
         m=1,
         g=10,
         l=1,
-        numSteps=7000,
+        numSteps=10000,
         ground_truth_model=True,
         controller=control_trivial):
     if ground_truth_model:
@@ -155,11 +164,12 @@ def run_pendulum_experiment(#parameters
 def learn_dynamics(
         theta0=5*np.pi/6,
         omega0=-0.01,
-        tau=0.05,
+        tau=0.001,
         m=1,
         g=10,
         l=1,
-        numSteps=300):
+        max_train=300,
+        numSteps=10000):
     #from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
     #from bayes_cbf.affine_kernel import AffineScaleKernel
     #from sklearn.gaussian_process import GaussianProcessRegressor
@@ -188,10 +198,8 @@ def learn_dynamics(
     dX = (X[1:, :] - X[:-1, :]) / tau
 
     # Do not need the full dataset . Take a small subset
-    N = min(numSteps-1, 500)
-    # Shuffle to make it IID
-    shuffled_range = np.arange(N)
-    np.random.shuffle(shuffled_range)
+    N = min(numSteps-1, max_train)
+    shuffled_range = np.random.randint(numSteps - 1, size=N)
     XdotTrain = dX[shuffled_range, :]
     Xtrain = X[shuffled_range, :]
     Utrain = U[shuffled_range, :]
@@ -200,16 +208,35 @@ def learn_dynamics(
     dgp = ControlAffineRegressor(
         Xtrain.shape[-1], Utrain.shape[-1]
     ).fit(Xtrain, Utrain, XdotTrain, lr=0.01)
+    dgp.save()
 
     # Plot the pendulum trajectory
     plot_results(time_vec, omega_vec, theta_vec, u_vec)
-    # Plot True f_func
-    fig, axes = plt.subplots(3,2)
 
+    theta_range = slice(np.min(theta_vec), np.max(theta_vec),
+                        (np.max(theta_vec) - np.min(theta_vec)) / 20)
     omega_range=slice(np.min(omega_vec), np.max(omega_vec),
                       (np.max(omega_vec) - np.min(omega_vec)) / 20)
+
+    # Plot the true Xdot vs learned Xdot
+    fig, axes = plt.subplots(3,2)
+    Xgrid = np.mgrid[theta_range, omega_range]
+    Ugrid = np.array([[0]])
+    UHgrid = np.hstack((np.ones((U.shape[0], 1), dtype=U.dtype), U))
+
+    axes[0].contourf(Xgrid[0, ...], Xgrid[1, ...],
+                     pend_env.dynamics_model(Xgrid.reshape(2, -1).T, Ugrid)[0].reshape(Xgrid.shape[1:]))
+    FXgrid = dgp.predict(Xgrid.reshape(2, -1).T, return_cov=False)
+    XdotGrid = FXgrid.tranpose(0, 2, 1) @ UH[N+1, :]
+    axes[1].contourf(Xgrid[0, ...], Xgrid[1, ...],
+                     XdotGrid.reshape(*Xgrid.shape[1:])[0])
+    plt.show()
+
+    # Plot True f_func
+    fig, axes = plt.subplots(3,2)
     plot_2D_f_func(pend_env.f_func,
                    axes_gen=lambda FX: axes[0, :],
+                   theta_range=theta_range,
                    omega_range=omega_range,
                    axtitle="True f(x)[{i}]")
     # Plot learned f_func
@@ -220,12 +247,15 @@ def learn_dynamics(
 
     plot_2D_f_func(learned_f_func,
                    axes_gen=lambda FX: axes[1, :],
+                   theta_range=theta_range,
                    omega_range=omega_range,
                    axtitle="Learned f(x)[{i}]")
     axes[2, 0].plot(Xtrain[:, 0], Xtrain[:, 1], marker='*', linestyle='')
-    axes[2, 0].set_ylabel("$\omega$")
-    axes[2, 0].set_xlabel("$\theta$")
-    fig.subplots_adjust(wspace=0.3,hspace=0.4)
+    axes[2, 0].set_ylabel(r"$\omega$")
+    axes[2, 0].set_xlabel(r"$\theta$")
+    axes[2, 0].set_xlim(theta_range.start, theta_range.stop)
+    axes[2, 0].set_ylim(omega_range.start, omega_range.stop)
+    fig.subplots_adjust(wspace=0.3,hspace=0.42)
     plt.show()
 
     # within train set

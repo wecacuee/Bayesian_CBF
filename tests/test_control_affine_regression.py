@@ -1,5 +1,6 @@
 import os.path as osp
 import warnings
+from functools import partial
 
 import numpy as np
 import torch
@@ -30,30 +31,33 @@ def sample_generator_independent(f, g, D, n, m):
         Xdot[i, :] = f(X[i, :]) + g(X[i, :]) @ U[i, :]
     return Xdot, X, U
 
-def test_GP_train_predict(n=2, m=1,
-                          deterministic=True,
-                          sample_generator=sample_generator_trajectory):
-    #chosen_seed = np.random.randint(100000)
-    chosen_seed = 52648
-    print(chosen_seed)
-    np.random.seed(chosen_seed)
-    torch.manual_seed(chosen_seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
 
-    A = np.random.rand(n,n)
-    def f(x):
+class RandomDynamicsModel:
+    def __init__(self, m, n, deterministic=False):
+        self.n = n
+        self.m = m
+        self.deterministic = deterministic
+        self.A = np.random.rand(n,n)
+        self.B = np.random.rand(n, m, n)
+
+    def f(self, x):
+        A = self.A
+        n = self.n
+        m = self.m
+        deterministic = self.deterministic
         assert x.shape[-1] == n
         cov = np.eye(n) * 0.0001
         return (A @ x if deterministic
                 else np.random.multivariate_normal(A @ x, cov))
-    f.A = A
 
-    B = np.random.rand(n, m, n)
-    def g(x):
+    def g(self, x):
         """
         Returns n x m matrix
         """
+        B = self.B
+        n = self.n
+        m = self.m
+        deterministic = self.deterministic
         assert x.shape[-1] == n
         cov_A = np.eye(n) * 0.0001
         cov_B = np.eye(m) * 0.0002
@@ -65,11 +69,56 @@ def test_GP_train_predict(n=2, m=1,
                     (B @ x).flatten(), cov
             ).reshape((n, m))
         )
-    g.B = B
+
+
+class PendulumDynamicsModel:
+    def __init__(self, m, n, mass=1, gravity=10, length=1, deterministic=True):
+        self.m = m
+        self.n = n
+        self.mass = mass
+        self.gravity = gravity
+        self.length = length
+
+    def f(self, X):
+        m = self.m
+        n = self.n
+        mass = self.mass
+        gravity = self.gravity
+        length = self.length
+        X = np.asarray(X)
+        theta_old, omega_old = X[..., 0:1], X[..., 1:2]
+        return np.concatenate([omega_old,
+                               - (gravity/length)*np.sin(theta_old)], axis=-1)
+
+    def g(self, x):
+        m = self.m
+        n = self.n
+        mass = self.mass
+        gravity = self.gravity
+        length = self.length
+        return np.array([[0], [1/(mass*length)]])
+
+
+def test_GP_train_predict(n=2, m=3,
+                          deterministic=False,
+                          rel_tol=0.05,
+                          abs_tol=0.05,
+                          sample_generator=sample_generator_trajectory,
+                          dynamics_model_class=RandomDynamicsModel):
+    #chosen_seed = np.random.randint(100000)
+    chosen_seed = 52648
+    print(chosen_seed)
+    np.random.seed(chosen_seed)
+    torch.manual_seed(chosen_seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
     # Collect training data
     D = 20
-    Xdot, X, U = sample_generator(f, g, D, n, m)
+    dynamics_model = dynamics_model_class(m, n, deterministic=deterministic)
+    Xdot, X, U = sample_generator(dynamics_model.f,
+                                  dynamics_model.g,
+                                  D, n, m)
 
     # Test train split
     shuffled_order = np.arange(D)
@@ -105,7 +154,7 @@ def test_GP_train_predict(n=2, m=1,
     XdotGot = np.empty_like(XdotTest)
     for i in range(Xtest.shape[0]):
         XdotGot[i, :] = FXTmean[i, :, :].T @ UHtest[i, :]
-    assert XdotGot == pytest.approx(XdotTest, rel=0.05)
+    assert XdotGot == pytest.approx(XdotTest, rel=rel_tol, abs=abs_tol)
 
 
 def relpath(path,
@@ -125,7 +174,19 @@ def test_control_affine_gp(
     dgp.predict(Xtest)
 
 
+test_pendulum_train_predict = partial(
+    test_GP_train_predict,
+    n=2, m=1,
+    dynamics_model_class=PendulumDynamicsModel)
+
+
+test_pendulum_train_predict_trajectory = partial(
+    test_pendulum_train_predict,
+    sample_generator=sample_generator_independent)
+
 
 if __name__ == '__main__':
-    test_GP_train_predict()
+    #test_GP_train_predict()
     #test_control_affine_gp()
+    test_pendulum_train_predict()
+

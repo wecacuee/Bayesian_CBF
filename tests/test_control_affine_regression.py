@@ -19,7 +19,7 @@ def sample_generator_trajectory(f, g, D, n, m, dt=0.01):
     Xdot = np.zeros((D, n))
     # Single trajectory
     for i in range(D):
-        U[i, :] = np.sin(X[i, 0]) * np.random.rand(m)
+        U[i, :] = np.sin(X[i, 0]) * np.abs(np.random.rand(m)) + 0.2 * np.random.rand()
         Xdot[i, :] = f(X[i, :]) + g(X[i, :]) @ U[i, :]
         X[i+1, :] = X[i, :] + Xdot[i, :] * dt
     return Xdot, X, U
@@ -148,8 +148,10 @@ def test_GP_train_predict(n=2, m=3,
     _ = dgp.predict(Xtest, return_cov=False)
     dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50, lr=0.01)
     plot_learned_2D_func(Xtrain, dgp.f_func, dynamics_model.f)
+    plt.savefig('f_learned_vs_f_true.pdf')
     plt.show()
     plot_learned_2D_func(Xtrain, dgp.g_func, dynamics_model.g, axtitle="g(x)[{i}]")
+    plt.savefig('g_learned_vs_g_true.pdf')
     plt.show()
 
     UHtest = np.concatenate((np.ones((Utest.shape[0], 1)), Utest), axis=1)

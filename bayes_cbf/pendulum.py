@@ -9,12 +9,12 @@ from functools import partial, wraps
 
 import numpy as np
 from numpy import cos, sin
-#plot the result
 import matplotlib.pyplot as plt
 from matplotlib import rc as mplibrc
 mplibrc('text', usetex=True)
 
 from bayes_cbf.control_affine_model import ControlAffineRegressor
+from bayes_cbf.plotting import plot_results, plot_2D_f_func
 
 
 def control_trivial(theta, w, m=None, l=None, g=None):
@@ -32,24 +32,6 @@ def control_random(theta, w, m=None, l=None, g=None):
     return control_trivial(theta, w, m=m, l=l, g=g) * np.abs(np.random.rand()) + np.random.rand()
 
 
-def plot_2D_f_func(f_func,
-                   axes_gen = lambda FX: plt.subplots(1, FX.shape[-1])[1],
-                   theta_range = slice(-np.pi, np.pi, np.pi/20),
-                   omega_range = slice(-np.pi, np.pi,np.pi/20),
-                   axtitle="f(x)[{i}]"):
-    # Plot true f(x)
-    theta_omega_grid = np.mgrid[theta_range, omega_range]
-    FX = f_func(theta_omega_grid.transpose(1, 2, 0))
-    axs = axes_gen(FX)
-    for i in range(FX.shape[-1]):
-        ctf0 = axs[i].contourf(theta_omega_grid[0, ...], theta_omega_grid[1, ...],
-                               FX[:, :, i])
-        plt.colorbar(ctf0, ax=axs[i])
-        axs[i].set_title(axtitle.format(i=i))
-        axs[i].set_ylabel(r"$\omega$")
-        axs[i].set_xlabel(r"$\theta$")
-
-
 class PendulumEnv:
     def __init__(self, tau, m,g,l):
         self.tau = tau
@@ -64,9 +46,9 @@ class PendulumEnv:
         return np.concatenate([omega_old,
                                - (g/l)*sin(theta_old)], axis=-1)
 
-    def g_func(self, _):
+    def g_func(self, X):
         m, g, l = (self.m, self.g, self.l)
-        return np.array([[0], [1/(m*l)]])
+        return np.repeat(np.array([[[0], [1/(m*l)]]]), X.shape[0], axis=0)
 
     def dynamics_model(self, X, U):
         return self.f_func(X) + (self.g_func(X) @ U.T).T
@@ -119,28 +101,6 @@ class PendulumEnv:
 
 def rad2deg(rad):
     return rad / np.pi * 180
-
-
-def plot_results(time_vec, omega_vec, theta_vec, u_vec):
-    #plot thetha
-    fig, axs = plt.subplots(2,2)
-    axs[0,0].plot(time_vec, rad2deg(theta_vec),
-                  ":", label = "theta (degrees)",color="blue")
-    axs[0,0].set_ylabel("theta (degrees)")
-    axs[0,1].plot(time_vec, omega_vec,":", label = "omega (rad/s)",color="blue")
-    axs[0,1].set_ylabel("omega")
-    axs[1,0].plot(time_vec, u_vec,":", label = "u",color="blue")
-    axs[1,0].set_ylabel("u")
-
-    axs[1,1].plot(time_vec, cos(theta_vec),":", label="cos(theta)", color="blue")
-    axs[1,1].set_ylabel("cos/sin(theta)")
-    axs[1,1].plot(time_vec, sin(theta_vec),":", label="sin(theta)", color="red")
-    axs[1,1].set_ylabel("sin(theta)")
-    axs[1,1].legend()
-
-    fig.suptitle("Pendulum")
-    fig.subplots_adjust(wspace=0.31)
-    plt.show()
 
 
 def run_pendulum_experiment(#parameters
@@ -219,18 +179,18 @@ def learn_dynamics(
                       (np.max(omega_vec) - np.min(omega_vec)) / 20)
 
     # Plot the true Xdot vs learned Xdot
-    fig, axes = plt.subplots(3,2)
-    Xgrid = np.mgrid[theta_range, omega_range]
-    Ugrid = np.array([[0]])
-    UHgrid = np.hstack((np.ones((U.shape[0], 1), dtype=U.dtype), U))
+    # fig, axes = plt.subplots(3,2)
+    # Xgrid = np.mgrid[theta_range, omega_range]
+    # Ugrid = np.array([[0]])
+    # UHgrid = np.hstack((np.ones((U.shape[0], 1), dtype=U.dtype), U))
 
-    axes[0].contourf(Xgrid[0, ...], Xgrid[1, ...],
-                     pend_env.dynamics_model(Xgrid.reshape(2, -1).T, Ugrid)[0].reshape(Xgrid.shape[1:]))
-    FXgrid = dgp.predict(Xgrid.reshape(2, -1).T, return_cov=False)
-    XdotGrid = FXgrid.tranpose(0, 2, 1) @ UH[N+1, :]
-    axes[1].contourf(Xgrid[0, ...], Xgrid[1, ...],
-                     XdotGrid.reshape(*Xgrid.shape[1:])[0])
-    plt.show()
+    # axes[1,0].contourf(Xgrid[0, ...], Xgrid[1, ...],
+    #                  pend_env.dynamics_model(Xgrid.reshape(2, -1).T, Ugrid)[0].reshape(Xgrid.shape[1:]))
+    # FXgrid = dgp.predict(Xgrid.reshape(2, -1).T, return_cov=False)
+    # XdotGrid = FXgrid.tranpose(0, 2, 1) @ UH[N+1, :]
+    # axes[1].contourf(Xgrid[0, ...], Xgrid[1, ...],
+    #                  XdotGrid.reshape(*Xgrid.shape[1:])[0])
+    # plt.show()
 
     # Plot True f_func
     fig, axes = plt.subplots(3,2)

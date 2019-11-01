@@ -9,41 +9,17 @@ import pytest
 import gpytorch.settings as gpsettings
 
 from bayes_cbf.control_affine_model import ControlAffineRegressor
+from bayes_cbf.plotting import plot_2D_f_func, plot_results, plot_learned_2D_func
 
 
-def rad2deg(rad):
-    return rad / np.pi * 180
-
-
-def plot_results(time_vec, omega_vec, theta_vec, u_vec):
-    #plot thetha
-    fig, axs = plt.subplots(2,2)
-    axs[0,0].plot(time_vec, rad2deg(theta_vec),
-                  ":", label = "theta (degrees)",color="blue")
-    axs[0,0].set_ylabel("theta (degrees)")
-    axs[0,1].plot(time_vec, omega_vec,":", label = "omega (rad/s)",color="blue")
-    axs[0,1].set_ylabel("omega")
-    axs[1,0].plot(time_vec, u_vec,":", label = "u",color="blue")
-    axs[1,0].set_ylabel("u")
-
-    axs[1,1].plot(time_vec, np.cos(theta_vec),":", label="cos(theta)", color="blue")
-    axs[1,1].set_ylabel("cos/sin(theta)")
-    axs[1,1].plot(time_vec, np.sin(theta_vec),":", label="sin(theta)", color="red")
-    axs[1,1].set_ylabel("sin(theta)")
-    axs[1,1].legend()
-
-    fig.suptitle("Pendulum")
-    fig.subplots_adjust(wspace=0.31)
-    plt.show()
-
-
-def sample_generator_trajectory(f, g, D, n, m, dt=0.001):
-    U = np.random.rand(D, m)
+def sample_generator_trajectory(f, g, D, n, m, dt=0.01):
+    U = np.empty((D, m))
     X = np.zeros((D+1, n))
     X[0, :] = np.random.rand(n)
     Xdot = np.zeros((D, n))
     # Single trajectory
     for i in range(D):
+        U[i, :] = np.sin(X[i, 0]) * np.random.rand(m)
         Xdot[i, :] = f(X[i, :]) + g(X[i, :]) @ U[i, :]
         X[i+1, :] = X[i, :] + Xdot[i, :] * dt
     return Xdot, X, U
@@ -123,10 +99,12 @@ class PendulumDynamicsModel:
         mass = self.mass
         gravity = self.gravity
         length = self.length
-        return np.array([[0], [1/(mass*length)]])
+        size = x.shape[0] if x.ndim == 2 else 1
+        return np.repeat(np.array([[[0], [1/(mass*length)]]]), size, axis=0)
 
 
 def test_GP_train_predict(n=2, m=3,
+                          D = 20,
                           deterministic=False,
                           rel_tol=0.05,
                           abs_tol=0.05,
@@ -141,7 +119,6 @@ def test_GP_train_predict(n=2, m=3,
     torch.backends.cudnn.benchmark = False
 
     # Collect training data
-    D = 20
     dynamics_model = dynamics_model_class(m, n, deterministic=deterministic)
     Xdot, X, U = sample_generator(dynamics_model.f,
                                   dynamics_model.g,
@@ -170,6 +147,10 @@ def test_GP_train_predict(n=2, m=3,
     # Test prior
     _ = dgp.predict(Xtest, return_cov=False)
     dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50, lr=0.01)
+    plot_learned_2D_func(Xtrain, dgp.f_func, dynamics_model.f)
+    plt.show()
+    plot_learned_2D_func(Xtrain, dgp.g_func, dynamics_model.g, axtitle="g(x)[{i}]")
+    plt.show()
 
     UHtest = np.concatenate((np.ones((Utest.shape[0], 1)), Utest), axis=1)
     if deterministic:
@@ -209,12 +190,8 @@ def test_control_affine_gp(
 test_pendulum_train_predict = partial(
     test_GP_train_predict,
     n=2, m=1,
+    D=2000,
     dynamics_model_class=PendulumDynamicsModel)
-
-
-test_pendulum_train_predict_trajectory = partial(
-    test_pendulum_train_predict,
-    sample_generator=sample_generator_independent)
 
 
 if __name__ == '__main__':

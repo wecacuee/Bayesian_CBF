@@ -1,3 +1,5 @@
+import os
+import os.path as osp
 import sys
 from setuptools import setup, find_packages
 from setuptools.command.test import test as TestCommand
@@ -10,16 +12,15 @@ class Pytest(TestCommand):
         sys.exit(errno)
 
 
+def rel2abs(relpath, basedir=osp.dirname(__file__) or '.'):
+    return osp.join(basedir, relpath)
+
+
 setup(name="bayes_cbf",
       packages=find_packages(),
       tests_require=['pytest', 'scipy'],
       cmdclass = {'test': Pytest},
-      install_requires=['matplotlib', 'cvxopt',
-                        #'gpytorch==fractional-outputs-per-inputs',
-                        'gpytorch @ git+https://github.com/wecacuee/gpytorch.git@fractional-outputs-per-input',
-                        #'gpytorch==v0.3.5',
-                        'torch',
-                        'torch-vision', 'pyro-ppl'],
+      install_requires=open(rel2abs('requirements.txt')).readlines(),
       entry_points={
           'console_scripts': [
               'run_pendulum_control_trival = bayes_cbf.pendulum:run_pendulum_control_trival',

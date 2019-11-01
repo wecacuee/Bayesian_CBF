@@ -46,6 +46,7 @@ def plot_results(time_vec, omega_vec, theta_vec, u_vec):
 
     fig.suptitle("Pendulum")
     fig.subplots_adjust(wspace=0.31)
+    plt.savefig('pendulum_data.pdf')
     plt.show()
 
 

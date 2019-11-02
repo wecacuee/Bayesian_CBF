@@ -10,29 +10,8 @@ import gpytorch.settings as gpsettings
 
 from bayes_cbf.control_affine_model import ControlAffineRegressor
 from bayes_cbf.plotting import plot_2D_f_func, plot_results, plot_learned_2D_func
-
-
-def sample_generator_trajectory(f, g, D, n, m, dt=0.01):
-    U = np.empty((D, m))
-    X = np.zeros((D+1, n))
-    X[0, :] = np.random.rand(n)
-    Xdot = np.zeros((D, n))
-    # Single trajectory
-    for i in range(D):
-        U[i, :] = np.sin(X[i, 0]) * np.abs(np.random.rand(m)) + 0.2 * np.random.rand()
-        Xdot[i, :] = f(X[i, :]) + g(X[i, :]) @ U[i, :]
-        X[i+1, :] = X[i, :] + Xdot[i, :] * dt
-    return Xdot, X, U
-
-
-def sample_generator_independent(f, g, D, n, m):
-    # Idependent random mappings
-    U = np.random.rand(D, m)
-    X = np.random.rand(D, n)
-    Xdot = np.zeros((D, n))
-    for i in range(D):
-        Xdot[i, :] = f(X[i, :]) + g(X[i, :]) @ U[i, :]
-    return Xdot, X, U
+from bayes_cbf.pendulum import PendulumDynamicsModel
+from bayes_cbf.sampling import sample_generator_independent, sample_generator_trajectory
 
 
 class RandomDynamicsModel:
@@ -43,7 +22,15 @@ class RandomDynamicsModel:
         self.A = np.random.rand(n,n)
         self.B = np.random.rand(n, m, n)
 
-    def f(self, x):
+    @property
+    def ctrl_size(self):
+        return self.m
+
+    @property
+    def state_size(self):
+        return self.n
+
+    def f_func(self, x):
         A = self.A
         n = self.n
         m = self.m
@@ -53,7 +40,7 @@ class RandomDynamicsModel:
         return (A @ x if deterministic
                 else np.random.multivariate_normal(A @ x, cov))
 
-    def g(self, x):
+    def g_func(self, x):
         """
         Returns n x m matrix
         """
@@ -74,35 +61,6 @@ class RandomDynamicsModel:
         )
 
 
-class PendulumDynamicsModel:
-    def __init__(self, m, n, mass=1, gravity=10, length=1, deterministic=True):
-        self.m = m
-        self.n = n
-        self.mass = mass
-        self.gravity = gravity
-        self.length = length
-
-    def f(self, X):
-        m = self.m
-        n = self.n
-        mass = self.mass
-        gravity = self.gravity
-        length = self.length
-        X = np.asarray(X)
-        theta_old, omega_old = X[..., 0:1], X[..., 1:2]
-        return np.concatenate([omega_old,
-                               - (gravity/length)*np.sin(theta_old)], axis=-1)
-
-    def g(self, x):
-        m = self.m
-        n = self.n
-        mass = self.mass
-        gravity = self.gravity
-        length = self.length
-        size = x.shape[0] if x.ndim == 2 else 1
-        return np.repeat(np.array([[[0], [1/(mass*length)]]]), size, axis=0)
-
-
 def test_GP_train_predict(n=2, m=3,
                           D = 20,
                           deterministic=False,
@@ -120,9 +78,7 @@ def test_GP_train_predict(n=2, m=3,
 
     # Collect training data
     dynamics_model = dynamics_model_class(m, n, deterministic=deterministic)
-    Xdot, X, U = sample_generator(dynamics_model.f,
-                                  dynamics_model.g,
-                                  D, n, m)
+    Xdot, X, U = sample_generator(dynamics_model, D)
     if X.shape[-1] == 2 and U.shape[-1] == 1:
         plot_results(np.arange(U.shape[0]),
                      omega_vec=X[:-1, 0],
@@ -147,12 +103,11 @@ def test_GP_train_predict(n=2, m=3,
     # Test prior
     _ = dgp.predict(Xtest, return_cov=False)
     dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50, lr=0.01)
-    plot_learned_2D_func(Xtrain, dgp.f_func, dynamics_model.f)
-    plt.savefig('f_learned_vs_f_true.pdf')
-    plt.show()
-    plot_learned_2D_func(Xtrain, dgp.g_func, dynamics_model.g, axtitle="g(x)[{i}]")
-    plt.savefig('g_learned_vs_g_true.pdf')
-    plt.show()
+    if X.shape[-1] == 2 and U.shape[-1] == 1:
+        plot_learned_2D_func(Xtrain, dgp.f_func, dynamics_model.f_func)
+        plt.savefig('f_learned_vs_f_true.pdf')
+        plot_learned_2D_func(Xtrain, dgp.g_func, dynamics_model.g_func, axtitle="g(x)[{i}]")
+        plt.savefig('g_learned_vs_g_true.pdf')
 
     UHtest = np.concatenate((np.ones((Utest.shape[0], 1)), Utest), axis=1)
     if deterministic:
@@ -192,12 +147,12 @@ def test_control_affine_gp(
 test_pendulum_train_predict = partial(
     test_GP_train_predict,
     n=2, m=1,
-    D=2000,
+    D=200,
     dynamics_model_class=PendulumDynamicsModel)
 
 
 if __name__ == '__main__':
-    #test_GP_train_predict()
-    #test_control_affine_gp()
+    test_GP_train_predict()
+    test_control_affine_gp()
     test_pendulum_train_predict()
 

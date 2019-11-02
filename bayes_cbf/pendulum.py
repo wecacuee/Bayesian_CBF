@@ -32,12 +32,56 @@ def control_random(theta, w, m=None, l=None, g=None):
     return control_trivial(theta, w, m=m, l=l, g=g) * np.abs(np.random.rand()) + np.random.rand()
 
 
+class PendulumDynamicsModel:
+    def __init__(self, m, n, mass=1, gravity=10, length=1, deterministic=True):
+        self.m = m
+        self.n = n
+        self.mass = mass
+        self.gravity = gravity
+        self.length = length
+
+    @property
+    def ctrl_size(self):
+        return self.m
+
+    @property
+    def state_size(self):
+        return self.n
+
+    def f_func(self, X):
+        m = self.m
+        n = self.n
+        mass = self.mass
+        gravity = self.gravity
+        length = self.length
+        X = np.asarray(X)
+        theta_old, omega_old = X[..., 0:1], X[..., 1:2]
+        return np.concatenate([omega_old,
+                               - (gravity/length)*np.sin(theta_old)], axis=-1)
+
+    def g_func(self, x):
+        m = self.m
+        n = self.n
+        mass = self.mass
+        gravity = self.gravity
+        length = self.length
+        size = x.shape[0] if x.ndim == 2 else 1
+        return np.repeat(np.array([[[0], [1/(mass*length)]]]), size, axis=0)
+
 class PendulumEnv:
     def __init__(self, tau, m,g,l):
         self.tau = tau
         self.m = m
         self.g = g
         self.l = l
+
+    @property
+    def state_size(self):
+        return self.n
+
+    @property
+    def ctrl_size(self):
+        return self.m
 
     def f_func(self, X):
         m, g, l = (self.m, self.g, self.l)
@@ -53,50 +97,53 @@ class PendulumEnv:
     def dynamics_model(self, X, U):
         return self.f_func(X) + (self.g_func(X) @ U.T).T
 
-    def __call__(self, theta0, omega0, numSteps=500, controller=control_trivial):
-        tau, m, g, l = (self.tau, self.m, self.g, self.l)
 
-        # initialize vectors
-        time_vec = np.zeros(numSteps)
-        theta_vec = np.zeros(numSteps)
-        omega_vec = np.zeros(numSteps)
-        u_vec = np.zeros(numSteps)
-        #damage indicator
-        damage_vec = np.zeros(numSteps)
+def sampling_pendulum(dynamics_model, theta0, omega0, numSteps=500,
+                      controller=control_trivial):
+    tau, m, g, l = (dynamics_model.tau, dynamics_model.m, dynamics_model.g, dynamics_model.l)
+    f_func, g_func = dynamics_model.f_func, dynamics_model.g_func
 
-        # set initial conditions
+    # initialize vectors
+    time_vec = np.zeros(numSteps)
+    theta_vec = np.zeros(numSteps)
+    omega_vec = np.zeros(numSteps)
+    u_vec = np.zeros(numSteps)
+    #damage indicator
+    damage_vec = np.zeros(numSteps)
 
-        theta = theta0
-        omega = omega0
-        time = 0
+    # set initial conditions
 
-        # begin time-stepping
+    theta = theta0
+    omega = omega0
+    time = 0
 
-        for i in range(numSteps):
-            omega_old = omega
-            theta_old = theta
-            u= controller(theta, omega)
-            # update the values
-            omega_direct = omega_old - (g/l)*sin(theta_old)*tau+(u/(m*l))*tau
-            theta_direct = theta_old + omega_old*tau
-            # Update as model
-            Xold = np.array([theta_old, omega_old])
-            Xdot = self.f_func(Xold) + self.g_func(Xold) @ np.array([u])
-            theta_prop, omega_prop = Xold + Xdot * tau
-            assert np.allclose(omega_direct, omega_prop, atol=1e-6, rtol=1e-4)
-            assert np.allclose(theta_direct, theta_prop, atol=1e-6, rtol=1e-4)
-            theta, omega = theta_prop, omega_prop
-            #theta, omega = theta_direct, omega_direct
-            # record the values
-            time_vec[i] = tau*i
-            omega_vec[i] = omega
-            u_vec[i] = u
-            #record and normalize theta to be in -pi to pi range
-            theta_vec[i] = (((theta+np.pi) % (2*np.pi)) - np.pi)
-            if 0<theta_vec[i]<np.pi/4:
-                damage_vec[i]=1
-        damge_perc=damage_vec.sum() * 100/numSteps
-        return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
+    # begin time-stepping
+
+    for i in range(numSteps):
+        omega_old = omega
+        theta_old = theta
+        u= controller(theta, omega)
+        # update the values
+        omega_direct = omega_old - (g/l)*sin(theta_old)*tau+(u/(m*l))*tau
+        theta_direct = theta_old + omega_old*tau
+        # Update as model
+        Xold = np.array([theta_old, omega_old])
+        Xdot = f_func(Xold) + g_func(Xold) @ np.array([u])
+        theta_prop, omega_prop = Xold + Xdot * tau
+        assert np.allclose(omega_direct, omega_prop, atol=1e-6, rtol=1e-4)
+        assert np.allclose(theta_direct, theta_prop, atol=1e-6, rtol=1e-4)
+        theta, omega = theta_prop, omega_prop
+        #theta, omega = theta_direct, omega_direct
+        # record the values
+        time_vec[i] = tau*i
+        omega_vec[i] = omega
+        u_vec[i] = u
+        #record and normalize theta to be in -pi to pi range
+        theta_vec[i] = (((theta+np.pi) % (2*np.pi)) - np.pi)
+        if 0<theta_vec[i]<np.pi/4:
+            damage_vec[i]=1
+    damge_perc=damage_vec.sum() * 100/numSteps
+    return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
 
 
 def rad2deg(rad):
@@ -115,7 +162,8 @@ def run_pendulum_experiment(#parameters
         controller=control_trivial):
     if ground_truth_model:
         controller = partial(controller, m=m, g=g, l=l)
-    damge_perc,time_vec,theta_vec,omega_vec,u_vec = PendulumEnv(tau, m, g, l)(
+    damge_perc,time_vec,theta_vec,omega_vec,u_vec = sampling_pendulum(
+        PendulumEnv(tau, m, g, l),
         theta0,omega0, numSteps, controller=controller)
     plot_results(time_vec, omega_vec, theta_vec, u_vec)
     return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)

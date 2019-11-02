@@ -1,0 +1,6 @@
+matplotlib
+cvxopt
+-e git+git@github.com:wecacuee/gpytorch.git@fractional-outputs-per-input#egg=gpytorch
+torch
+torch-vision
+pyro-ppl

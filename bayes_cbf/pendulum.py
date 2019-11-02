@@ -127,9 +127,9 @@ def sampling_pendulum(dynamics_model, theta0, omega0, numSteps=500,
         omega_direct = omega_old - (g/l)*sin(theta_old)*tau+(u/(m*l))*tau
         theta_direct = theta_old + omega_old*tau
         # Update as model
-        Xold = np.array([theta_old, omega_old])
+        Xold = np.array([[theta_old, omega_old]])
         Xdot = f_func(Xold) + g_func(Xold) @ np.array([u])
-        theta_prop, omega_prop = Xold + Xdot * tau
+        theta_prop, omega_prop = (Xold + Xdot * tau).flatten()
         assert np.allclose(omega_direct, omega_prop, atol=1e-6, rtol=1e-4)
         assert np.allclose(theta_direct, theta_prop, atol=1e-6, rtol=1e-4)
         theta, omega = theta_prop, omega_prop
@@ -191,7 +191,8 @@ def learn_dynamics(
     # where F(xₜ) = [f(xₜ), g(xₜ)]
 
     pend_env = PendulumEnv(tau,m,g,l)
-    damge_perc,time_vec,theta_vec,omega_vec,u_vec = pend_env(
+    damge_perc,time_vec,theta_vec,omega_vec,u_vec = sampling_pendulum(
+        pend_env,
         theta0,omega0, numSteps, controller=partial(control_random, m=m, g=g, l=l))
 
     # X.shape = Nx2

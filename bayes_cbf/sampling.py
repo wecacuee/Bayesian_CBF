@@ -1,13 +1,13 @@
 import numpy as np
 
-def sample_generator_trajectory(dynamics_model, D, dt=0.01):
+def sample_generator_trajectory(dynamics_model, D, dt=0.01, x0=None):
     f = dynamics_model.f_func
     g = dynamics_model.g_func
     m = dynamics_model.ctrl_size
     n = dynamics_model.state_size
     U = np.empty((D, m))
     X = np.zeros((D+1, n))
-    X[0, :] = np.random.rand(n)
+    X[0, :] = np.random.rand(n) if x0 is None else np.asarray(x0)
     Xdot = np.zeros((D, n))
     # Single trajectory
     for i in range(D):

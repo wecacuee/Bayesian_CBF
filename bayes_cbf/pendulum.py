@@ -8,7 +8,6 @@ from collections import namedtuple
 from functools import partial, wraps
 
 import numpy as np
-from numpy import cos, sin
 import matplotlib.pyplot as plt
 from matplotlib import rc as mplibrc
 mplibrc('text', usetex=True)
@@ -17,19 +16,22 @@ from bayes_cbf.control_affine_model import ControlAffineRegressor
 from bayes_cbf.plotting import plot_results, plot_2D_f_func
 
 
-def control_trivial(theta, w, m=None, l=None, g=None):
-    assert m is not None
-    assert l is not None
-    assert g is not None
-    u = m*g*sin(theta)
+def control_trivial(xi, m=1, mass=None, length=None, gravity=None):
+    assert mass is not None
+    assert length is not None
+    assert gravity is not None
+    theta, w = xi
+    u = mass * gravity * np.sin(theta)
     return u
 
 
-def control_random(theta, w, m=None, l=None, g=None):
-    assert m is not None
-    assert l is not None
-    assert g is not None
-    return control_trivial(theta, w, m=m, l=l, g=g) * np.abs(np.random.rand()) + np.random.rand()
+def control_random(xi, m=1, mass=None, length=None, gravity=None):
+    assert mass is not None
+    assert length is not None
+    assert gravity is not None
+    return control_trivial(
+        xi, mass=mass, length=length, gravity=gravity
+    ) * np.abs(np.random.rand()) + np.random.rand()
 
 
 class PendulumDynamicsModel:
@@ -69,11 +71,11 @@ class PendulumDynamicsModel:
         return np.repeat(np.array([[[0], [1/(mass*length)]]]), size, axis=0)
 
 class PendulumEnv:
-    def __init__(self, tau, m,g,l):
+    def __init__(self, tau, mass, gravity, length):
         self.tau = tau
-        self.m = m
-        self.g = g
-        self.l = l
+        self.mass = mass
+        self.gravity = gravity
+        self.length = length
 
     @property
     def state_size(self):
@@ -84,24 +86,27 @@ class PendulumEnv:
         return self.m
 
     def f_func(self, X):
-        m, g, l = (self.m, self.g, self.l)
+        mass, gravity, length = (self.mass, self.gravity, self.length)
         X = np.asarray(X)
         theta_old, omega_old = X[..., 0:1], X[..., 1:2]
         return np.concatenate([omega_old,
-                               - (g/l)*sin(theta_old)], axis=-1)
+                               - (gravity / length) * np.sin(theta_old)], axis=-1)
 
     def g_func(self, X):
-        m, g, l = (self.m, self.g, self.l)
-        return np.repeat(np.array([[[0], [1/(m*l)]]]), X.shape[0], axis=0)
+        mass, gravity, length = (self.mass, self.gravity, self.length)
+        return np.repeat(np.array([[[0], [1/(mass*length)]]]), X.shape[0], axis=0)
 
     def dynamics_model(self, X, U):
         return self.f_func(X) + (self.g_func(X) @ U.T).T
 
 
-def sampling_pendulum(dynamics_model, theta0, omega0, numSteps=500,
+def sampling_pendulum(dynamics_model, numSteps=500,
+                      x0=None,
                       controller=control_trivial):
-    tau, m, g, l = (dynamics_model.tau, dynamics_model.m, dynamics_model.g, dynamics_model.l)
+    tau, m, g, l = (dynamics_model.tau, dynamics_model.mass, dynamics_model.gravity,
+                    dynamics_model.length)
     f_func, g_func = dynamics_model.f_func, dynamics_model.g_func
+    theta0, omega0 = x0
 
     # initialize vectors
     time_vec = np.zeros(numSteps)
@@ -122,9 +127,9 @@ def sampling_pendulum(dynamics_model, theta0, omega0, numSteps=500,
     for i in range(numSteps):
         omega_old = omega
         theta_old = theta
-        u= controller(theta, omega)
+        u= controller((theta, omega))
         # update the values
-        omega_direct = omega_old - (g/l)*sin(theta_old)*tau+(u/(m*l))*tau
+        omega_direct = omega_old - (g/l)*np.sin(theta_old)*tau+(u/(m*l))*tau
         theta_direct = theta_old + omega_old*tau
         # Update as model
         Xold = np.array([[theta_old, omega_old]])
@@ -154,17 +159,17 @@ def run_pendulum_experiment(#parameters
         theta0=5*np.pi/6,
         omega0=-0.01,
         tau=0.01,
-        m=1,
-        g=10,
-        l=1,
+        mass=1,
+        gravity=10,
+        length=1,
         numSteps=10000,
         ground_truth_model=True,
         controller=control_trivial):
     if ground_truth_model:
-        controller = partial(controller, m=m, g=g, l=l)
+        controller = partial(controller, mass=mass, gravity=gravity, length=length)
     damge_perc,time_vec,theta_vec,omega_vec,u_vec = sampling_pendulum(
         PendulumEnv(tau, m, g, l),
-        theta0,omega0, numSteps, controller=controller)
+        numSteps, x0=(theta0,omega0), controller=controller)
     plot_results(time_vec, omega_vec, theta_vec, u_vec)
     return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
 
@@ -173,9 +178,9 @@ def learn_dynamics(
         theta0=5*np.pi/6,
         omega0=-0.01,
         tau=0.001,
-        m=1,
-        g=10,
-        l=1,
+        mass=1,
+        gravity=10,
+        length=1,
         max_train=300,
         numSteps=10000):
     #from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
@@ -190,10 +195,10 @@ def learn_dynamics(
     # xₜ₊₁ = F(xₜ)[1 u]
     # where F(xₜ) = [f(xₜ), g(xₜ)]
 
-    pend_env = PendulumEnv(tau,m,g,l)
+    pend_env = PendulumEnv(tau, mass, gravity, length)
     damge_perc,time_vec,theta_vec,omega_vec,u_vec = sampling_pendulum(
-        pend_env,
-        theta0,omega0, numSteps, controller=partial(control_random, m=m, g=g, l=l))
+        pend_env, numSteps, x0=(theta0,omega0),
+        controller=partial(control_random, mass=mass, gravity=gravity, length=length))
 
     # X.shape = Nx2
     X = np.vstack((theta_vec, omega_vec)).T
@@ -308,9 +313,9 @@ def control_cbf_clf(theta, w,
                     delta_sr=10,
                     gamma_col=1,
                     delta_col=np.pi/8,
-                    m=None,
-                    l=None,
-                    g=None):
+                    mass=None,
+                    length=None,
+                    gravity=None):
     assert m is not None
     assert l is not None
     assert g is not None

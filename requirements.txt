@@ -1,6 +1,6 @@
 matplotlib
 cvxopt
--e git+git@github.com:wecacuee/gpytorch.git@fractional-outputs-per-input#egg=gpytorch
+gpytorch@git+https://github.com/wecacuee/gpytorch.git@fractional-outputs-per-input#egg=gpytorch==0.3.7fopi1
 torch
 torch-vision
 pyro-ppl

@@ -226,51 +226,8 @@ def learn_dynamics(
 
     # Plot the pendulum trajectory
     plot_results(time_vec, omega_vec, theta_vec, u_vec)
-
-    theta_range = slice(np.min(theta_vec), np.max(theta_vec),
-                        (np.max(theta_vec) - np.min(theta_vec)) / 20)
-    omega_range=slice(np.min(omega_vec), np.max(omega_vec),
-                      (np.max(omega_vec) - np.min(omega_vec)) / 20)
-
-    # Plot the true Xdot vs learned Xdot
-    # fig, axes = plt.subplots(3,2)
-    # Xgrid = np.mgrid[theta_range, omega_range]
-    # Ugrid = np.array([[0]])
-    # UHgrid = np.hstack((np.ones((U.shape[0], 1), dtype=U.dtype), U))
-
-    # axes[1,0].contourf(Xgrid[0, ...], Xgrid[1, ...],
-    #                  pend_env.dynamics_model(Xgrid.reshape(2, -1).T, Ugrid)[0].reshape(Xgrid.shape[1:]))
-    # FXgrid = dgp.predict(Xgrid.reshape(2, -1).T, return_cov=False)
-    # XdotGrid = FXgrid.tranpose(0, 2, 1) @ UH[N+1, :]
-    # axes[1].contourf(Xgrid[0, ...], Xgrid[1, ...],
-    #                  XdotGrid.reshape(*Xgrid.shape[1:])[0])
-    # plt.show()
-
-    # Plot True f_func
-    fig, axes = plt.subplots(3,2)
-    plot_2D_f_func(pend_env.f_func,
-                   axes_gen=lambda FX: axes[0, :],
-                   theta_range=theta_range,
-                   omega_range=omega_range,
-                   axtitle="True f(x)[{i}]")
-    # Plot learned f_func
-    def learned_f_func(X):
-        shape = X.shape
-        FX = dgp.f_func(X.reshape(-1, shape[-1]))
-        return FX.reshape(*shape[:-1], -1)
-
-    plot_2D_f_func(learned_f_func,
-                   axes_gen=lambda FX: axes[1, :],
-                   theta_range=theta_range,
-                   omega_range=omega_range,
-                   axtitle="Learned f(x)[{i}]")
-    axes[2, 0].plot(Xtrain[:, 0], Xtrain[:, 1], marker='*', linestyle='')
-    axes[2, 0].set_ylabel(r"$\omega$")
-    axes[2, 0].set_xlabel(r"$\theta$")
-    axes[2, 0].set_xlim(theta_range.start, theta_range.stop)
-    axes[2, 0].set_ylim(omega_range.start, omega_range.stop)
-    fig.subplots_adjust(wspace=0.3,hspace=0.42)
-    plt.show()
+    plot_learned_2D_func(Xtrain, dgp.f_func, pend_env.f_func,
+                         axtitle="f(x)[{i}]")
 
     # within train set
     FX_98, FXcov_98 = dgp.predict(X[98:99,:], return_cov=True)
@@ -494,6 +451,7 @@ def control_QP_cbf_clf(theta, w,
 
 run_pendulum_control_trival = partial(
     run_pendulum_experiment, controller=control_trivial)
+
 
 run_pendulum_control_cbf_clf = partial(
     run_pendulum_experiment, controller=control_cbf_clf)

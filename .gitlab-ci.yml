@@ -1,12 +1,12 @@
 default:
   image: "pytorch/pytorch"
   before_script:
-    - apt-get update -qq && apt-get install -y -qq texlive-science python3-pip
-    - pip3 install --upgrade pip
-    - pip3 --version
+    - apt-get update -qq && apt-get install -y -qq texlive-science
+    - pip install --upgrade pip
+    - pip --version
     - python --version
 
 job:
   script:
-    - pip3 install -e .
-    - python3 setup.py test
+    - pip install -e .
+    - python setup.py test

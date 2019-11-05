@@ -13,7 +13,7 @@ from matplotlib import rc as mplibrc
 mplibrc('text', usetex=True)
 
 from bayes_cbf.control_affine_model import ControlAffineRegressor
-from bayes_cbf.plotting import plot_results, plot_2D_f_func
+from bayes_cbf.plotting import plot_results, plot_learned_2D_func
 from bayes_cbf.sampling import sample_generator_trajectory, controller_sine
 
 
@@ -110,7 +110,7 @@ def sampling_pendulum(dynamics_model, numSteps,
         omega_old = omega
         theta_old = theta
         # update the values
-        omega_direct = omega_old - (g/l)*np.sin(theta_old)*tau+(u/(m*l))*tau
+        omega_direct = omega_old - (g/l)*np.sin(theta_old)*tau+(u[0]/(m*l))*tau
         theta_direct = theta_old + omega_old*tau
         # Update as model
         Xold = np.array([[theta_old, omega_old]])
@@ -118,9 +118,9 @@ def sampling_pendulum(dynamics_model, numSteps,
         theta_prop, omega_prop = (Xold + Xdot * tau).flatten()
         assert np.allclose(omega_direct, omega_prop, atol=1e-6, rtol=1e-4)
         assert np.allclose(theta_direct, theta_prop, atol=1e-6, rtol=1e-4)
-        theta, omega = theta_prop, omega_prop
+        #theta, omega = theta_prop, omega_prop
 
-        #theta, omega = theta_direct, omega_direct
+        theta, omega = theta_direct, omega_direct
         # record the values
         #record and normalize theta to be in -pi to pi range
     damge_perc=damage_vec.sum() * 100/numSteps
@@ -166,6 +166,7 @@ def run_pendulum_experiment(#parameters
                               length=length),
         numSteps, x0=(theta0,omega0), controller=controller)
     plot_results(time_vec, omega_vec, theta_vec, u_vec)
+    plt.show()
     return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
 
 
@@ -176,7 +177,7 @@ def learn_dynamics(
         mass=1,
         gravity=10,
         length=1,
-        max_train=200,
+        max_train=1000,
         numSteps=200):
     #from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
     #from bayes_cbf.affine_kernel import AffineScaleKernel
@@ -201,10 +202,8 @@ def learn_dynamics(
     UH = np.hstack((np.ones((U.shape[0], 1), dtype=U.dtype), U))
 
     # Do not need the full dataset . Take a small subset
-    #N = min(numSteps-1, max_train)
-    #shuffled_range = np.random.randint(numSteps - 1, size=N)
-    shuffled_range = np.arange(numSteps)
-    np.random.shuffle(shuffled_range)
+    N = min(numSteps-1, max_train)
+    shuffled_range = np.random.randint(numSteps - 1, size=N)
     XdotTrain = dX[shuffled_range, :]
     Xtrain = X[shuffled_range, :]
     Utrain = U[shuffled_range, :]
@@ -225,13 +224,13 @@ def learn_dynamics(
     dX_98 = FX_98[0, ...].T @ UH[98, :]
     #dXcov_98 = UH[98, :] @ FXcov_98 @ UH[98, :]
     print("Train sample: expected:{}, got:{}, cov:{}".format(dX[98], dX_98, FXcov_98))
-    assert np.allclose(dX[98], dX_98, rtol=0.01, atol=0.01)
+    assert np.allclose(dX[98], dX_98, rtol=0.05, atol=0.05)
 
     # out of train set
     FXNp1, FXNp1cov = dgp.predict(X[N+1:N+2,:], return_cov=True)
     dX_Np1 = FXNp1[0, ...].T @ UH[N+1, :]
     print("Test sample: expected:{}, got:{}, cov:{}".format( dX[N+1], dX_Np1, FXNp1cov))
-    assert np.allclose(dX[N+1], dX_Np1, rtol=0.01, atol=0.01)
+    assert np.allclose(dX[N+1], dX_Np1, rtol=0.05, atol=0.05)
 
     return dgp, dX, XU
 

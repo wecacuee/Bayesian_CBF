@@ -1,7 +1,7 @@
 default:
   image: "pytorch/pytorch"
   before_script:
-    - apt-get update -qq && apt-get install -y -qq texlive-science texlive-latex-extra
+    - apt-get update -qq && apt-get install -y -qq texlive-science texlive-latex-extra dvipng
     - pip install --upgrade pip
     - pip --version
     - python --version

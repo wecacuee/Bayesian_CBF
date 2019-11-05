@@ -177,8 +177,8 @@ def learn_dynamics(
         mass=1,
         gravity=10,
         length=1,
-        max_train=1000,
-        numSteps=200):
+        max_train=200,
+        numSteps=1000):
     #from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
     #from bayes_cbf.affine_kernel import AffineScaleKernel
     #from sklearn.gaussian_process import GaussianProcessRegressor

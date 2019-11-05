@@ -63,9 +63,11 @@ def plot_learned_2D_func(Xtrain, learned_f_func, true_f_func,
     plot_2D_f_func(learned_f_func, axes_gen=lambda _: axs[1, :],
                    theta_range=theta_range, omega_range=omega_range,
                    axtitle="Learned " + axtitle)
-    axs[2, 0].plot(Xtrain[:, 0], Xtrain[:, 1], marker='*', linestyle='')
-    axs[2, 0].set_ylabel(r"$\omega$")
-    axs[2, 0].set_xlabel(r"$\theta$")
-    axs[2, 0].set_xlim(theta_range.start, theta_range.stop)
-    axs[2, 0].set_ylim(omega_range.start, omega_range.stop)
-    fig.subplots_adjust(wspace=0.3,hspace=0.42)
+    ax = axs[2,0]
+    ax.plot(Xtrain[:, 0], Xtrain[:, 1], marker='*', linestyle='')
+    ax.set_ylabel(r"$\omega$")
+    ax.set_xlabel(r"$\theta$")
+    ax.set_xlim(theta_range.start, theta_range.stop)
+    ax.set_ylim(omega_range.start, omega_range.stop)
+    ax.set_title("Training data")
+    fig.subplots_adjust(wspace=0.3,hspace=0.5)

@@ -68,9 +68,9 @@ def test_GP_train_predict(n=2, m=3,
                           abs_tol=0.05,
                           sample_generator=sample_generator_trajectory,
                           dynamics_model_class=RandomDynamicsModel):
-    #chosen_seed = np.random.randint(100000)
-    chosen_seed = 52648
-    print(chosen_seed)
+    chosen_seed = np.random.randint(100000)
+    #chosen_seed = 52648
+    print("Random seed: {}".format(chosen_seed))
     np.random.seed(chosen_seed)
     torch.manual_seed(chosen_seed)
     torch.backends.cudnn.deterministic = True

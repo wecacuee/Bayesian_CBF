@@ -71,42 +71,13 @@ class PendulumDynamicsModel:
         size = x.shape[0] if x.ndim == 2 else 1
         return np.repeat(np.array([[[0], [1/(mass*length)]]]), size, axis=0)
 
-class PendulumEnv:
-    def __init__(self, tau, mass, gravity, length):
-        self.tau = tau
-        self.mass = mass
-        self.gravity = gravity
-        self.length = length
-
-    @property
-    def state_size(self):
-        return self.n
-
-    @property
-    def ctrl_size(self):
-        return self.m
-
-    def f_func(self, X):
-        mass, gravity, length = (self.mass, self.gravity, self.length)
-        X = np.asarray(X)
-        theta_old, omega_old = X[..., 0:1], X[..., 1:2]
-        return np.concatenate([omega_old,
-                               - (gravity / length) * np.sin(theta_old)], axis=-1)
-
-    def g_func(self, X):
-        mass, gravity, length = (self.mass, self.gravity, self.length)
-        return np.repeat(np.array([[[0], [1/(mass*length)]]]), X.shape[0], axis=0)
-
-    def dynamics_model(self, X, U):
-        return self.f_func(X) + (self.g_func(X) @ U.T).T
-
-
-def sampling_pendulum(dynamics_model, D=500,
+def sampling_pendulum(dynamics_model, numSteps,
                       x0=None,
+                      dt=0.01,
                       controller=control_trivial):
-    numSteps = D
-    tau, m, g, l = (dynamics_model.tau, dynamics_model.mass, dynamics_model.gravity,
-                    dynamics_model.length)
+    m, g, l = (dynamics_model.mass, dynamics_model.gravity,
+               dynamics_model.length)
+    tau = dt
     f_func, g_func = dynamics_model.f_func, dynamics_model.g_func
     theta0, omega0 = x0
 
@@ -127,9 +98,17 @@ def sampling_pendulum(dynamics_model, D=500,
     # begin time-stepping
 
     for i in range(numSteps):
+        time_vec[i] = tau*i
+        theta_vec[i] = (((theta+np.pi) % (2*np.pi)) - np.pi)
+        omega_vec[i] = omega
+        u= controller((theta, omega))
+        u_vec[i] = u
+
+        if 0<theta_vec[i]<np.pi/4:
+            damage_vec[i]=1
+
         omega_old = omega
         theta_old = theta
-        u= controller((theta, omega))
         # update the values
         omega_direct = omega_old - (g/l)*np.sin(theta_old)*tau+(u/(m*l))*tau
         theta_direct = theta_old + omega_old*tau
@@ -140,23 +119,18 @@ def sampling_pendulum(dynamics_model, D=500,
         assert np.allclose(omega_direct, omega_prop, atol=1e-6, rtol=1e-4)
         assert np.allclose(theta_direct, theta_prop, atol=1e-6, rtol=1e-4)
         theta, omega = theta_prop, omega_prop
+
         #theta, omega = theta_direct, omega_direct
         # record the values
-        time_vec[i] = tau*i
-        omega_vec[i] = omega
-        u_vec[i] = u
         #record and normalize theta to be in -pi to pi range
-        theta_vec[i] = (((theta+np.pi) % (2*np.pi)) - np.pi)
-        if 0<theta_vec[i]<np.pi/4:
-            damage_vec[i]=1
     damge_perc=damage_vec.sum() * 100/numSteps
     return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
 
 
-def sampling_pendulum_data(dynamics_model, dt=0.01, **kwargs):
+def sampling_pendulum_data(dynamics_model, D=100, dt=0.01, **kwargs):
     tau = dt
     (damge_perc,time_vec,theta_vec,omega_vec,u_vec) = sampling_pendulum(
-        dynamics_model, **kwargs)
+        dynamics_model, numSteps=D+1, **kwargs)
 
     # X.shape = Nx2
     X = np.vstack((theta_vec, omega_vec)).T
@@ -188,7 +162,8 @@ def run_pendulum_experiment(#parameters
     if ground_truth_model:
         controller = partial(controller, mass=mass, gravity=gravity, length=length)
     damge_perc,time_vec,theta_vec,omega_vec,u_vec = sampling_pendulum(
-        PendulumEnv(tau, m, g, l),
+        PendulumDynamicsModel(m=1, n=2, mass=mass, gravity=gravity,
+                              length=length),
         numSteps, x0=(theta0,omega0), controller=controller)
     plot_results(time_vec, omega_vec, theta_vec, u_vec)
     return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
@@ -201,7 +176,7 @@ def learn_dynamics(
         mass=1,
         gravity=10,
         length=1,
-        max_train=300,
+        max_train=200,
         numSteps=200):
     #from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
     #from bayes_cbf.affine_kernel import AffineScaleKernel
@@ -215,32 +190,33 @@ def learn_dynamics(
     # xₜ₊₁ = F(xₜ)[1 u]
     # where F(xₜ) = [f(xₜ), g(xₜ)]
 
-    pend_env = PendulumEnv(tau, mass, gravity, length)
+    pend_env = PendulumDynamicsModel(m=1, n=2, mass=mass, gravity=gravity,
+                                     length=length)
     dX, X, U = sampling_pendulum_data(
         pend_env, D=numSteps, x0=(theta0,omega0),
         dt=tau,
-        #controller=partial(controller_sine, mass=mass, gravity=gravity, length=length))
-        controller=partial(controller_sine, m=1))
+        controller=partial(control_random, mass=mass, gravity=gravity,
+                           length=length))
 
     UH = np.hstack((np.ones((U.shape[0], 1), dtype=U.dtype), U))
 
     # Do not need the full dataset . Take a small subset
     #N = min(numSteps-1, max_train)
     #shuffled_range = np.random.randint(numSteps - 1, size=N)
-    shuffled_range = np.arange(numSteps-2)
+    shuffled_range = np.arange(numSteps)
     np.random.shuffle(shuffled_range)
-    XdotTrain = dX[shuffled_range+1, :]
+    XdotTrain = dX[shuffled_range, :]
     Xtrain = X[shuffled_range, :]
     Utrain = U[shuffled_range, :]
     #gp = GaussianProcessRegressor(kernel=kernel_xu,
     #                              alpha=1e6).fit(Z_shuffled, Y_shuffled)
-    dgp = ControlAffineRegressor(
-        Xtrain.shape[-1], Utrain.shape[-1]
-    ).fit(Xtrain, Utrain, XdotTrain, lr=0.01)
+    dgp = ControlAffineRegressor(Xtrain.shape[-1], Utrain.shape[-1])
+    dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50, lr=0.01)
     dgp.save()
 
     # Plot the pendulum trajectory
-    plot_results(time_vec, omega_vec, theta_vec, u_vec)
+    plot_results(np.arange(U.shape[0]), omega_vec=X[:, 0],
+                 theta_vec=X[:, 1], u_vec=U[:, 0])
     plot_learned_2D_func(Xtrain, dgp.f_func, pend_env.f_func,
                          axtitle="f(x)[{i}]")
 
@@ -278,7 +254,7 @@ def cvxopt_solve_qp(P, q, G=None, h=None, A=None, b=None):
 ControlAffine = namedtuple("ControlAffine",
                            ["A", "b"])
 
-def control_cbf_clf(theta, w,
+def control_cbf_clf(xi,
                     theta_c=np.pi/4,
                     c=1,
                     gamma_sr=1,
@@ -288,28 +264,30 @@ def control_cbf_clf(theta, w,
                     mass=None,
                     length=None,
                     gravity=None):
-    assert m is not None
-    assert l is not None
-    assert g is not None
+    assert mass is not None
+    assert length is not None
+    assert gravity is not None
+    theta, w = xi
+    m, g, l = mass, gravity, length
     def A_clf(theta, w):
         return l*w
 
     def b_clf(theta, w):
-        return -c*(0.5*m*l**2*w**2+m*g*l*(1-cos(theta)))
+        return -c*(0.5*m*l**2*w**2+m*g*l*(1-np.cos(theta)))
 
     def A_sr(theta, w):
         return l*w
 
     def b_sr(theta, w):
-        return gamma_sr*(delta_sr-w**2)+(2*g*sin(theta)*w)/(l)
+        return gamma_sr*(delta_sr-w**2)+(2*g*np.sin(theta)*w)/(l)
 
     def A_col(theta, w):
-        return -(2*w*(cos(delta_col)-cos(theta-theta_c)))/(m*l)
+        return -(2*w*(np.cos(delta_col)-np.cos(theta-theta_c)))/(m*l)
 
     def b_col(theta, w):
-        return (gamma_col*(cos(delta_col)-cos(theta-theta_c))*w**2
-                + w**3*sin(theta-theta_c)
-                - (2*g*w*sin(theta)*(cos(delta_col)-cos(theta-theta_c)))/l)
+        return (gamma_col*(np.cos(delta_col)-np.cos(theta-theta_c))*w**2
+                + w**3*np.sin(theta-theta_c)
+                - (2*g*w*np.sin(theta)*(np.cos(delta_col)-np.cos(theta-theta_c)))/l)
 
     return control_QP_cbf_clf(theta, w,
                               ctrl_aff_clf=ControlAffine(A_clf, b_clf),
@@ -461,15 +439,21 @@ def control_QP_cbf_clf(theta, w,
             u = u_rho[0] if u_rho is not None else np.random.rand()
         except ValueError:
             u = np.random.rand()
-    return u
+    return np.array([u])
 
 
 run_pendulum_control_trival = partial(
     run_pendulum_experiment, controller=control_trivial)
+"""
+Run pendulum with a trivial controller.
+"""
 
 
 run_pendulum_control_cbf_clf = partial(
     run_pendulum_experiment, controller=control_cbf_clf)
+"""
+Run pendulum with a safe CLF-CBF controller.
+"""
 
 
 def run_pendulum_control_online_learning():
@@ -477,8 +461,9 @@ def run_pendulum_control_online_learning():
         ground_truth_model=False,
         controller=ControlCBFCLFLearned().controller)
 
+
 if __name__ == '__main__':
-    #run_pendulum_control_trival()
-    #run_pendulum_control_cbf_clf()
+    run_pendulum_control_trival()
+    run_pendulum_control_cbf_clf()
     learn_dynamics()
-    #run_pendulum_control_online_learning()
+    run_pendulum_control_online_learning()

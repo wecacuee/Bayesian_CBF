@@ -18,4 +18,4 @@ build_image:
 test-repo:
   stage: test
   script:
-    - python setup.py test
+    - docker run gitlab-registry.nautilus.optiputer.net/vdhiman/bayescbf python setup.py test

@@ -14,6 +14,7 @@ mplibrc('text', usetex=True)
 
 from bayes_cbf.control_affine_model import ControlAffineRegressor
 from bayes_cbf.plotting import plot_results, plot_2D_f_func
+from bayes_cbf.sampling import sample_generator_trajectory, controller_sine
 
 
 def control_trivial(xi, m=1, mass=None, length=None, gravity=None):
@@ -22,7 +23,7 @@ def control_trivial(xi, m=1, mass=None, length=None, gravity=None):
     assert gravity is not None
     theta, w = xi
     u = mass * gravity * np.sin(theta)
-    return u
+    return np.array([u])
 
 
 def control_random(xi, m=1, mass=None, length=None, gravity=None):
@@ -100,9 +101,10 @@ class PendulumEnv:
         return self.f_func(X) + (self.g_func(X) @ U.T).T
 
 
-def sampling_pendulum(dynamics_model, numSteps=500,
+def sampling_pendulum(dynamics_model, D=500,
                       x0=None,
                       controller=control_trivial):
+    numSteps = D
     tau, m, g, l = (dynamics_model.tau, dynamics_model.mass, dynamics_model.gravity,
                     dynamics_model.length)
     f_func, g_func = dynamics_model.f_func, dynamics_model.g_func
@@ -133,7 +135,7 @@ def sampling_pendulum(dynamics_model, numSteps=500,
         theta_direct = theta_old + omega_old*tau
         # Update as model
         Xold = np.array([[theta_old, omega_old]])
-        Xdot = f_func(Xold) + g_func(Xold) @ np.array([u])
+        Xdot = f_func(Xold) + g_func(Xold) @ u
         theta_prop, omega_prop = (Xold + Xdot * tau).flatten()
         assert np.allclose(omega_direct, omega_prop, atol=1e-6, rtol=1e-4)
         assert np.allclose(theta_direct, theta_prop, atol=1e-6, rtol=1e-4)
@@ -149,6 +151,24 @@ def sampling_pendulum(dynamics_model, numSteps=500,
             damage_vec[i]=1
     damge_perc=damage_vec.sum() * 100/numSteps
     return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
+
+
+def sampling_pendulum_data(dynamics_model, dt=0.01, **kwargs):
+    tau = dt
+    (damge_perc,time_vec,theta_vec,omega_vec,u_vec) = sampling_pendulum(
+        dynamics_model, **kwargs)
+
+    # X.shape = Nx2
+    X = np.vstack((theta_vec, omega_vec)).T
+    # XU.shape = Nx3
+    U = u_vec.reshape(-1, 1)
+    XU = np.hstack((X, u_vec.reshape(-1, 1)))
+
+    # compute discrete derivative
+    # dxₜ₊₁ = xₜ₊₁ - xₜ / dt
+    dX = (X[1:, :] - X[:-1, :]) / tau
+
+    return dX, X, U
 
 
 def rad2deg(rad):
@@ -177,12 +197,12 @@ def run_pendulum_experiment(#parameters
 def learn_dynamics(
         theta0=5*np.pi/6,
         omega0=-0.01,
-        tau=0.001,
+        tau=0.01,
         mass=1,
         gravity=10,
         length=1,
         max_train=300,
-        numSteps=10000):
+        numSteps=200):
     #from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
     #from bayes_cbf.affine_kernel import AffineScaleKernel
     #from sklearn.gaussian_process import GaussianProcessRegressor
@@ -196,25 +216,20 @@ def learn_dynamics(
     # where F(xₜ) = [f(xₜ), g(xₜ)]
 
     pend_env = PendulumEnv(tau, mass, gravity, length)
-    damge_perc,time_vec,theta_vec,omega_vec,u_vec = sampling_pendulum(
-        pend_env, numSteps, x0=(theta0,omega0),
-        controller=partial(control_random, mass=mass, gravity=gravity, length=length))
+    dX, X, U = sampling_pendulum_data(
+        pend_env, D=numSteps, x0=(theta0,omega0),
+        dt=tau,
+        #controller=partial(controller_sine, mass=mass, gravity=gravity, length=length))
+        controller=partial(controller_sine, m=1))
 
-    # X.shape = Nx2
-    X = np.vstack((theta_vec, omega_vec)).T
-    # XU.shape = Nx3
-    U = u_vec.reshape(-1, 1)
     UH = np.hstack((np.ones((U.shape[0], 1), dtype=U.dtype), U))
-    XU = np.hstack((X, u_vec.reshape(-1, 1)))
-
-    # compute discrete derivative
-    # dxₜ₊₁ = xₜ₊₁ - xₜ / dt
-    dX = (X[1:, :] - X[:-1, :]) / tau
 
     # Do not need the full dataset . Take a small subset
-    N = min(numSteps-1, max_train)
-    shuffled_range = np.random.randint(numSteps - 1, size=N)
-    XdotTrain = dX[shuffled_range, :]
+    #N = min(numSteps-1, max_train)
+    #shuffled_range = np.random.randint(numSteps - 1, size=N)
+    shuffled_range = np.arange(numSteps-2)
+    np.random.shuffle(shuffled_range)
+    XdotTrain = dX[shuffled_range+1, :]
     Xtrain = X[shuffled_range, :]
     Utrain = U[shuffled_range, :]
     #gp = GaussianProcessRegressor(kernel=kernel_xu,

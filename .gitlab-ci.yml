@@ -1,12 +1,21 @@
 default:
   image: "pytorch/pytorch"
   before_script:
-    - apt-get update -qq && apt-get install -y -qq texlive-science texlive-latex-extra dvipng
-    - pip install --upgrade pip
     - pip --version
     - python --version
 
-job:
+before_script:
+  - docker info
+
+build_image:
+  stage: build
   script:
-    - pip install -e .
+    - docker build -t gitlab-registry.nautilus.optiputer.net/vdhiman/bayescbf:${CI_COMMIT_SHA:0:0} .
+    - docker tag gitlab-registry.nautilus.optiputer.net/vdhiman/bayescbf:${CI_COMMIT_SHA:0:0} gitlab-registry.nautilus.optiputer.net/vdhiman/bayescbf:latest
+    - docker push gitlab-registry.nautilus.optiputer.net/vdhiman/bayescbf
+
+
+test-repo:
+  stage: test
+  script:
     - python setup.py test

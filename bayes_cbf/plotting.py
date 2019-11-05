@@ -46,7 +46,7 @@ def plot_results(time_vec, omega_vec, theta_vec, u_vec):
 
     fig.suptitle("Pendulum")
     fig.subplots_adjust(wspace=0.31)
-    plt.savefig('pendulum_data.pdf')
+    plt.savefig('plots/pendulum_data.pdf')
     #plt.show()
 
 
@@ -70,4 +70,4 @@ def plot_learned_2D_func(Xtrain, learned_f_func, true_f_func,
     ax.set_xlim(theta_range.start, theta_range.stop)
     ax.set_ylim(omega_range.start, omega_range.stop)
     ax.set_title("Training data")
-    fig.subplots_adjust(wspace=0.3,hspace=0.5)
+    fig.subplots_adjust(wspace=0.3,hspace=0.8)

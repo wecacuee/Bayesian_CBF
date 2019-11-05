@@ -236,7 +236,7 @@ def learn_dynamics(
     if not np.allclose(dX[N+1], dX_Np1, rtol=0.05, atol=0.05):
         print("Test sample: expected:{}, got:{}, cov:{}".format( dX[N+1], dX_Np1, FXNp1cov))
 
-    return dgp, dX, XU
+    return dgp, dX, U
 
 
 def cvxopt_solve_qp(P, q, G=None, h=None, A=None, b=None):

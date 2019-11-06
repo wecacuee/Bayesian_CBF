@@ -389,7 +389,8 @@ class ControlCBFCLFLearned:
         LOG.info("Training model with datasize {}".format(XdotTrain.shape[0]))
         self.dgp.fit(Xtrain[:-1, :], Utrain[:-1, :], XdotTrain)
 
-    def controller(self, theta, w):
+    def controller(self, xi):
+        theta, w = xi
         if len(self.Xtrain) % self.train_every_n_steps == 0:
             # train every n steps
             self.train()
@@ -397,7 +398,7 @@ class ControlCBFCLFLearned:
         u = control_QP_cbf_clf(theta, w,
                                   ctrl_aff_clf=ControlAffine(self.A_clf, self.b_clf),
                                   ctrl_aff_cbfs=[ControlAffine(self.A_col, self.b_col)])
-        self.Utrain.append([u])
+        self.Utrain.append(u)
         return u
 
 
@@ -466,7 +467,7 @@ def run_pendulum_control_online_learning():
 
 
 if __name__ == '__main__':
-    run_pendulum_control_trival()
+    #run_pendulum_control_trival()
     run_pendulum_control_cbf_clf()
-    learn_dynamics()
+    #learn_dynamics()
     run_pendulum_control_online_learning()

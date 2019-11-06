@@ -3,6 +3,9 @@ import logging
 LOG = logging.getLogger(__name__)
 LOG.setLevel(logging.INFO)
 
+import sys
+import io
+import tempfile
 import inspect
 from collections import namedtuple
 from functools import partial, wraps
@@ -12,10 +15,11 @@ import matplotlib.pyplot as plt
 from matplotlib import rc as mplibrc
 mplibrc('text', usetex=True)
 
-from bayes_cbf.control_affine_model import ControlAffineRegressor
+from bayes_cbf.control_affine_model import ControlAffineRegressor, LOG as CALOG
+CALOG.setLevel(logging.WARNING)
+
 from bayes_cbf.plotting import plot_results, plot_learned_2D_func
 from bayes_cbf.sampling import sample_generator_trajectory, controller_sine
-
 
 def control_trivial(xi, m=1, mass=None, length=None, gravity=None):
     assert mass is not None
@@ -36,12 +40,14 @@ def control_random(xi, m=1, mass=None, length=None, gravity=None):
 
 
 class PendulumDynamicsModel:
-    def __init__(self, m, n, mass=1, gravity=10, length=1, deterministic=True):
+    def __init__(self, m, n, mass=1, gravity=10, length=1, deterministic=True,
+                 model_noise=1e-3):
         self.m = m
         self.n = n
         self.mass = mass
         self.gravity = gravity
         self.length = length
+        self.model_noise = model_noise
 
     @property
     def ctrl_size(self):
@@ -59,8 +65,9 @@ class PendulumDynamicsModel:
         length = self.length
         X = np.asarray(X)
         theta_old, omega_old = X[..., 0:1], X[..., 1:2]
-        return np.concatenate([omega_old,
-                               - (gravity/length)*np.sin(theta_old)], axis=-1)
+        return np.concatenate(
+            [omega_old,
+             - (gravity/length)*np.sin(theta_old)], axis=-1)
 
     def g_func(self, x):
         m = self.m
@@ -69,7 +76,8 @@ class PendulumDynamicsModel:
         gravity = self.gravity
         length = self.length
         size = x.shape[0] if x.ndim == 2 else 1
-        return np.repeat(np.array([[[0], [1/(mass*length)]]]), size, axis=0)
+        return np.repeat(
+            np.array([[[0], [1/(mass*length)]]]), size, axis=0)
 
 def sampling_pendulum(dynamics_model, numSteps,
                       x0=None,
@@ -114,13 +122,14 @@ def sampling_pendulum(dynamics_model, numSteps,
         theta_direct = theta_old + omega_old*tau
         # Update as model
         Xold = np.array([[theta_old, omega_old]])
-        Xdot = f_func(Xold) + g_func(Xold) @ u
-        theta_prop, omega_prop = (Xold + Xdot * tau).flatten()
-        assert np.allclose(omega_direct, omega_prop, atol=1e-6, rtol=1e-4)
-        assert np.allclose(theta_direct, theta_prop, atol=1e-6, rtol=1e-4)
-        #theta, omega = theta_prop, omega_prop
+        Xdot_tau = f_func(Xold) * tau + g_func(Xold) @ u * tau
+        theta_prop, omega_prop = (Xold + Xdot_tau ).flatten()
+        # assert np.allclose(omega_direct, omega_prop, atol=1e-6, rtol=1e-4)
+        # assert np.allclose(theta_direct, theta_prop, atol=1e-6, rtol=1e-4)
+        LOG.debug("Diff: {}".format(np.abs(theta_direct - theta_prop)))
+        theta, omega = theta_prop, omega_prop
 
-        theta, omega = theta_direct, omega_direct
+        #theta, omega = theta_direct, omega_direct
         # record the values
         #record and normalize theta to be in -pi to pi range
     damge_perc=damage_vec.sum() * 100/numSteps
@@ -239,6 +248,20 @@ def learn_dynamics(
     return dgp, dX, U
 
 
+class StdoutRedirect:
+    def __init__(self):
+        self.old_stdout = None
+
+    def __enter__(self):
+        self.old_stdout = sys.stdout
+        sys.stdout = io.TextIOWrapper(tempfile.TemporaryFile())
+        return sys.stdout
+
+    def __exit__(self, *a):
+        sys.stdout.close()
+        sys.stdout = self.old_stdout
+
+
 def cvxopt_solve_qp(P, q, G=None, h=None, A=None, b=None):
     import cvxopt
     from cvxopt import matrix
@@ -248,7 +271,8 @@ def cvxopt_solve_qp(P, q, G=None, h=None, A=None, b=None):
         args.extend([matrix(G), matrix(h)])
         if A is not None:
             args.extend([matrix(A), matrix(b)])
-    sol = cvxopt.solvers.qp(*args)
+    with StdoutRedirect():
+        sol = cvxopt.solvers.qp(*args)
     if 'optimal' not in sol['status']:
         return None
     return np.array(sol['x']).reshape((P.shape[1],))
@@ -294,8 +318,7 @@ def control_cbf_clf(xi,
 
     return control_QP_cbf_clf(theta, w,
                               ctrl_aff_clf=ControlAffine(A_clf, b_clf),
-                              ctrl_aff_cbfs=[ControlAffine(A_sr, b_sr),
-                                             ControlAffine(A_col, b_col)])
+                              ctrl_aff_cbfs=[ControlAffine(A_col, b_col)])
 
 
 def store_args(method):
@@ -393,6 +416,7 @@ class ControlCBFCLFLearned:
         theta, w = xi
         if len(self.Xtrain) % self.train_every_n_steps == 0:
             # train every n steps
+            LOG.info("Training GP with dataset size {}".format(len(self.Xtrain)))
             self.train()
         self.Xtrain.append([theta, w])
         u = control_QP_cbf_clf(theta, w,
@@ -403,14 +427,16 @@ class ControlCBFCLFLearned:
 
 
 def control_QP_cbf_clf(theta, w,
-                    ctrl_aff_clf,
-                    ctrl_aff_cbfs,
-                    clf_only=False):
+                       ctrl_aff_clf,
+                       ctrl_aff_cbfs,
+                       clf_only=False,
+                       constraint_margin_weights=[1000., 1000.]):
     """
     Args:
           A_cbfs: A tuple of CBF functions
           b_cbfs: A tuple of CBF functions
     """
+    clf_idx = 0
     A_total = np.vstack([A(theta, w) for A, b in [ctrl_aff_clf] + ctrl_aff_cbfs])
     b_total = np.vstack([b(theta, w) for A, b in [ctrl_aff_clf] + ctrl_aff_cbfs])
 
@@ -422,20 +448,28 @@ def control_QP_cbf_clf(theta, w,
     # assert contraints[2] <= 0
 
 
-    A_total_rho = np.hstack((A_total, np.zeros((A_total.shape[0], 1))))
-    A_total_rho[0, -1] = -1
+    # [A, I][ u ]
+    #       [ ρ ] ≤ b for all constraints
+    LC = len(constraint_margin_weights)
+    A_total_rho = np.hstack(
+        (A_total,
+         np.vstack((np.eye(LC),
+                    np.zeros((A_total.shape[0] - LC, LC))))
+        ))
     from cvxopt import matrix
     if clf_only:
-        P_rho = np.array([[50., 0],
-                          [0, 100.]])
-        q_rho = np.array([0., 0.])
+        A = A_total
+        P_rho = np.eye(A.shape[1] + len(constraint_margin_weights)) * 50
+        P_rho[A.shape[1]:, A.shape[1]:] = np.diag(constraint_margin_weights)
+        q_rho = np.zeros(P_rho.shape[0])
         u_rho = cvxopt_solve_qp(P_rho, q_rho,
-                            G=A_total_rho[0:1,:],
-                            h=b_total[0])
+                            G=A_total_rho[clf_idx:clf_idx+1,:],
+                            h=b_total[clf_idx])
     else:
-        P_rho = np.array([[50., 0],
-                          [0, 1000.]])
-        q_rho = np.array([0., 0.])
+        A = A_total
+        P_rho = np.eye(A.shape[1] + len(constraint_margin_weights)) * 50
+        P_rho[A.shape[1]:, A.shape[1]:] = np.diag(constraint_margin_weights)
+        q_rho = np.zeros(P_rho.shape[0])
         try:
             u_rho = cvxopt_solve_qp(P_rho, q_rho,
                                     G=A_total_rho,
@@ -454,20 +488,23 @@ Run pendulum with a trivial controller.
 
 
 run_pendulum_control_cbf_clf = partial(
-    run_pendulum_experiment, controller=control_cbf_clf)
+    run_pendulum_experiment, controller=control_cbf_clf,
+    numSteps=10000)
 """
 Run pendulum with a safe CLF-CBF controller.
 """
 
 
-def run_pendulum_control_online_learning():
-    return run_pendulum_experiment(
-        ground_truth_model=False,
-        controller=ControlCBFCLFLearned().controller)
+def run_pendulum_control_online_learning(numSteps=1000):
+    """
+    Run save pendulum control while learning the parameters online
+    """
+    return run_pendulum_experiment( ground_truth_model=False,
+        controller=ControlCBFCLFLearned().controller, numSteps=numSteps)
 
 
 if __name__ == '__main__':
     #run_pendulum_control_trival()
-    run_pendulum_control_cbf_clf()
+    #run_pendulum_control_cbf_clf()
     #learn_dynamics()
     run_pendulum_control_online_learning()

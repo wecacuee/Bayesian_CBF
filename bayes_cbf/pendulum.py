@@ -9,6 +9,9 @@ import tempfile
 import inspect
 from collections import namedtuple
 from functools import partial, wraps
+import pickle
+import hashlib
+import math
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -20,6 +23,7 @@ CALOG.setLevel(logging.WARNING)
 
 from bayes_cbf.plotting import plot_results, plot_learned_2D_func
 from bayes_cbf.sampling import sample_generator_trajectory, controller_sine
+
 
 def control_trivial(xi, m=1, mass=None, length=None, gravity=None):
     assert mass is not None
@@ -81,10 +85,13 @@ class PendulumDynamicsModel:
         return noise + np.repeat(
             np.array([[[0], [1/(mass*length)]]]), size, axis=0)
 
+
 def sampling_pendulum(dynamics_model, numSteps,
                       x0=None,
                       dt=0.01,
-                      controller=control_trivial):
+                      controller=control_trivial,
+                      plot_every_n_steps=100,
+                      axs=None):
     m, g, l = (dynamics_model.mass, dynamics_model.gravity,
                dynamics_model.length)
     tau = dt
@@ -109,7 +116,7 @@ def sampling_pendulum(dynamics_model, numSteps,
 
     for i in range(numSteps):
         time_vec[i] = tau*i
-        theta_vec[i] = (((theta+np.pi) % (2*np.pi)) - np.pi)
+        theta_vec[i] = theta
         omega_vec[i] = omega
         u= controller((theta, omega))
         u_vec[i] = u
@@ -121,19 +128,26 @@ def sampling_pendulum(dynamics_model, numSteps,
         theta_old = theta
         # update the values
         omega_direct = omega_old - (g/l)*np.sin(theta_old)*tau+(u[0]/(m*l))*tau
-        theta_direct = theta_old + omega_old*tau
+        theta_direct = theta_old + omega_old * tau
         # Update as model
         Xold = np.array([[theta_old, omega_old]])
-        Xdot = f_func(Xold)  + g_func(Xold) @ u
-        theta_prop, omega_prop = (Xold + Xdot * tau ).flatten()
-        assert np.allclose(omega_direct, omega_prop, atol=1e-6, rtol=1e-4)
-        assert np.allclose(theta_direct, theta_prop, atol=1e-6, rtol=1e-4)
+        Xdot_tau = f_func(Xold) * tau  + g_func(Xold) @ u * tau
+        theta_prop, omega_prop = ( Xold + Xdot_tau ).flatten()
+        #assert np.allclose(omega_direct, omega_prop, atol=1e-6, rtol=1e-4)
+        #assert np.allclose(theta_direct, theta_prop, atol=1e-6, rtol=1e-4)
         LOG.debug("Diff: {}".format(np.abs(theta_direct - theta_prop)))
-        #theta, omega = theta_prop, omega_prop
+        theta, omega = theta_prop, omega_prop
 
-        theta, omega = theta_direct, omega_direct
+        # theta, omega = theta_direct, omega_direct
         # record the values
         #record and normalize theta to be in -pi to pi range
+        theta = (((theta+np.pi) % (2*np.pi)) - np.pi)
+        if i % plot_every_n_steps == 0:
+            axs = plot_results(np.arange(i+1), omega_vec[:i+1], theta_vec[:i+1],
+                               u_vec[:i+1], axs=axs)
+            plt.pause(0.001)
+
+    assert np.all((theta_vec <= np.pi) & (-np.pi <= theta_vec))
     damge_perc=damage_vec.sum() * 100/numSteps
     return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
 
@@ -153,6 +167,7 @@ def sampling_pendulum_data(dynamics_model, D=100, dt=0.01, **kwargs):
     # dxₜ₊₁ = xₜ₊₁ - xₜ / dt
     dX = (X[1:, :] - X[:-1, :]) / tau
 
+    assert np.all((X[:, 0] <= np.pi) & (-np.pi <= X[:, 0]))
     return dX, X, U
 
 
@@ -251,37 +266,37 @@ def learn_dynamics(
     return dgp, dX, U
 
 
-class StdoutRedirect:
-    def __init__(self):
-        self.old_stdout = None
-
-    def __enter__(self):
-        self.old_stdout = sys.stdout
-        sys.stdout = io.TextIOWrapper(tempfile.TemporaryFile())
-        return sys.stdout
-
-    def __exit__(self, *a):
-        sys.stdout.close()
-        sys.stdout = self.old_stdout
-
-
-def cvxopt_solve_qp(P, q, G=None, h=None, A=None, b=None):
+def cvxopt_solve_qp(P, q, G=None, h=None, A=None, b=None, solver=None,
+                    initvals=None, **kwargs):
     import cvxopt
     from cvxopt import matrix
     #P = (P + P.T)  # make sure P is symmetric
     args = [matrix(P), matrix(q)]
     if G is not None:
         args.extend([matrix(G), matrix(h)])
-        if A is not None:
-            args.extend([matrix(A), matrix(b)])
-    sol = cvxopt.solvers.qp(*args)
+    else:
+        args.extend([None, None])
+    if A is not None:
+        args.extend([matrix(A), matrix(b)])
+    else:
+        args.extend([None, None])
+    args.extend([initvals, solver])
+    solvers = cvxopt.solvers
+    old_options = solvers.options.copy()
+    solvers.options.update(kwargs)
+    try:
+        sol = cvxopt.solvers.qp(*args)
+    except ValueError:
+        return None
+    finally:
+        solvers.options.update(old_options)
     if 'optimal' not in sol['status']:
         return None
     return np.array(sol['x']).reshape((P.shape[1],))
 
 
-ControlAffine = namedtuple("ControlAffine",
-                           ["A", "b"])
+NamedAffineFunc = namedtuple("NamedAffineFunc",
+                             ["A", "b", "name"])
 
 
 def store_args(method):
@@ -311,38 +326,40 @@ class PendulumCBFCLFDirect:
                  cbf_sr_gamma=1,
                  cbf_sr_delta=10,
                  cbf_col_gamma=1,
-                 cbf_col_delta=np.pi/8):
+                 cbf_col_delta=np.pi/8,
+                 axes=None,
+                 constraint_hists=[]):
         pass
 
     def A_clf(self, x):
         (theta, w) = x
         m, l, g = self.mass, self.length, self.gravity
-        return l*w
+        return np.array([l*w])
 
     def b_clf(self, x):
         (theta, w) = x
         m, l, g = self.mass, self.length, self.gravity
         c = self.clf_c
-        return -c*(0.5*m*l**2*w**2+m*g*l*(1-np.cos(theta)))
+        return np.array([-c*(0.5*m*l**2*w**2+m*g*l*(1-np.cos(theta)))])
 
     def A_sr(self, x):
         (theta, w) = x
         m, l, g = self.mass, self.length, self.gravity
-        return l*w
+        return np.array([l*w])
 
     def b_sr(self, x):
         (theta, w) = x
         m, l, g = self.mass, self.length, self.gravity
         gamma_sr = self.cbf_sr_gamma
         delta_sr = self.cbf_sr_delta
-        return gamma_sr*(delta_sr-w**2)+(2*g*np.sin(theta)*w)/(l)
+        return np.array([gamma_sr*(delta_sr-w**2)+(2*g*np.sin(theta)*w)/(l)])
 
     def A_col(self, x):
         (theta, w) = x
         m, l, g = self.mass, self.length, self.gravity
         delta_col = self.cbf_col_delta
         theta_c = self.cbf_col_theta
-        return -(2*w*(np.cos(delta_col)-np.cos(theta-theta_c)))/(m*l)
+        return np.array([-(2*w*(np.cos(delta_col)-np.cos(theta-theta_c)))/(m*l)])
 
     def b_col(self, x):
         (theta, w) = x
@@ -350,9 +367,42 @@ class PendulumCBFCLFDirect:
         gamma_col = self.cbf_col_gamma
         delta_col = self.cbf_col_delta
         theta_c = self.cbf_col_theta
-        return (gamma_col*(np.cos(delta_col)-np.cos(theta-theta_c))*w**2
-                + w**3*np.sin(theta-theta_c)
-                - (2*g*w*np.sin(theta)*(np.cos(delta_col)-np.cos(theta-theta_c)))/l)
+        b = (gamma_col*(np.cos(delta_col)-np.cos(theta-theta_c))*w**2
+             + w**3*np.sin(theta-theta_c)
+             - (2*g*w*np.sin(theta)*(np.cos(delta_col)-np.cos(theta-theta_c)))/l)
+        print("theta: {}".format(x[0]))
+        print("cos(theta -theta_c):{} <= delta_c:{}".format(
+            np.cos(x[0] - theta_c), np.cos(delta_col)))
+        print("ω:{}".format(w))
+        print("b:{}".format(b))
+        return np.array([b])
+
+    def plot_constraints(self, affine_funcs, x, u):
+        axs = self.axes
+        if axs is None:
+            nplots = len(affine_funcs)
+            shape = ((math.ceil(nplots / 2), 2) if nplots >= 2 else (nplots,))
+            fig, axs = plt.subplots(*shape)
+            fig.subplots_adjust(wspace=0.35, hspace=0.5)
+            self.axes = axs.flatten() if hasattr(axs, "flatten") else np.array([axs])
+
+        if len(self.constraint_hists) < len(affine_funcs):
+            self.constraint_hists = self.constraint_hists + [
+                list() for _ in range(
+                len(affine_funcs) - len(self.constraint_hists))]
+
+        for i, af in enumerate(affine_funcs):
+            A_func, b_func = af.A, af.b
+            self.constraint_hists[i].append(A_func(x) @ u - b_func(x))
+
+        if np.random.rand() < 1e-2:
+            for i, (ch, af) in enumerate(zip(self.constraint_hists, affine_funcs)):
+                axs[i].clear()
+                axs[i].plot(ch)
+                axs[i].set_ylabel(af.name)
+                axs[i].set_xlabel("time")
+                plt.pause(0.0001)
+
 
     def control(self, xi, mass=None, gravity=None, length=None):
         assert mass is not None
@@ -360,12 +410,14 @@ class PendulumCBFCLFDirect:
         assert gravity is not None
         self.mass, self.gravity, self.length = mass, gravity, length
 
-        return control_QP_cbf_clf(
+        aff_contraints = [NamedAffineFunc(self.A_clf, self.b_clf, "clf"),
+                          NamedAffineFunc(self.A_col, self.b_col, "col")]
+        u = control_QP_cbf_clf(
             xi,
-            ctrl_aff_constraints=[ControlAffine(self.A_clf, self.b_clf),
-                                  ControlAffine(self.A_col, self.b_col),
-                                  ControlAffine(self.A_sr, self.b_sr)],
-            constraint_margin_weights=[1000.])
+            ctrl_aff_constraints=aff_contraints,
+            constraint_margin_weights=[35.])
+        self.plot_constraints(aff_contraints, xi, u)
+        return u
 
 
 class ControlCBFCLFLearned:
@@ -407,13 +459,11 @@ class ControlCBFCLFLearned:
         return np.array([np.sin(theta), w])
 
     def A_clf(self, x):
-        (theta, w) = x
-        return self.grad_V_clf(theta, w) @ self.g(theta, w)
+        return self.grad_V_clf(x) @ self.g(x)
 
     def b_clf(self, x):
-        (theta, w) = x
         c = self.c
-        return - self.grad_V_clf(theta, w) @ self.f(theta, w) - c * self.V_clf(theta, w)
+        return - self.grad_V_clf(x) @ self.f(x) - c * self.V_clf(x)
 
     def h_col(self, x):
         (theta, w) = x
@@ -430,12 +480,11 @@ class ControlCBFCLFLearned:
 
     def A_col(self, x):
         (theta, w) = x
-        return self.grad_h_col(theta, w) @ self.g(theta, w)
+        return self.grad_h_col(x) @ self.g(x)
 
     def b_col(self, x):
-        (theta, w) = x
         gamma_col = self.gamma_col
-        return - self.grad_h_col(theta, w) @ self.f(theta, w) - gamma_col * self.h_col(theta, w)
+        return - self.grad_h_col(x) @ self.f(x) - gamma_col * self.h_col(x)
 
     def train(self):
         if not len(self.Xtrain):
@@ -444,19 +493,33 @@ class ControlCBFCLFLearned:
         Xtrain = np.array(self.Xtrain)
         Utrain = np.array(self.Utrain)
         XdotTrain = Xtrain[1:, :] - Xtrain[:-1, :]
+        plot_results(np.arange(Utrain.shape[0]), omega_vec=Xtrain[:, 0],
+                     theta_vec=Xtrain[:, 1], u_vec=Utrain[:, 0])
+        plt.savefig('plots/pendulum_data_{}.pdf'.format(Xtrain.shape[0]))
+        assert np.all((Xtrain[:, 0] <= np.pi) & (-np.pi <= Xtrain[:, 0]))
         LOG.info("Training model with datasize {}".format(XdotTrain.shape[0]))
-        self.dgp.fit(Xtrain[:-1, :], Utrain[:-1, :], XdotTrain)
+        try:
+            self.dgp.fit(Xtrain[:-1, :], Utrain[:-1, :], XdotTrain)
+        except AssertionError:
+            train_data = (Xtrain[:-1, :], Utrain[:-1, :], XdotTrain)
+            filename = hashlib.sha224(pickle.dumps(train_data)).hexdigest()
+            filepath = 'tests/data/{}.pickle'.format(filename)
+            pickle.dump(train_data, open(filepath, 'wb'))
+            raise
 
     def controller(self, xi):
         if len(self.Xtrain) % self.train_every_n_steps == 0:
             # train every n steps
             LOG.info("Training GP with dataset size {}".format(len(self.Xtrain)))
             self.train()
+
+        assert np.all((xi[0] <= np.pi) & (-np.pi <= xi[0]))
         self.Xtrain.append(xi)
         u = control_QP_cbf_clf(xi,
                                ctrl_aff_constraints=[
-                                   ControlAffine(self.A_clf, self.b_clf),
-                                   ControlAffine(self.A_col, self.b_col)])
+                                   NamedAffineFunc(self.A_col, self.b_col, "col"),
+                                   NamedAffineFunc(self.A_clf, self.b_clf, "clf")],
+                               constraint_margin_weights=[1000., 1.])
         self.Utrain.append(u)
         return u
 
@@ -473,8 +536,10 @@ def control_QP_cbf_clf(x,
 
     """
     clf_idx = 0
-    A_total = np.vstack([A(x) for A, b in ctrl_aff_constraints])
-    b_total = np.vstack([b(x) for A, b in ctrl_aff_constraints]).flatten()
+    A_total = np.vstack([af.A(x) for af in ctrl_aff_constraints])
+    b_total = np.vstack([af.b(x) for af in ctrl_aff_constraints]).flatten()
+    D_u = A_total.shape[1]
+    N_const = A_total.shape[0]
 
     # u0 = l*g*sin(theta)
     # uopt = 0.1*g
@@ -486,27 +551,44 @@ def control_QP_cbf_clf(x,
 
     # [A, I][ u ]
     #       [ ρ ] ≤ b for all constraints
-    LC = len(constraint_margin_weights)
+    #
+    # minimize
+    #         [ u, ρ1, ρ2 ] [ 1,     0] [  u ]
+    #                       [ 0,   100] [ ρ2 ]
+    #         [A_cbf, 1] [ u, -ρ ] ≤ b_cbf
+    #         [A_clf, 1] [ u, -ρ ] ≤ b_clf
+    N_slack = len(constraint_margin_weights)
     A_total_rho = np.hstack(
         (A_total,
-         np.vstack((-np.eye(LC),
-                    np.zeros((A_total.shape[0] - LC, LC))))
+         np.vstack((-np.eye(N_slack),
+                    np.zeros((N_const - N_slack, N_slack))))
         ))
-    from cvxopt import matrix
     A = A_total
-    P_rho = np.eye(A.shape[1] + len(constraint_margin_weights)) * 50
-    P_rho[A.shape[1]:, A.shape[1]:] = np.diag(constraint_margin_weights)
+    P_rho = np.eye(D_u + N_slack)
+    P_rho[D_u:, D_u:] = np.diag(constraint_margin_weights)
     q_rho = np.zeros(P_rho.shape[0])
-    try:
-        u_rho = cvxopt_solve_qp(P_rho, q_rho,
-                                G=A_total_rho,
-                                h=b_total)
-        if u_rho is not None:
-            assert np.all(A_total_rho @ u_rho - b_total <= 1e-2)
-        u = u_rho[:A.shape[1]] if u_rho is not None else np.random.rand(A.shape[1])
-    except ValueError:
-        u = np.random.rand(A.shape[1])
-    return np.asarray(u)
+    u_rho_init = np.linalg.lstsq(A_total_rho, b_total - 1e-1, rcond=-1)[0]
+    u_rho = cvxopt_solve_qp(P_rho, q_rho,
+                            G=A_total_rho,
+                            h=b_total,
+                            initvals=dict(x=u_rho_init),
+                            show_progress=True,
+                            maxiters=100)
+    if u_rho is None:
+        if np.all(A_total_rho @ u_rho_init - b_total <= 0):
+            return u_rho_init[:D_u]
+        else:
+            raise RuntimeError("""QP is infeasible
+            minimize
+            u_rhoᵀ {P_rho} u_rho
+            s.t.
+            {A_total_rho} u_rho ≤ {b_total}""".format(
+                P_rho=P_rho,
+                A_total_rho=A_total_rho, b_total=b_total))
+    # Constraints should be satisfied
+    constraint = A_total_rho @ u_rho - b_total
+    assert np.all((constraint <= 1e-2) | (constraint / np.abs(b_total) <= 1e-2))
+    return u_rho[:D_u]
 
 
 run_pendulum_control_trival = partial(
@@ -520,6 +602,7 @@ Run pendulum with a trivial controller.
 run_pendulum_control_cbf_clf = partial(
     run_pendulum_experiment, controller=PendulumCBFCLFDirect().control,
     plotfile='plots/run_pendulum_control_cbf_clf.pdf',
+    tau=0.01,
     numSteps=10000)
 """
 Run pendulum with a safe CLF-CBF controller.

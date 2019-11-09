@@ -27,27 +27,35 @@ def plot_2D_f_func(f_func,
         axs[i].set_xlabel(r"$\theta$")
 
 
-def plot_results(time_vec, omega_vec, theta_vec, u_vec):
+def plot_results(time_vec, omega_vec, theta_vec, u_vec,
+                 axs=None):
     #plot thetha
-    fig, axs = plt.subplots(2,2)
-    axs[0,0].plot(time_vec, rad2deg(theta_vec),
+    if axs is None:
+        fig, axs = plt.subplots(2,2)
+    axs[0,0].clear()
+    axs[0,0].plot(time_vec, rad2deg((theta_vec + np.pi) % (2*np.pi) - np.pi),
                   ":", label = "theta (degrees)",color="blue")
     axs[0,0].set_ylabel("theta (degrees)")
+
+    axs[0,1].clear()
     axs[0,1].plot(time_vec, omega_vec,":", label = "omega (rad/s)",color="blue")
     axs[0,1].set_ylabel("omega")
+
+    axs[1,0].clear()
     axs[1,0].plot(time_vec, u_vec,":", label = "u",color="blue")
     axs[1,0].set_ylabel("u")
 
+    axs[1,1].clear()
     axs[1,1].plot(time_vec, np.cos(theta_vec),":", label="cos(theta)", color="blue")
     axs[1,1].set_ylabel("cos/sin(theta)")
     axs[1,1].plot(time_vec, np.sin(theta_vec),":", label="sin(theta)", color="red")
     axs[1,1].set_ylabel("sin(theta)")
     axs[1,1].legend()
 
+    fig = axs[0, 0].figure
     fig.suptitle("Pendulum")
     fig.subplots_adjust(wspace=0.31)
-    plt.savefig('plots/pendulum_data.pdf')
-    #plt.show()
+    return axs
 
 
 def plot_learned_2D_func(Xtrain, learned_f_func, true_f_func,

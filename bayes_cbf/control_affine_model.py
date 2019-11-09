@@ -283,6 +283,15 @@ class ControlAffineRegressor:
         mean_gx = mean_FxT[:, 1:, :]
         return (mean_gx, cov_gx) if return_cov else mean_gx
 
+    def cbf_func(self, Xtest, grad_htest, return_cov=False):
+        if return_cov:
+            mean_FxT, cov_FxT = self.predict(Xtest, return_cov=True)
+            cov_hFT = grad_htest.T @ cov_hFT @ grad_htest
+        else:
+            mean_FxT, cov_FxT = self.predict(Xtest, return_cov=False)
+        mean_hFT = grad_htest @ mean_FxT
+        return mean_hFT, cov_hFT
+
     def state_dict(self):
         return dict(model=self.model.state_dict(),
                     likelihood=self.likelihood.state_dict())

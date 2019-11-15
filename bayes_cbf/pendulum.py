@@ -3,6 +3,7 @@ import logging
 LOG = logging.getLogger(__name__)
 LOG.setLevel(logging.INFO)
 
+import warnings
 import sys
 import io
 import tempfile
@@ -373,30 +374,34 @@ class PendulumCBFCLFDirect:
         assert np.allclose(direct , abstract, rtol=1e-2, atol=1e-4)
         return abstract
 
-    def A_sr_(self, x):
+    def _A_sr(self, x):
         # UNUSED
+        warnings.warn_once("DEPRECATED")
         (theta, w) = x
         m, l, g = self.mass, self.length, self.gravity
         return np.array([l*w])
 
-    def b_sr_(self, x):
+    def _b_sr(self, x):
         # UNUSED
+        warnings.warn_once("DEPRECATED")
         (theta, w) = x
         m, l, g = self.mass, self.length, self.gravity
         gamma_sr = self.cbf_sr_gamma
         delta_sr = self.cbf_sr_delta
         return np.array([gamma_sr*(delta_sr-w**2)+(2*g*np.sin(theta)*w)/(l)])
 
-    def A_col_(self, x):
+    def _A_col(self, x):
         # UNUSED
+        warnings.warn_once("DEPRECATED")
         (theta, w) = x
         m, l, g = self.mass, self.length, self.gravity
         delta_col = self.cbf_col_delta
         theta_c = self.cbf_col_theta
         return np.array([-(2*w*(np.cos(delta_col)-np.cos(theta-theta_c)))/(m*l)])
 
-    def b_col_(self, x):
+    def _b_col(self, x):
         # UNUSED
+        warnings.warn_once("DEPRECATED")
         (theta, w) = x
         m, l, g = self.mass, self.length, self.gravity
         gamma_col = self.cbf_col_gamma
@@ -555,7 +560,7 @@ class ControlCBFCLFLearned(PendulumCBFCLFDirect):
         u = control_QP_cbf_clf(xi,
                                ctrl_aff_constraints=[
                                    NamedAffineFunc(self.A_clf, self.b_clf, "clf"),
-                                   NamedAffineFunc(self.A_col, self.b_col, "col")],
+                                   NamedAffineFunc(self.A2_col, self.b2_col, "col")],
                                constraint_margin_weights=[1, 10000])
         self.Utrain.append(u)
         return u
@@ -609,7 +614,7 @@ def control_QP_cbf_clf(x,
                             G=A_total_rho,
                             h=b_total,
                             initvals=dict(x=u_rho_init),
-                            show_progress=True,
+                            show_progress=False,
                             maxiters=100)
     if u_rho is None:
         if np.all(A_total_rho @ u_rho_init - b_total <= 0):

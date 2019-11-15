@@ -113,7 +113,7 @@ class ControlAffineExactGP(ExactGP):
 
     Given MXU, M, X, U = MXU
 
-        Xdot = F(X)ᵀU    if M = 1
+        Xdot = F(X)U    if M = 1
         Y = F(X)ᵀ        if M = 0
     """
     def __init__(self, x_dim, u_dim, likelihood, rank=1):
@@ -267,29 +267,29 @@ class ControlAffineRegressor:
 
     def f_func(self, Xtest, return_cov=False):
         if return_cov:
-            mean_FxT, cov_FxT = self.predict(Xtest, return_cov=return_cov)
-            cov_fx = cov_FxT[:, :1, :1]
+            mean_Fx, cov_Fx = self.predict(Xtest, return_cov=return_cov)
+            cov_fx = cov_Fx[:, :1, :1]
         else:
-            mean_FxT = self.predict(Xtest, return_cov=return_cov)
-        mean_fx = mean_FxT[:, 0, :]
+            mean_Fx = self.predict(Xtest, return_cov=return_cov)
+        mean_fx = mean_Fx[:, 0, :]
         return (mean_fx, cov_fx) if return_cov else mean_fx
 
     def g_func(self, Xtest, return_cov=False):
         if return_cov:
-            mean_FxT, cov_FxT = self.predict(Xtest, return_cov=return_cov)
-            cov_gx = cov_FxT[:, 1:, 1:]
+            mean_Fx, cov_Fx = self.predict(Xtest, return_cov=return_cov)
+            cov_gx = cov_Fx[:, 1:, 1:]
         else:
-            mean_FxT = self.predict(Xtest, return_cov=return_cov)
-        mean_gx = mean_FxT[:, 1:, :]
+            mean_Fx = self.predict(Xtest, return_cov=return_cov)
+        mean_gx = mean_Fx[:, 1:, :]
         return (mean_gx, cov_gx) if return_cov else mean_gx
 
     def cbf_func(self, Xtest, grad_htest, return_cov=False):
         if return_cov:
-            mean_FxT, cov_FxT = self.predict(Xtest, return_cov=True)
+            mean_Fx, cov_Fx = self.predict(Xtest, return_cov=True)
             cov_hFT = grad_htest.T @ cov_hFT @ grad_htest
         else:
-            mean_FxT, cov_FxT = self.predict(Xtest, return_cov=False)
-        mean_hFT = grad_htest @ mean_FxT
+            mean_Fx, cov_Fx = self.predict(Xtest, return_cov=False)
+        mean_hFT = grad_htest @ mean_Fx
         return mean_hFT, cov_hFT
 
     def state_dict(self):

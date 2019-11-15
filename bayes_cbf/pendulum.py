@@ -333,6 +333,7 @@ class PendulumCBFCLFDirect:
                  cbf_sr_gamma=1,
                  cbf_sr_delta=10,
                  cbf_col_gamma=1,
+                 cbf_col_K_alpha=[1., 1.],
                  cbf_col_delta=np.pi/8,
                  axes=None,
                  constraint_hists=[]):
@@ -526,6 +527,11 @@ class ControlCBFCLFLearned:
         theta_c = self.cbf_col_theta
         return np.cos(delta_col) - np.cos(theta - theta_c)
 
+    def lie_f_h2_col(self, x):
+        (θ, ω) = x
+        θ_c = self.cbf_col_theta
+        return ω * np.sin(θ - θ_c)
+
     def lie2_f_h2_col(self, x):
         (θ, ω) = x
         m, l, g = self.mass, self.length, self.gravity
@@ -544,8 +550,9 @@ class ControlCBFCLFLearned:
         return np.array([- self.lie_g_lie_f_h_col(x)])
 
     def b2_col(self, x):
-        γ_c = self.cbf_col_gamma
-        return np.array([self.lie2_f_h_col(x) + γ_c * self.h_col(x)])
+        K_α = np.array(self.cbf_col_K_alpha)
+        η_b_x = np.array([self.h_col(x), self.lie_f_h2_col(x)])
+        return np.array([self.lie2_f_h_col(x) + K_α @ η_b_x])
 
     def train(self):
         if not len(self.Xtrain):

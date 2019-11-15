@@ -45,7 +45,7 @@ def control_random(xi, m=1, mass=None, length=None, gravity=None):
 
 class PendulumDynamicsModel:
     def __init__(self, m, n, mass=1, gravity=10, length=1, deterministic=True,
-                 model_noise=0):
+                 model_noise=1e-6):
         self.m = m
         self.n = n
         self.mass = mass
@@ -131,8 +131,8 @@ def sampling_pendulum(dynamics_model, numSteps,
         theta_direct = theta_old + omega_old * tau
         # Update as model
         Xold = np.array([[theta_old, omega_old]])
-        Xdot_tau = f_func(Xold) * tau  + g_func(Xold) @ u * tau
-        theta_prop, omega_prop = ( Xold + Xdot_tau ).flatten()
+        Xdot = f_func(Xold) + g_func(Xold) @ u
+        theta_prop, omega_prop = ( Xold + Xdot * tau ).flatten()
         #assert np.allclose(omega_direct, omega_prop, atol=1e-6, rtol=1e-4)
         #assert np.allclose(theta_direct, theta_prop, atol=1e-6, rtol=1e-4)
         LOG.debug("Diff: {}".format(np.abs(theta_direct - theta_prop)))
@@ -337,39 +337,66 @@ class PendulumCBFCLFDirect:
                  cbf_col_delta=np.pi/8,
                  axes=None,
                  constraint_hists=[]):
-        pass
+        self.model = PendulumDynamicsModel(
+            m=1, n=2, mass=mass, length=length, gravity=gravity)
+
+    def f_func(self, x):
+        return self.model.f_func(np.asarray(x))
+
+    def g_func(self, x):
+        return self.model.g_func(np.asarray(x))
+
+    def V_clf(self, x):
+        (θ, ω) = x
+        m, l, g = self.mass, self.length, self.gravity
+        return m * l**2 * ω**2 / 2 + m * g * l * (1-np.cos(θ))
+
+    def grad_V_clf(self, x):
+        (theta, w) = x
+        m, l, g = self.mass, self.length, self.gravity
+        return np.array([ m * g * l * np.sin(theta), m * l**2 * w])
 
     def A_clf(self, x):
-        (theta, w) = x
+        (θ, ω) = x
         m, l, g = self.mass, self.length, self.gravity
-        return np.array([l*w])
+        direct = np.array([l*ω])
+        abstract = self.grad_V_clf(x) @ self.g_func(x)
+        assert np.allclose(direct , abstract, rtol=1e-2, atol=1e-4)
+        return abstract
 
     def b_clf(self, x):
-        (theta, w) = x
-        m, l, g = self.mass, self.length, self.gravity
+        (θ, ω) = x
         c = self.clf_c
-        return np.array([-c*(0.5*m*l**2*w**2+m*g*l*(1-np.cos(theta)))])
+        m, l, g = self.mass, self.length, self.gravity
+        direct = np.array([-c*(0.5*m*l**2*ω**2+m*g*l*(1-np.cos(θ)))])
+        abstract = - self.grad_V_clf(x) @ self.f_func(x) - c * self.V_clf(x)
+        assert np.allclose(direct , abstract, rtol=1e-2, atol=1e-4)
+        return abstract
 
-    def A_sr(self, x):
+    def A_sr_(self, x):
+        # UNUSED
         (theta, w) = x
         m, l, g = self.mass, self.length, self.gravity
         return np.array([l*w])
 
-    def b_sr(self, x):
+    def b_sr_(self, x):
+        # UNUSED
         (theta, w) = x
         m, l, g = self.mass, self.length, self.gravity
         gamma_sr = self.cbf_sr_gamma
         delta_sr = self.cbf_sr_delta
         return np.array([gamma_sr*(delta_sr-w**2)+(2*g*np.sin(theta)*w)/(l)])
 
-    def A_col(self, x):
+    def A_col_(self, x):
+        # UNUSED
         (theta, w) = x
         m, l, g = self.mass, self.length, self.gravity
         delta_col = self.cbf_col_delta
         theta_c = self.cbf_col_theta
         return np.array([-(2*w*(np.cos(delta_col)-np.cos(theta-theta_c)))/(m*l)])
 
-    def b_col(self, x):
+    def b_col_(self, x):
+        # UNUSED
         (theta, w) = x
         m, l, g = self.mass, self.length, self.gravity
         gamma_col = self.cbf_col_gamma
@@ -391,6 +418,14 @@ class PendulumCBFCLFDirect:
         theta_c = self.cbf_col_theta
         return np.cos(delta_col) - np.cos(theta - theta_c)
 
+    def grad_h_col(self, x):
+        (θ, ω) = x
+        θ_c = self.cbf_col_theta
+        return np.array([np.sin(θ - θ_c), 0])
+
+    def lie_f_h2_col(self, x):
+        return self.grad_h_col(x) @ self.f_func(x)
+
     def lie2_f_h_col(self, x):
         (θ, ω) = x
         m, l, g = self.mass, self.length, self.gravity
@@ -409,8 +444,9 @@ class PendulumCBFCLFDirect:
         return np.array([- self.lie_g_lie_f_h_col(x)])
 
     def b2_col(self, x):
-        γ_c = self.cbf_col_gamma
-        return np.array([self.lie2_f_h_col(x) + γ_c * self.h_col(x)])
+        K_α = np.array(self.cbf_col_K_alpha)
+        η_b_x = np.array([self.h_col(x), self.lie_f_h2_col(x)])
+        return np.array([self.lie2_f_h_col(x) + K_α @ η_b_x])
 
     def plot_constraints(self, affine_funcs, x, u):
         axs = self.axes
@@ -444,6 +480,8 @@ class PendulumCBFCLFDirect:
         assert length is not None
         assert gravity is not None
         self.mass, self.gravity, self.length = mass, gravity, length
+        self.model = PendulumDynamicsModel(
+            m=1, n=2, mass=mass, gravity=gravity, length=length)
 
         aff_constraints = [NamedAffineFunc(self.A_clf, self.b_clf, "clf"),
                            NamedAffineFunc(self.A2_col, self.b2_col, "col")]
@@ -455,7 +493,7 @@ class PendulumCBFCLFDirect:
         return u
 
 
-class ControlCBFCLFLearned:
+class ControlCBFCLFLearned(PendulumCBFCLFDirect):
     @store_args
     def __init__(self,
                  x_dim=2,
@@ -479,80 +517,11 @@ class ControlCBFCLFLearned:
         gx = FXTmean[0, 1:, :].T
         return fx, gx
 
-    def f(self, x):
+    def f_func(self, x):
         return self.f_g(x)[0]
 
-    def g(self, x):
+    def g_func(self, x):
         return self.f_g(x)[1]
-
-    def V_clf(self, x):
-        (theta, w) = x
-        return w**2 / 2 + (1-np.cos(theta))
-
-    def grad_V_clf(self, x):
-        (theta, w) = x
-        return np.array([np.sin(theta), w])
-
-    def A_clf(self, x):
-        return self.grad_V_clf(x) @ self.g(x)
-
-    def b_clf(self, x):
-        c = self.c
-        return - self.grad_V_clf(x) @ self.f(x) - c * self.V_clf(x)
-
-    def h_col(self, x):
-        (theta, w) = x
-        delta_col = self.delta_col
-        theta_c = self.theta_c
-        return (np.cos(delta_col) - np.cos(theta - theta_c))*w**2
-
-    def grad_h_col(self, x):
-        (theta, w) = x
-        delta_col = self.delta_col
-        theta_c = self.theta_c
-        return np.array([w**2*np.sin(theta - theta_c),
-                        2*w*(np.cos(delta_col) - np.cos(theta - theta_c))])
-
-    def A_col(self, x):
-        (theta, w) = x
-        return self.grad_h_col(x) @ self.g(x)
-
-    def b_col(self, x):
-        gamma_col = self.gamma_col
-        return - self.grad_h_col(x) @ self.f(x) - gamma_col * self.h_col(x)
-
-    def h2_col(self, x):
-        (theta, w) = x
-        delta_col = self.cbf_col_delta
-        theta_c = self.cbf_col_theta
-        return np.cos(delta_col) - np.cos(theta - theta_c)
-
-    def lie_f_h2_col(self, x):
-        (θ, ω) = x
-        θ_c = self.cbf_col_theta
-        return ω * np.sin(θ - θ_c)
-
-    def lie2_f_h2_col(self, x):
-        (θ, ω) = x
-        m, l, g = self.mass, self.length, self.gravity
-        Δ_c = self.cbf_col_delta
-        θ_c = self.cbf_col_theta
-        return - ω**2 * np.cos(θ - θ_c) - (g / l) * np.sin(θ - θ_c) * np.sin(θ)
-
-    def lie_g_lie_f_h2_col(self, x):
-        (θ, ω) = x
-        m, l, g = self.mass, self.length, self.gravity
-        Δ_c = self.cbf_col_delta
-        θ_c = self.cbf_col_theta
-        return (1/(m*l)) * np.sin(θ - θ_c)
-
-    def A2_col(self, x):
-        return np.array([- self.lie_g_lie_f_h_col(x)])
-
-    def b2_col(self, x):
-        K_α = np.array(self.cbf_col_K_alpha)
-        η_b_x = np.array([self.h_col(x), self.lie_f_h2_col(x)])
-        return np.array([self.lie2_f_h_col(x) + K_α @ η_b_x])
 
     def train(self):
         if not len(self.Xtrain):
@@ -575,7 +544,7 @@ class ControlCBFCLFLearned:
             pickle.dump(train_data, open(filepath, 'wb'))
             raise
 
-    def controller(self, xi):
+    def control(self, xi):
         if len(self.Xtrain) % self.train_every_n_steps == 0:
             # train every n steps
             LOG.info("Training GP with dataset size {}".format(len(self.Xtrain)))
@@ -684,12 +653,12 @@ def run_pendulum_control_online_learning(numSteps=1000):
     return run_pendulum_experiment(
         ground_truth_model=False,
         plotfile='plots/run_pendulum_control_online_learning{suffix}.pdf',
-        controller=ControlCBFCLFLearned().controller,
+        controller=ControlCBFCLFLearned().control,
         numSteps=numSteps)
 
 
 if __name__ == '__main__':
     #run_pendulum_control_trival()
-    #run_pendulum_control_cbf_clf()
+    run_pendulum_control_cbf_clf()
     #learn_dynamics()
-    run_pendulum_control_online_learning()
+    #run_pendulum_control_online_learning()

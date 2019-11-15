@@ -46,7 +46,7 @@ def control_random(xi, m=1, mass=None, length=None, gravity=None):
 
 class PendulumDynamicsModel:
     def __init__(self, m, n, mass=1, gravity=10, length=1, deterministic=True,
-                 model_noise=1e-6):
+                 model_noise=0):
         self.m = m
         self.n = n
         self.mass = mass
@@ -390,46 +390,56 @@ class PendulumCBFCLFDirect:
         delta_sr = self.cbf_sr_delta
         return np.array([gamma_sr*(delta_sr-w**2)+(2*g*np.sin(theta)*w)/(l)])
 
-    def _A_col(self, x):
-        # UNUSED
-        warnings.warn_once("DEPRECATED")
-        (theta, w) = x
-        m, l, g = self.mass, self.length, self.gravity
-        delta_col = self.cbf_col_delta
-        theta_c = self.cbf_col_theta
-        return np.array([-(2*w*(np.cos(delta_col)-np.cos(theta-theta_c)))/(m*l)])
-
-    def _b_col(self, x):
-        # UNUSED
-        warnings.warn_once("DEPRECATED")
-        (theta, w) = x
-        m, l, g = self.mass, self.length, self.gravity
-        gamma_col = self.cbf_col_gamma
-        delta_col = self.cbf_col_delta
-        theta_c = self.cbf_col_theta
-        b = (gamma_col*(np.cos(delta_col)-np.cos(theta-theta_c))*w**2
-             + w**3*np.sin(theta-theta_c)
-             - (2*g*w*np.sin(theta)*(np.cos(delta_col)-np.cos(theta-theta_c)))/l)
-        print("theta: {}".format(x[0]))
-        print("cos(theta -theta_c):{} <= delta_c:{}".format(
-            np.cos(x[0] - theta_c), np.cos(delta_col)))
-        print("ω:{}".format(w))
-        print("b:{}".format(b))
-        return np.array([b])
-
     def h_col(self, x):
+        (theta, w) = x
+        delta_col = self.cbf_col_delta
+        theta_c = self.cbf_col_theta
+        return (np.cos(delta_col) - np.cos(theta - theta_c))*(w**2+1)
+
+    def grad_h_col(self, x):
+        (θ, ω) = x
+        θ_c = self.cbf_col_theta
+        Δ_c = self.cbf_col_delta
+        return np.array([np.sin(θ - θ_c)*(ω**2+1),
+                         2*ω*(np.cos(Δ_c) - np.cos(θ - θ_c))])
+
+    def A_col(self, x):
+        (θ, ω) = x
+        m, l, g = self.mass, self.length, self.gravity
+        Δ_c = self.cbf_col_delta
+        θ_c = self.cbf_col_theta
+        direct = np.array([-(2*ω*(np.cos(Δ_c)-np.cos(θ-θ_c)))/(m*l)])
+        abstract = -self.grad_h_col(x) @ self.g_func(x)
+        assert np.allclose(direct, abstract, rtol=1e-2, atol=1e-4)
+        return abstract
+
+    def b_col(self, x):
+        (θ, ω) = x
+        m, l, g = self.mass, self.length, self.gravity
+        γ_c = self.cbf_col_gamma
+        Δ_c = self.cbf_col_delta
+        θ_c= self.cbf_col_theta
+        b = (γ_c*(np.cos(Δ_c)-np.cos(θ-θ_c))*(ω**2+1)
+             + (ω**3+ω)*np.sin(θ-θ_c)
+             - (2*g*ω*np.sin(θ)*(np.cos(Δ_c)-np.cos(θ-θ_c)))/l)
+        direct = np.array([b])
+        abstract = self.grad_h_col(x) @ self.f_func(x) + γ_c * self.h_col(x)
+        assert np.allclose(direct, abstract, rtol=1e-2, atol=1e-4)
+        return abstract
+
+    def h2_col(self, x):
         (theta, w) = x
         delta_col = self.cbf_col_delta
         theta_c = self.cbf_col_theta
         return np.cos(delta_col) - np.cos(theta - theta_c)
 
-    def grad_h_col(self, x):
+    def grad_h2_col(self, x):
         (θ, ω) = x
         θ_c = self.cbf_col_theta
         return np.array([np.sin(θ - θ_c), 0])
 
     def lie_f_h2_col(self, x):
-        return self.grad_h_col(x) @ self.f_func(x)
+        return self.grad_h2_col(x) @ self.f_func(x)
 
     def lie2_f_h_col(self, x):
         (θ, ω) = x
@@ -450,7 +460,7 @@ class PendulumCBFCLFDirect:
 
     def b2_col(self, x):
         K_α = np.array(self.cbf_col_K_alpha)
-        η_b_x = np.array([self.h_col(x), self.lie_f_h2_col(x)])
+        η_b_x = np.array([self.h2_col(x), self.lie_f_h2_col(x)])
         return np.array([self.lie2_f_h_col(x) + K_α @ η_b_x])
 
     def plot_constraints(self, affine_funcs, x, u):
@@ -489,7 +499,9 @@ class PendulumCBFCLFDirect:
             m=1, n=2, mass=mass, gravity=gravity, length=length)
 
         aff_constraints = [NamedAffineFunc(self.A_clf, self.b_clf, "clf"),
-                           NamedAffineFunc(self.A2_col, self.b2_col, "col")]
+                           #NamedAffineFunc(self.A2_col, self.b2_col, "col"),
+                           NamedAffineFunc(self.A_col, self.b_col, "col")
+        ]
         u = control_QP_cbf_clf(
             xi,
             ctrl_aff_constraints=aff_constraints,
@@ -645,7 +657,7 @@ run_pendulum_control_cbf_clf = partial(
     run_pendulum_experiment, controller=PendulumCBFCLFDirect().control,
     plotfile='plots/run_pendulum_control_cbf_clf{suffix}.pdf',
     tau=0.01,
-    numSteps=10000)
+    numSteps=100)
 """
 Run pendulum with a safe CLF-CBF controller.
 """

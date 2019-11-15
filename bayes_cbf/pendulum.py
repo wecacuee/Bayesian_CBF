@@ -156,7 +156,7 @@ def sampling_pendulum(dynamics_model, numSteps,
 def sampling_pendulum_data(dynamics_model, D=100, dt=0.01, **kwargs):
     tau = dt
     (damge_perc,time_vec,theta_vec,omega_vec,u_vec) = sampling_pendulum(
-        dynamics_model, numSteps=D+1, **kwargs)
+        dynamics_model, numSteps=D+1, dt=tau, **kwargs)
 
     # X.shape = Nx2
     X = np.vstack((theta_vec, omega_vec)).T
@@ -192,7 +192,7 @@ def run_pendulum_experiment(#parameters
     damge_perc,time_vec,theta_vec,omega_vec,u_vec = sampling_pendulum(
         PendulumDynamicsModel(m=1, n=2, mass=mass, gravity=gravity,
                               length=length),
-        numSteps, x0=(theta0,omega0), controller=controller)
+        numSteps, x0=(theta0,omega0), controller=controller, dt=tau)
     plot_results(time_vec, omega_vec, theta_vec, u_vec)
 
     for i in plt.get_fignums():
@@ -305,6 +305,10 @@ _NamedAffineFunc = namedtuple("_NamedAffineFunc",
 class NamedAffineFunc(_NamedAffineFunc):
     def __call__(self, x, u):
         return self.A(x) @ u + self.b(x)
+
+class NamedFunc(namedtuple('NamedFunc', ["func", "name"])):
+    def __call__(self, *args, **kwargs):
+        return self.func(*args, **kwargs)
 
 
 def store_args(method):
@@ -463,26 +467,26 @@ class PendulumCBFCLFDirect:
         η_b_x = np.array([self.h2_col(x), self.lie_f_h2_col(x)])
         return np.array([self.lie2_f_h_col(x) + K_α @ η_b_x])
 
-    def plot_constraints(self, affine_funcs, x, u):
+    def plot_constraints(self, funcs, x, u):
         axs = self.axes
+        nfuncs = len(funcs)
         if axs is None:
-            nplots = len(affine_funcs)
+            nplots = nfuncs
             shape = ((math.ceil(nplots / 2), 2) if nplots >= 2 else (nplots,))
             fig, axs = plt.subplots(*shape)
             fig.subplots_adjust(wspace=0.35, hspace=0.5)
             self.axes = axs.flatten() if hasattr(axs, "flatten") else np.array([axs])
 
-        if len(self.constraint_hists) < len(affine_funcs):
+        if len(self.constraint_hists) < nfuncs:
             self.constraint_hists = self.constraint_hists + [
                 list() for _ in range(
-                len(affine_funcs) - len(self.constraint_hists))]
+                nfuncs - len(self.constraint_hists))]
 
-        for i, af in enumerate(affine_funcs):
-            A_func, b_func = af.A, af.b
-            self.constraint_hists[i].append(A_func(x) @ u - b_func(x))
+        for i, af in enumerate(funcs):
+            self.constraint_hists[i].append(af(x, u))
 
         if np.random.rand() < 1e-2:
-            for i, (ch, af) in enumerate(zip(self.constraint_hists, affine_funcs)):
+            for i, (ch, af) in enumerate(zip(self.constraint_hists, funcs)):
                 axs[i].clear()
                 axs[i].plot(ch)
                 axs[i].set_ylabel(af.name)
@@ -499,14 +503,18 @@ class PendulumCBFCLFDirect:
             m=1, n=2, mass=mass, gravity=gravity, length=length)
 
         aff_constraints = [NamedAffineFunc(self.A_clf, self.b_clf, "clf"),
-                           #NamedAffineFunc(self.A2_col, self.b2_col, "col"),
-                           NamedAffineFunc(self.A_col, self.b_col, "col")
+                           NamedAffineFunc(self.A2_col, self.b2_col, "col-r2"),
+                           #NamedAffineFunc(self.A_col, self.b_col, "col")
         ]
         u = control_QP_cbf_clf(
             xi,
             ctrl_aff_constraints=aff_constraints,
-            constraint_margin_weights=[20])
-        self.plot_constraints(aff_constraints, xi, u)
+            constraint_margin_weights=[100])
+        self.plot_constraints(
+            aff_constraints + [
+                NamedFunc(lambda x, u: f(x), r"\verb!%s!" % f.__name__)
+                for f in (self.h_col, self.V_clf)],
+            xi, u)
         return u
 
 
@@ -589,6 +597,7 @@ def control_QP_cbf_clf(x,
                                      that is maximized.
 
     """
+    #import ipdb; ipdb.set_trace()
     clf_idx = 0
     A_total = np.vstack([af.A(x) for af in ctrl_aff_constraints])
     b_total = np.vstack([af.b(x) for af in ctrl_aff_constraints]).flatten()
@@ -621,24 +630,20 @@ def control_QP_cbf_clf(x,
     P_rho = np.eye(D_u + N_slack)
     P_rho[D_u:, D_u:] = np.diag(constraint_margin_weights)
     q_rho = np.zeros(P_rho.shape[0])
-    u_rho_init = np.linalg.lstsq(A_total_rho, b_total - 1e-1, rcond=-1)[0]
+    #u_rho_init = np.linalg.lstsq(A_total_rho, b_total - 1e-1, rcond=-1)[0]
     u_rho = cvxopt_solve_qp(P_rho, q_rho,
                             G=A_total_rho,
                             h=b_total,
-                            initvals=dict(x=u_rho_init),
                             show_progress=False,
-                            maxiters=100)
+                            maxiters=1000)
     if u_rho is None:
-        if np.all(A_total_rho @ u_rho_init - b_total <= 0):
-            return u_rho_init[:D_u]
-        else:
-            raise RuntimeError("""QP is infeasible
-            minimize
-            u_rhoᵀ {P_rho} u_rho
-            s.t.
-            {A_total_rho} u_rho ≤ {b_total}""".format(
-                P_rho=P_rho,
-                A_total_rho=A_total_rho, b_total=b_total))
+        raise RuntimeError("""QP is infeasible
+        minimize
+        u_rhoᵀ {P_rho} u_rho
+        s.t.
+        {A_total_rho} u_rho ≤ {b_total}""".format(
+            P_rho=P_rho,
+            A_total_rho=A_total_rho, b_total=b_total))
     # Constraints should be satisfied
     constraint = A_total_rho @ u_rho - b_total
     assert np.all((constraint <= 1e-2) | (constraint / np.abs(b_total) <= 1e-2))
@@ -656,8 +661,9 @@ Run pendulum with a trivial controller.
 run_pendulum_control_cbf_clf = partial(
     run_pendulum_experiment, controller=PendulumCBFCLFDirect().control,
     plotfile='plots/run_pendulum_control_cbf_clf{suffix}.pdf',
-    tau=0.01,
-    numSteps=100)
+    theta0=5*np.pi/12,
+    tau=0.001,
+    numSteps=15000)
 """
 Run pendulum with a safe CLF-CBF controller.
 """

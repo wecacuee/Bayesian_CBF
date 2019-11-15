@@ -185,7 +185,7 @@ def run_pendulum_experiment(#parameters
         numSteps=10000,
         ground_truth_model=True,
         controller=control_trivial,
-        plotfile='plots/run_pendulum_experiment.pdf'):
+        plotfile='plots/run_pendulum_experiment{suffix}.pdf'):
     if ground_truth_model:
         controller = partial(controller, mass=mass, gravity=gravity, length=length)
     damge_perc,time_vec,theta_vec,omega_vec,u_vec = sampling_pendulum(
@@ -193,7 +193,10 @@ def run_pendulum_experiment(#parameters
                               length=length),
         numSteps, x0=(theta0,omega0), controller=controller)
     plot_results(time_vec, omega_vec, theta_vec, u_vec)
-    plt.savefig(plotfile)
+
+    for i in plt.get_fignums():
+        suffix='_%d' % i if i > 0 else ''
+        plt.figure(i).savefig(plotfile.format(suffix=suffix))
     return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
 
 
@@ -295,8 +298,12 @@ def cvxopt_solve_qp(P, q, G=None, h=None, A=None, b=None, solver=None,
     return np.array(sol['x']).reshape((P.shape[1],))
 
 
-NamedAffineFunc = namedtuple("NamedAffineFunc",
+_NamedAffineFunc = namedtuple("_NamedAffineFunc",
                              ["A", "b", "name"])
+
+class NamedAffineFunc(_NamedAffineFunc):
+    def __call__(self, x, u):
+        return self.A(x) @ u + self.b(x)
 
 
 def store_args(method):
@@ -377,6 +384,33 @@ class PendulumCBFCLFDirect:
         print("b:{}".format(b))
         return np.array([b])
 
+    def h_col(self, x):
+        (theta, w) = x
+        delta_col = self.cbf_col_delta
+        theta_c = self.cbf_col_theta
+        return np.cos(delta_col) - np.cos(theta - theta_c)
+
+    def lie2_f_h_col(self, x):
+        (θ, ω) = x
+        m, l, g = self.mass, self.length, self.gravity
+        Δ_c = self.cbf_col_delta
+        θ_c = self.cbf_col_theta
+        return - ω**2 * np.cos(θ - θ_c) - (g / l) * np.sin(θ - θ_c) * np.sin(θ)
+
+    def lie_g_lie_f_h_col(self, x):
+        (θ, ω) = x
+        m, l, g = self.mass, self.length, self.gravity
+        Δ_c = self.cbf_col_delta
+        θ_c = self.cbf_col_theta
+        return (1/(m*l)) * np.sin(θ - θ_c)
+
+    def A2_col(self, x):
+        return np.array([- self.lie_g_lie_f_h_col(x)])
+
+    def b2_col(self, x):
+        γ_c = self.cbf_col_gamma
+        return np.array([self.lie2_f_h_col(x) + γ_c * self.h_col(x)])
+
     def plot_constraints(self, affine_funcs, x, u):
         axs = self.axes
         if axs is None:
@@ -410,13 +444,13 @@ class PendulumCBFCLFDirect:
         assert gravity is not None
         self.mass, self.gravity, self.length = mass, gravity, length
 
-        aff_contraints = [NamedAffineFunc(self.A_clf, self.b_clf, "clf"),
-                          NamedAffineFunc(self.A_col, self.b_col, "col")]
+        aff_constraints = [NamedAffineFunc(self.A_clf, self.b_clf, "clf"),
+                           NamedAffineFunc(self.A2_col, self.b2_col, "col")]
         u = control_QP_cbf_clf(
             xi,
-            ctrl_aff_constraints=aff_contraints,
-            constraint_margin_weights=[35.])
-        self.plot_constraints(aff_contraints, xi, u)
+            ctrl_aff_constraints=aff_constraints,
+            constraint_margin_weights=[20])
+        self.plot_constraints(aff_constraints, xi, u)
         return u
 
 
@@ -486,6 +520,33 @@ class ControlCBFCLFLearned:
         gamma_col = self.gamma_col
         return - self.grad_h_col(x) @ self.f(x) - gamma_col * self.h_col(x)
 
+    def h2_col(self, x):
+        (theta, w) = x
+        delta_col = self.cbf_col_delta
+        theta_c = self.cbf_col_theta
+        return np.cos(delta_col) - np.cos(theta - theta_c)
+
+    def lie2_f_h2_col(self, x):
+        (θ, ω) = x
+        m, l, g = self.mass, self.length, self.gravity
+        Δ_c = self.cbf_col_delta
+        θ_c = self.cbf_col_theta
+        return - ω**2 * np.cos(θ - θ_c) - (g / l) * np.sin(θ - θ_c) * np.sin(θ)
+
+    def lie_g_lie_f_h2_col(self, x):
+        (θ, ω) = x
+        m, l, g = self.mass, self.length, self.gravity
+        Δ_c = self.cbf_col_delta
+        θ_c = self.cbf_col_theta
+        return (1/(m*l)) * np.sin(θ - θ_c)
+
+    def A2_col(self, x):
+        return np.array([- self.lie_g_lie_f_h_col(x)])
+
+    def b2_col(self, x):
+        γ_c = self.cbf_col_gamma
+        return np.array([self.lie2_f_h_col(x) + γ_c * self.h_col(x)])
+
     def train(self):
         if not len(self.Xtrain):
             return
@@ -517,9 +578,9 @@ class ControlCBFCLFLearned:
         self.Xtrain.append(xi)
         u = control_QP_cbf_clf(xi,
                                ctrl_aff_constraints=[
-                                   NamedAffineFunc(self.A_col, self.b_col, "col"),
-                                   NamedAffineFunc(self.A_clf, self.b_clf, "clf")],
-                               constraint_margin_weights=[1000., 1.])
+                                   NamedAffineFunc(self.A_clf, self.b_clf, "clf"),
+                                   NamedAffineFunc(self.A_col, self.b_col, "col")],
+                               constraint_margin_weights=[1, 10000])
         self.Utrain.append(u)
         return u
 
@@ -593,7 +654,7 @@ def control_QP_cbf_clf(x,
 
 run_pendulum_control_trival = partial(
     run_pendulum_experiment, controller=control_trivial,
-    plotfile='plots/run_pendulum_control_trival.pdf')
+    plotfile='plots/run_pendulum_control_trival{suffix}.pdf')
 """
 Run pendulum with a trivial controller.
 """
@@ -601,7 +662,7 @@ Run pendulum with a trivial controller.
 
 run_pendulum_control_cbf_clf = partial(
     run_pendulum_experiment, controller=PendulumCBFCLFDirect().control,
-    plotfile='plots/run_pendulum_control_cbf_clf.pdf',
+    plotfile='plots/run_pendulum_control_cbf_clf{suffix}.pdf',
     tau=0.01,
     numSteps=10000)
 """
@@ -615,13 +676,13 @@ def run_pendulum_control_online_learning(numSteps=1000):
     """
     return run_pendulum_experiment(
         ground_truth_model=False,
-        plotfile='plots/run_pendulum_control_online_learning.pdf',
+        plotfile='plots/run_pendulum_control_online_learning{suffix}.pdf',
         controller=ControlCBFCLFLearned().controller,
         numSteps=numSteps)
 
 
 if __name__ == '__main__':
     #run_pendulum_control_trival()
-    run_pendulum_control_cbf_clf()
+    #run_pendulum_control_cbf_clf()
     #learn_dynamics()
-    #run_pendulum_control_online_learning()
+    run_pendulum_control_online_learning()

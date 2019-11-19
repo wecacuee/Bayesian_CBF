@@ -143,10 +143,10 @@ class MeanPendulumDynamicsModel(DynamicsModel):
         return self.n
 
     def f_func(self, X):
-        return 0
+        return np.zeros((self.n,))
 
     def g_func(self, X):
-        return 0
+        return np.zeros((self.n, self.m))
 
 
 
@@ -225,7 +225,7 @@ def sampling_pendulum(dynamics_model, numSteps,
         time_vec[i] = tau*i
         theta_vec[i] = theta
         omega_vec[i] = omega
-        u= controller((theta, omega))
+        u= controller(np.array((theta, omega)))
         u_vec[i] = u
 
         if 0<theta_vec[i]<np.pi/4:
@@ -407,14 +407,45 @@ def cvxopt_solve_qp(P, q, G=None, h=None, A=None, b=None, solver=None,
     return np.array(sol['x']).reshape((P.shape[1],))
 
 
-_NamedAffineFunc = namedtuple("_NamedAffineFunc",
-                             ["A", "b", "name"])
 
-class NamedAffineFunc(_NamedAffineFunc):
+class NamedAffineFunc(ABC):
+    @property
+    def __name__(self):
+        """
+        Name used for plots
+        """
+        return self.name
+
+    @abstractmethod
+    def value(self, x):
+        """
+        Scalar value function
+        """
+
+    @abstractmethod
+    def b(self, x):
+        """
+        A(x) @ u - b(x)
+        """
+
+    @abstractmethod
+    def A(self, x):
+        """
+        A(x) @ u - b(x)
+        """
+
     def __call__(self, x, u):
-        return self.A(x) @ u + self.b(x)
+        """
+        A(x) @ u - b(x)
+        """
+        return self.A(x) @ u - self.b(x)
 
-class NamedFunc(namedtuple('NamedFunc', ["func", "name"])):
+
+class NamedFunc:
+    def __init__(self, func, name):
+        self.__name__ = name
+        self.func = func
+
     def __call__(self, *args, **kwargs):
         return self.func(*args, **kwargs)
 
@@ -423,8 +454,9 @@ def store_args(method):
     argspec = inspect.getfullargspec(method)
     @wraps(method)
     def wrapped_method(self, *args, **kwargs):
-        for name, val in zip(argspec.args[::-1], argspec.defaults[::-1]):
-            setattr(self, name, val)
+        if argspec.defaults is not None:
+          for name, val in zip(argspec.args[::-1], argspec.defaults[::-1]):
+              setattr(self, name, val)
         if argspec.kwonlydefaults and args.kwonlyargs:
             for name, val in zip(argspec.kwonlyargs, argspec.kwonlydefaults):
                 setattr(self, name, val)
@@ -437,79 +469,72 @@ def store_args(method):
 
     return wrapped_method
 
-
-class PendulumCBFCLFDirect:
+class EnergyCLF(NamedAffineFunc):
     @store_args
-    def __init__(self, mass=None, length=None, gravity=None,
-                 cbf_col_theta=np.pi/4,
+    def __init__(self, model,
                  clf_c=1,
-                 cbf_sr_gamma=1,
-                 cbf_sr_delta=10,
-                 cbf_col_gamma=1,
-                 cbf_col_K_alpha=[1., 1.],
-                 cbf_col_delta=np.pi/8,
-                 axes=None,
-                 constraint_hists=[],
-                 pendulum_dynamics_class=PendulumDynamicsModel,
-    ):
-        pass
-
-    def f_func(self, x):
-        return self.model.f_func(np.asarray(x))
-
-    def g_func(self, x):
-        return self.model.g_func(np.asarray(x))
+                 name="clf"):
+        self.model = model
 
     def V_clf(self, x):
         (θ, ω) = x
-        m, l, g = self.mass, self.length, self.gravity
-        return m * l**2 * ω**2 / 2 + m * g * l * (1-np.cos(θ))
+        return ω**2 / 2 + (1-np.cos(θ))
+
+    value = V_clf
+
+    def __call__ (self, x, u):
+        return self.A(x) @ u - self.b(x)
 
     def grad_V_clf(self, x):
         (theta, w) = x
-        m, l, g = self.mass, self.length, self.gravity
-        return np.array([ m * g * l * np.sin(theta), m * l**2 * w])
+        return np.array([ np.sin(theta), w])
 
-    def A_clf(self, x):
+    def A(self, x):
         (θ, ω) = x
-        m, l, g = self.mass, self.length, self.gravity
         abstract = self.grad_V_clf(x) @ self.g_func(x)
         if isinstance(self.model, PendulumDynamicsModel):
+            m, l, g = self.mass, self.length, self.gravity
             direct = np.array([l*ω])
             assert np.allclose(direct , abstract, rtol=1e-2, atol=1e-4)
         return abstract
 
-    def b_clf(self, x):
+    def b(self, x):
         (θ, ω) = x
         c = self.clf_c
-        m, l, g = self.mass, self.length, self.gravity
         abstract = - self.grad_V_clf(x) @ self.f_func(x) - c * self.V_clf(x)
         if isinstance(self.model, PendulumDynamicsModel):
+            m, l, g = self.mass, self.length, self.gravity
             direct = np.array([-c*(0.5*m*l**2*ω**2+m*g*l*(1-np.cos(θ)))])
             assert np.allclose(direct , abstract, rtol=1e-2, atol=1e-4)
         return abstract
 
-    def _A_sr(self, x):
-        # UNUSED
-        warnings.warn_once("DEPRECATED")
-        (theta, w) = x
-        m, l, g = self.mass, self.length, self.gravity
-        return np.array([l*w])
+    def __getattr__(self, name):
+        return getattr(self.model, name)
 
-    def _b_sr(self, x):
-        # UNUSED
-        warnings.warn_once("DEPRECATED")
-        (theta, w) = x
-        m, l, g = self.mass, self.length, self.gravity
-        gamma_sr = self.cbf_sr_gamma
-        delta_sr = self.cbf_sr_delta
-        return np.array([gamma_sr*(delta_sr-w**2)+(2*g*np.sin(theta)*w)/(l)])
+
+class RadialCBF(NamedAffineFunc):
+    @store_args
+    def __init__(self, model,
+                 cbf_col_gamma=1,
+                 cbf_col_K_alpha=[1., 1.],
+                 cbf_col_delta=np.pi/8,
+                 cbf_col_theta=np.pi/4,
+                 theta_c=np.pi/4,
+                 gamma_col=1,
+                 delta_col=np.pi/8,
+                 name="cbf"):
+        self.model = model
 
     def h_col(self, x):
         (theta, w) = x
         delta_col = self.cbf_col_delta
         theta_c = self.cbf_col_theta
         return (np.cos(delta_col) - np.cos(theta - theta_c))*(w**2+1)
+
+    value = h_col
+
+    def __call__ (self, x, u):
+        return self.A(x) @ u - self.b(x)
 
     def grad_h_col(self, x):
         (θ, ω) = x
@@ -518,37 +543,59 @@ class PendulumCBFCLFDirect:
         return np.array([np.sin(θ - θ_c)*(ω**2+1),
                          2*ω*(np.cos(Δ_c) - np.cos(θ - θ_c))])
 
-    def A_col(self, x):
+    def A(self, x):
         (θ, ω) = x
-        m, l, g = self.mass, self.length, self.gravity
         Δ_c = self.cbf_col_delta
         θ_c = self.cbf_col_theta
         abstract = -self.grad_h_col(x) @ self.g_func(x)
         if isinstance(self.model, PendulumDynamicsModel):
+            m, l, g = self.mass, self.length, self.gravity
             direct = np.array([-(2*ω*(np.cos(Δ_c)-np.cos(θ-θ_c)))/(m*l)])
             assert np.allclose(direct, abstract, rtol=1e-2, atol=1e-4)
         return abstract
 
-    def b_col(self, x):
+    def b(self, x):
         (θ, ω) = x
-        m, l, g = self.mass, self.length, self.gravity
         γ_c = self.cbf_col_gamma
         Δ_c = self.cbf_col_delta
         θ_c= self.cbf_col_theta
-        b = (γ_c*(np.cos(Δ_c)-np.cos(θ-θ_c))*(ω**2+1)
-             + (ω**3+ω)*np.sin(θ-θ_c)
-             - (2*g*ω*np.sin(θ)*(np.cos(Δ_c)-np.cos(θ-θ_c)))/l)
         abstract = self.grad_h_col(x) @ self.f_func(x) + γ_c * self.h_col(x)
         if isinstance(self.model, PendulumDynamicsModel):
+            m, l, g = self.mass, self.length, self.gravity
+            b = (γ_c*(np.cos(Δ_c)-np.cos(θ-θ_c))*(ω**2+1)
+                + (ω**3+ω)*np.sin(θ-θ_c)
+                - (2*g*ω*np.sin(θ)*(np.cos(Δ_c)-np.cos(θ-θ_c)))/l)
             direct = np.array([b])
             assert np.allclose(direct, abstract, rtol=1e-2, atol=1e-4)
         return abstract
+
+    def __getattr__(self, name):
+        return getattr(self.model, name)
+
+
+class RadialCBFRelDegree2(NamedAffineFunc):
+    @store_args
+    def __init__(self, model,
+                 cbf_col_gamma=1,
+                 cbf_col_K_alpha=[1., 1.],
+                 cbf_col_delta=np.pi/8,
+                 cbf_col_theta=np.pi/4,
+                 theta_c=np.pi/4,
+                 gamma_col=1,
+                 delta_col=np.pi/8,
+                 name="cbf-r2"):
+        self.model = model
 
     def h2_col(self, x):
         (theta, w) = x
         delta_col = self.cbf_col_delta
         theta_c = self.cbf_col_theta
         return np.cos(delta_col) - np.cos(theta - theta_c)
+
+    value = h2_col
+
+    def __call__ (self, x, u):
+        return self.A(x) @ u - self.b(x)
 
     def grad_h2_col(self, x):
         (θ, ω) = x
@@ -572,13 +619,60 @@ class PendulumCBFCLFDirect:
         θ_c = self.cbf_col_theta
         return (1/(m*l)) * np.sin(θ - θ_c)
 
-    def A2_col(self, x):
+    def A(self, x):
         return np.array([- self.lie_g_lie_f_h_col(x)])
 
-    def b2_col(self, x):
+    def b(self, x):
         K_α = np.array(self.cbf_col_K_alpha)
         η_b_x = np.array([self.h2_col(x), self.lie_f_h2_col(x)])
         return np.array([self.lie2_f_h_col(x) + K_α @ η_b_x])
+
+    def __getattr__(self, name):
+        return getattr(self.model, name)
+
+
+class PendulumCBFCLFDirect:
+    @store_args
+    def __init__(self, mass=None, length=None, gravity=None,
+                 axes=None,
+                 constraint_hists=[],
+                 pendulum_dynamics_class=PendulumDynamicsModel,
+    ):
+        self.set_model_params(mass=mass, length=length, gravity=gravity)
+
+    def set_model_params(self, **kwargs):
+        self.model = self.pendulum_dynamics_class(m=1, n=2, **kwargs)
+        self.aff_constraints = [
+            #NamedAffineFunc(self.A_clf, self.b_clf, "clf"),
+            EnergyCLF(self.model),
+            RadialCBFRelDegree2(self.model),
+            #NamedAffineFunc(self.A_col, self.b_col, "col")
+            RadialCBFRelDegree2(self.model),
+        ]
+
+    def f_func(self, x):
+        return self.model.f_func(np.asarray(x))
+
+    def g_func(self, x):
+        return self.model.g_func(np.asarray(x))
+
+    def _A_sr(self, x):
+        # UNUSED
+        warnings.warn_once("DEPRECATED")
+        (theta, w) = x
+        m, l, g = self.model.mass, self.model.length, self.model.gravity
+        return np.array([l*w])
+
+    def _b_sr(self, x):
+        # UNUSED
+        warnings.warn_once("DEPRECATED")
+        (theta, w) = x
+        m, l, g = self.model.mass, self.model.length, self.model.gravity
+        cbf_sr_gamma=1
+        cbf_sr_delta=10
+        gamma_sr = cbf_sr_gamma
+        delta_sr = cbf_sr_delta
+        return np.array([gamma_sr*(delta_sr-w**2)+(2*g*np.sin(theta)*w)/(l)])
 
     def plot_constraints(self, funcs, x, u):
         axs = self.axes
@@ -602,7 +696,7 @@ class PendulumCBFCLFDirect:
             for i, (ch, af) in enumerate(zip(self.constraint_hists, funcs)):
                 axs[i].clear()
                 axs[i].plot(ch)
-                axs[i].set_ylabel(af.name)
+                axs[i].set_ylabel(af.__name__)
                 axs[i].set_xlabel("time")
                 plt.pause(0.0001)
 
@@ -611,22 +705,16 @@ class PendulumCBFCLFDirect:
         assert mass is not None
         assert length is not None
         assert gravity is not None
-        self.mass, self.gravity, self.length = mass, gravity, length
-        self.model = self.pendulum_dynamics_class(
-            m=1, n=2, mass=mass, gravity=gravity, length=length)
+        self.set_model_params(mass=mass, gravity=gravity, length=length)
 
-        aff_constraints = [NamedAffineFunc(self.A_clf, self.b_clf, "clf"),
-                           NamedAffineFunc(self.A2_col, self.b2_col, "col-r2"),
-                           #NamedAffineFunc(self.A_col, self.b_col, "col")
-        ]
         u = control_QP_cbf_clf(
             xi,
-            ctrl_aff_constraints=aff_constraints,
+            ctrl_aff_constraints=self.aff_constraints,
             constraint_margin_weights=[100])
         self.plot_constraints(
-            aff_constraints + [
-                NamedFunc(lambda x, u: f(x), r"\verb!%s!" % f.__name__)
-                for f in (self.h_col, self.V_clf)],
+            self.aff_constraints + [
+                NamedFunc(lambda x, u: f.value(x), r"\verb!%s!" % f.__name__)
+                for f in self.aff_constraints],
             xi, u)
         return u
 
@@ -636,12 +724,8 @@ class ControlCBFCLFLearned(PendulumCBFCLFDirect):
     def __init__(self,
                  x_dim=2,
                  u_dim=1,
-                 theta_c=np.pi/4,
-                 c=1,
                  gamma_sr=1,
                  delta_sr=10,
-                 gamma_col=1,
-                 delta_col=np.pi/8,
                  train_every_n_steps=50,
                  mean_dynamics_model_class=MeanPendulumDynamicsModel
     ):
@@ -649,6 +733,8 @@ class ControlCBFCLFLearned(PendulumCBFCLFDirect):
         self.Utrain = []
         self.dgp = ControlAffineRegressor(x_dim, u_dim)
         self.mean_dynamics_model = mean_dynamics_model_class(m=u_dim, n=x_dim)
+        self.ctrl_aff_constraints=[EnergyCLF(self),
+                                   RadialCBF(self)]
 
     def f_g(self, x):
         X = np.array([x])
@@ -670,8 +756,8 @@ class ControlCBFCLFLearned(PendulumCBFCLFDirect):
         Xtrain = np.array(self.Xtrain)
         Utrain = np.array(self.Utrain)
         XdotTrain = Xtrain[1:, :] - Xtrain[:-1, :]
-        XdotMean = self.mean_dynamics_model.f_func(Xtrain) + self.mean_dynamics_model.g_func(Xtrain) @ Utrain
-        XdotError = XdotTrain - XdotMean
+        XdotMean = self.mean_dynamics_model.f_func(Xtrain) + (self.mean_dynamics_model.g_func(Xtrain) @ Utrain.T).T
+        XdotError = XdotTrain - XdotMean[1:, :]
         plot_results(np.arange(Utrain.shape[0]), omega_vec=Xtrain[:, 0],
                      theta_vec=Xtrain[:, 1], u_vec=Utrain[:, 0])
         plt.savefig('plots/pendulum_data_{}.pdf'.format(Xtrain.shape[0]))
@@ -695,9 +781,7 @@ class ControlCBFCLFLearned(PendulumCBFCLFDirect):
         assert np.all((xi[0] <= np.pi) & (-np.pi <= xi[0]))
         self.Xtrain.append(xi)
         u = control_QP_cbf_clf(xi,
-                               ctrl_aff_constraints=[
-                                   NamedAffineFunc(self.A_clf, self.b_clf, "clf"),
-                                   NamedAffineFunc(self.A2_col, self.b2_col, "col")],
+                               ctrl_aff_constraints=self.ctrl_aff_constraints,
                                constraint_margin_weights=[1, 10000])
         self.Utrain.append(u)
         return u
@@ -716,8 +800,8 @@ def control_QP_cbf_clf(x,
     """
     #import ipdb; ipdb.set_trace()
     clf_idx = 0
-    A_total = np.vstack([af.A(x) for af in ctrl_aff_constraints])
-    b_total = np.vstack([af.b(x) for af in ctrl_aff_constraints]).flatten()
+    A_total = np.vstack([af.A(np.asarray(x)) for af in ctrl_aff_constraints])
+    b_total = np.vstack([af.b(np.asarray(x)) for af in ctrl_aff_constraints]).flatten()
     D_u = A_total.shape[1]
     N_const = A_total.shape[0]
 

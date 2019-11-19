@@ -13,6 +13,7 @@ from functools import partial, wraps
 import pickle
 import hashlib
 import math
+from abc import ABC, abstractmethod
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -44,7 +45,112 @@ def control_random(xi, m=1, mass=None, length=None, gravity=None):
     ) * np.abs(np.random.rand()) + np.random.rand()
 
 
-class PendulumDynamicsModel:
+class DynamicsModel(ABC):
+    """
+    Represents mode of the form:
+
+    ẋ = f(x) + g(x)u
+    """
+    @property
+    @abstractmethod
+    def ctrl_size(self):
+        """
+        Dimension of ctrl
+        """
+
+    @property
+    @abstractmethod
+    def state_size(self):
+        """
+        Dimension of state
+        """
+
+    @abstractmethod
+    def f_func(self, X):
+        """
+        ẋ = f(x) + g(x)u
+
+        @param: X : d x self.state_size vector or self.state_size vector
+        @returns: f(X)
+        """
+
+    @abstractmethod
+    def g_func(self, X):
+        """
+        ẋ = f(x) + g(x)u
+
+        @param: X : d x self.state_size vector or self.state_size vector
+        @returns: g(X)
+        """
+
+
+
+class Rel1PendulumModel(DynamicsModel):
+    def __init__(self, m, n, mass=1, gravity=10, length=1, deterministic=True,
+                 model_noise=0):
+        self.m = m
+        self.n = n
+        self.mass = mass
+        self.gravity = gravity
+        self.length = length
+        self.model_noise = model_noise
+
+    @property
+    def ctrl_size(self):
+        return self.m
+
+    @property
+    def state_size(self):
+        return self.n
+
+    def f_func(self, X):
+        m = self.m
+        n = self.n
+        mass = self.mass
+        gravity = self.gravity
+        length = self.length
+        X = np.asarray(X)
+        theta_old, omega_old = X[..., 0:1], X[..., 1:2]
+        noise = np.random.normal(scale=self.model_noise) if self.model_noise else 0
+        return noise + np.concatenate(
+            [omega_old,
+             - (gravity/length)*np.sin(theta_old)], axis=-1)
+
+    def g_func(self, x):
+        m = self.m
+        n = self.n
+        mass = self.mass
+        gravity = self.gravity
+        length = self.length
+        size = x.shape[0] if x.ndim == 2 else 1
+        noise = np.random.normal(scale=self.model_noise) if self.model_noise else 0
+        return noise + np.repeat(
+            np.array([[[1/(mass*length), 0], [1/(mass*length), 0]]]), size, axis=0)
+
+
+
+class MeanPendulumDynamicsModel(DynamicsModel):
+    def __init__(self, m, n):
+        self.m = m
+        self.n = n
+
+    @property
+    def ctrl_size(self):
+        return self.m
+
+    @property
+    def state_size(self):
+        return self.n
+
+    def f_func(self, X):
+        return 0
+
+    def g_func(self, X):
+        return 0
+
+
+
+class PendulumDynamicsModel(DynamicsModel):
     def __init__(self, m, n, mass=1, gravity=10, length=1, deterministic=True,
                  model_noise=0):
         self.m = m
@@ -186,11 +292,12 @@ def run_pendulum_experiment(#parameters
         numSteps=10000,
         ground_truth_model=True,
         controller=control_trivial,
+        pendulum_dynamics_class=PendulumDynamicsModel,
         plotfile='plots/run_pendulum_experiment{suffix}.pdf'):
     if ground_truth_model:
         controller = partial(controller, mass=mass, gravity=gravity, length=length)
     damge_perc,time_vec,theta_vec,omega_vec,u_vec = sampling_pendulum(
-        PendulumDynamicsModel(m=1, n=2, mass=mass, gravity=gravity,
+        pendulum_dynamics_class(m=1, n=2, mass=mass, gravity=gravity,
                               length=length),
         numSteps, x0=(theta0,omega0), controller=controller, dt=tau)
     plot_results(time_vec, omega_vec, theta_vec, u_vec)
@@ -209,7 +316,8 @@ def learn_dynamics(
         gravity=10,
         length=1,
         max_train=200,
-        numSteps=1000):
+        numSteps=1000,
+        pendulum_dynamics_class=PendulumDynamicsModel):
     #from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
     #from bayes_cbf.affine_kernel import AffineScaleKernel
     #from sklearn.gaussian_process import GaussianProcessRegressor
@@ -222,8 +330,8 @@ def learn_dynamics(
     # xₜ₊₁ = F(xₜ)[1 u]
     # where F(xₜ) = [f(xₜ), g(xₜ)]
 
-    pend_env = PendulumDynamicsModel(m=1, n=2, mass=mass, gravity=gravity,
-                                     length=length)
+    pend_env = pendulum_dynamics_class(m=1, n=2, mass=mass, gravity=gravity,
+                                       length=length)
     dX, X, U = sampling_pendulum_data(
         pend_env, D=numSteps, x0=(theta0,omega0),
         dt=tau,
@@ -341,9 +449,10 @@ class PendulumCBFCLFDirect:
                  cbf_col_K_alpha=[1., 1.],
                  cbf_col_delta=np.pi/8,
                  axes=None,
-                 constraint_hists=[]):
-        self.model = PendulumDynamicsModel(
-            m=1, n=2, mass=mass, length=length, gravity=gravity)
+                 constraint_hists=[],
+                 pendulum_dynamics_class=PendulumDynamicsModel,
+    ):
+        pass
 
     def f_func(self, x):
         return self.model.f_func(np.asarray(x))
@@ -364,18 +473,20 @@ class PendulumCBFCLFDirect:
     def A_clf(self, x):
         (θ, ω) = x
         m, l, g = self.mass, self.length, self.gravity
-        direct = np.array([l*ω])
         abstract = self.grad_V_clf(x) @ self.g_func(x)
-        assert np.allclose(direct , abstract, rtol=1e-2, atol=1e-4)
+        if isinstance(self.model, PendulumDynamicsModel):
+            direct = np.array([l*ω])
+            assert np.allclose(direct , abstract, rtol=1e-2, atol=1e-4)
         return abstract
 
     def b_clf(self, x):
         (θ, ω) = x
         c = self.clf_c
         m, l, g = self.mass, self.length, self.gravity
-        direct = np.array([-c*(0.5*m*l**2*ω**2+m*g*l*(1-np.cos(θ)))])
         abstract = - self.grad_V_clf(x) @ self.f_func(x) - c * self.V_clf(x)
-        assert np.allclose(direct , abstract, rtol=1e-2, atol=1e-4)
+        if isinstance(self.model, PendulumDynamicsModel):
+            direct = np.array([-c*(0.5*m*l**2*ω**2+m*g*l*(1-np.cos(θ)))])
+            assert np.allclose(direct , abstract, rtol=1e-2, atol=1e-4)
         return abstract
 
     def _A_sr(self, x):
@@ -412,9 +523,10 @@ class PendulumCBFCLFDirect:
         m, l, g = self.mass, self.length, self.gravity
         Δ_c = self.cbf_col_delta
         θ_c = self.cbf_col_theta
-        direct = np.array([-(2*ω*(np.cos(Δ_c)-np.cos(θ-θ_c)))/(m*l)])
         abstract = -self.grad_h_col(x) @ self.g_func(x)
-        assert np.allclose(direct, abstract, rtol=1e-2, atol=1e-4)
+        if isinstance(self.model, PendulumDynamicsModel):
+            direct = np.array([-(2*ω*(np.cos(Δ_c)-np.cos(θ-θ_c)))/(m*l)])
+            assert np.allclose(direct, abstract, rtol=1e-2, atol=1e-4)
         return abstract
 
     def b_col(self, x):
@@ -426,9 +538,10 @@ class PendulumCBFCLFDirect:
         b = (γ_c*(np.cos(Δ_c)-np.cos(θ-θ_c))*(ω**2+1)
              + (ω**3+ω)*np.sin(θ-θ_c)
              - (2*g*ω*np.sin(θ)*(np.cos(Δ_c)-np.cos(θ-θ_c)))/l)
-        direct = np.array([b])
         abstract = self.grad_h_col(x) @ self.f_func(x) + γ_c * self.h_col(x)
-        assert np.allclose(direct, abstract, rtol=1e-2, atol=1e-4)
+        if isinstance(self.model, PendulumDynamicsModel):
+            direct = np.array([b])
+            assert np.allclose(direct, abstract, rtol=1e-2, atol=1e-4)
         return abstract
 
     def h2_col(self, x):
@@ -499,7 +612,7 @@ class PendulumCBFCLFDirect:
         assert length is not None
         assert gravity is not None
         self.mass, self.gravity, self.length = mass, gravity, length
-        self.model = PendulumDynamicsModel(
+        self.model = self.pendulum_dynamics_class(
             m=1, n=2, mass=mass, gravity=gravity, length=length)
 
         aff_constraints = [NamedAffineFunc(self.A_clf, self.b_clf, "clf"),
@@ -529,11 +642,13 @@ class ControlCBFCLFLearned(PendulumCBFCLFDirect):
                  delta_sr=10,
                  gamma_col=1,
                  delta_col=np.pi/8,
-                 train_every_n_steps=50
+                 train_every_n_steps=50,
+                 mean_dynamics_model_class=MeanPendulumDynamicsModel
     ):
         self.Xtrain = []
         self.Utrain = []
         self.dgp = ControlAffineRegressor(x_dim, u_dim)
+        self.mean_dynamics_model = mean_dynamics_model_class(m=u_dim, n=x_dim)
 
     def f_g(self, x):
         X = np.array([x])
@@ -543,10 +658,10 @@ class ControlCBFCLFLearned(PendulumCBFCLFDirect):
         return fx, gx
 
     def f_func(self, x):
-        return self.f_g(x)[0]
+        return self.f_g(x)[0] + self.mean_dynamics_model.f_func(x)
 
     def g_func(self, x):
-        return self.f_g(x)[1]
+        return self.f_g(x)[1] + self.mean_dynamics_model.g_func(x)
 
     def train(self):
         if not len(self.Xtrain):
@@ -555,6 +670,8 @@ class ControlCBFCLFLearned(PendulumCBFCLFDirect):
         Xtrain = np.array(self.Xtrain)
         Utrain = np.array(self.Utrain)
         XdotTrain = Xtrain[1:, :] - Xtrain[:-1, :]
+        XdotMean = self.mean_dynamics_model.f_func(Xtrain) + self.mean_dynamics_model.g_func(Xtrain) @ Utrain
+        XdotError = XdotTrain - XdotMean
         plot_results(np.arange(Utrain.shape[0]), omega_vec=Xtrain[:, 0],
                      theta_vec=Xtrain[:, 1], u_vec=Utrain[:, 0])
         plt.savefig('plots/pendulum_data_{}.pdf'.format(Xtrain.shape[0]))

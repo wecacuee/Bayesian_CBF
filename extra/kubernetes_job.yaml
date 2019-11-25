@@ -1,0 +1,54 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bayes-cbf-pytest
+spec:
+  template:
+    spec:
+      containers:
+      - name: pytorch
+        image: pytorch/pytorch
+        command:
+          - "bash"
+        args:
+          - "-c"
+          - "cd /data/BayesCBF/ && pip install -e . && python setup.py test"
+        volumeMounts:
+        - name: rook-cephfs-erl-ucsd-vdhiman
+          mountPath: /data
+        resources:
+          limits:
+            memory: 8Gi
+            cpu: "4"
+            nvidia.com/gpu: "1"
+          requests:
+            memory: 8Gi
+            cpu: "4"
+            nvidia.com/gpu: "1"
+      initContainers:
+      - name: init-clone-repo
+        image: pytorch/pytorch
+        env:
+        - name: GIT_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: vdhiman-nautilus
+              key: user
+        - name: GIT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: vdhiman-nautilus
+              key: password
+        command:
+          - "bash"
+        args:
+          - "-c"
+          - "git clone --branch learn-and-plot-pendulum-affine https://${GIT_USERNAME}:${GIT_PASSWORD}@gitlab.nautilus.optiputer.net/vdhiman/bayescbf.git /data/BayesCBF && apt-get update && apt-get install -y texlive-science"
+        volumeMounts:
+          - name: rook-cephfs-erl-ucsd-vdhiman
+            mountPath: /data
+      volumes:
+      - name: rook-cephfs-erl-ucsd-vdhiman
+        emptyDir: {}
+      restartPolicy: Never
+  backoffLimit: 1

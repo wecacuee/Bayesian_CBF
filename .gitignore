@@ -2,3 +2,6 @@
 *.pyc
 /bayes_cbf.egg-info/PKG-INFO
 /setup.bash
+.eggs
+.ipynb_checkpoints
+bayes_cbf.egg-info/

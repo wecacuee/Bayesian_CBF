@@ -79,3 +79,40 @@ def plot_learned_2D_func(Xtrain, learned_f_func, true_f_func,
     ax.set_ylim(omega_range.start, omega_range.stop)
     ax.set_title("Training data")
     fig.subplots_adjust(wspace=0.3,hspace=0.8)
+    return fig
+
+class LinePlotSerialization:
+    @staticmethod
+    def serialize(filename, axes):
+        xydata = {
+            "ax_{i}_line_{j}_{xy}".format(i=i,j=j,xy=xy): method()
+            for xy, method in (("x", ax.get_xdata), ("y",ax.get_ydata))
+            for j in ax.lines
+            for i, ax in enumerate(axes)
+        }
+        np.savez_compressed(
+            filename,
+            **xydata
+        )
+
+    @staticmethod
+    def example_plot(ax_lines_xydata):
+        for i, ax in ax_lines_xydata.items():
+            for j, xydata in ax_lines_xydata.items():
+                axes[i].plot(xydata["x"], xydata["y"])
+
+    @staticmethod
+    def deserialize(filename, axes):
+        xydata = np.loadz(filename)
+        ax_lines_xydata = {}
+        for key, val in xydata.items():
+            _, istr,_, jstr, xy = key.split("_")
+            i, j = int(istr), int(jstr)
+            ax_lines_xydata.setdefault(i, {}).setdefault(j, {})[xy] = val
+        return ax_lines_xydata
+
+
+def plt_savefig_with_data(fig, filename):
+    npz_filename = osp.splitext(filename)[0] + ".npz"
+    LinePlotSerialization.serialize(npz_filename, fig.get_axes())
+    fig.savefig(filename)

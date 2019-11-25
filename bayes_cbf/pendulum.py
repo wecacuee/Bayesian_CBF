@@ -23,7 +23,7 @@ mplibrc('text', usetex=True)
 from bayes_cbf.control_affine_model import ControlAffineRegressor, LOG as CALOG
 CALOG.setLevel(logging.WARNING)
 
-from bayes_cbf.plotting import plot_results, plot_learned_2D_func
+from bayes_cbf.plotting import plot_results, plot_learned_2D_func, plt_savefig_with_data
 from bayes_cbf.sampling import sample_generator_trajectory, controller_sine
 
 
@@ -304,7 +304,7 @@ def run_pendulum_experiment(#parameters
 
     for i in plt.get_fignums():
         suffix='_%d' % i if i > 0 else ''
-        plt.figure(i).savefig(plotfile.format(suffix=suffix))
+        plt_savefig_with_data(plt.figure(i), plotfile.format(suffix=suffix))
     return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
 
 
@@ -355,12 +355,12 @@ def learn_dynamics(
     # Plot the pendulum trajectory
     plot_results(np.arange(U.shape[0]), omega_vec=X[:, 0],
                  theta_vec=X[:, 1], u_vec=U[:, 0])
-    plot_learned_2D_func(Xtrain, dgp.f_func, pend_env.f_func,
-                         axtitle="f(x)[{i}]")
-    plt.savefig('plots/f_learned_vs_f_true.pdf')
-    plot_learned_2D_func(Xtrain, dgp.g_func, pend_env.g_func,
-                         axtitle="g(x)[{i}]")
-    plt.savefig('plots/g_learned_vs_g_true.pdf')
+    fig = plot_learned_2D_func(Xtrain, dgp.f_func, pend_env.f_func,
+                               axtitle="f(x)[{i}]")
+    plt_savefig_with_data(fig, 'plots/f_learned_vs_f_true.pdf')
+    fig = plot_learned_2D_func(Xtrain, dgp.g_func, pend_env.g_func,
+                               axtitle="g(x)[{i}]")
+    plt_savefig_with_data(fig, 'plots/g_learned_vs_g_true.pdf')
 
     # within train set
     FX_98, FXcov_98 = dgp.predict(X[98:99,:], return_cov=True)
@@ -758,9 +758,11 @@ class ControlCBFCLFLearned(PendulumCBFCLFDirect):
         XdotTrain = Xtrain[1:, :] - Xtrain[:-1, :]
         XdotMean = self.mean_dynamics_model.f_func(Xtrain) + (self.mean_dynamics_model.g_func(Xtrain) @ Utrain.T).T
         XdotError = XdotTrain - XdotMean[1:, :]
-        plot_results(np.arange(Utrain.shape[0]), omega_vec=Xtrain[:, 0],
+        axs = plot_results(np.arange(Utrain.shape[0]), omega_vec=Xtrain[:, 0],
                      theta_vec=Xtrain[:, 1], u_vec=Utrain[:, 0])
-        plt.savefig('plots/pendulum_data_{}.pdf'.format(Xtrain.shape[0]))
+        plt_savefig_with_data(
+            axs[0,0].figure,
+            'plots/pendulum_data_{}.pdf'.format(Xtrain.shape[0]))
         assert np.all((Xtrain[:, 0] <= np.pi) & (-np.pi <= Xtrain[:, 0]))
         LOG.info("Training model with datasize {}".format(XdotTrain.shape[0]))
         try:

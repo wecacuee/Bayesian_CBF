@@ -16,6 +16,7 @@ import math
 from abc import ABC, abstractmethod
 
 import numpy as np
+import torch
 import matplotlib.pyplot as plt
 from matplotlib import rc as mplibrc
 mplibrc('text', usetex=True)
@@ -476,9 +477,9 @@ class EnergyCLF(NamedAffineFunc):
                  name="clf"):
         self.model = model
 
-    def V_clf(self, x):
+    def V_clf(self, x, pkg=np):
         (θ, ω) = x
-        return ω**2 / 2 + (1-np.cos(θ))
+        return ω**2 / 2 + (1-pkg.cos(θ))
 
     value = V_clf
 
@@ -487,7 +488,14 @@ class EnergyCLF(NamedAffineFunc):
 
     def grad_V_clf(self, x):
         (theta, w) = x
-        return np.array([ np.sin(theta), w])
+        numpy_val = np.array([ np.sin(theta), w])
+        x_with_grad = torch.from_numpy(x)
+        x_with_grad.requires_grad = True
+        V = self.V_clf(x_with_grad, pkg=torch)
+        V.backward()
+        torch_val = x_with_grad.grad
+        assert np.allclose(numpy_val, torch_val, rtol=1e-3, atol=1e-3)
+        return torch_val
 
     def A(self, x):
         (θ, ω) = x
@@ -525,11 +533,11 @@ class RadialCBF(NamedAffineFunc):
                  name="cbf"):
         self.model = model
 
-    def h_col(self, x):
+    def h_col(self, x, pkg=np):
         (theta, w) = x
         delta_col = self.cbf_col_delta
         theta_c = self.cbf_col_theta
-        return (np.cos(delta_col) - np.cos(theta - theta_c))*(w**2+1)
+        return (pkg.cos(delta_col) - pkg.cos(theta - theta_c))*(w**2+1)
 
     value = h_col
 

@@ -110,7 +110,7 @@ def test_GP_train_predict(n=2, m=3,
             plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.g_func, dynamics_model.g_func, axtitle="g(x)[{i}]")
             plt.savefig('g_learned_vs_g_true.pdf')
 
-        UHtest = torch.cat((torch.ones((Utest.shape[0], 1)), Utest), axis=1)
+        UHtest = torch.cat((Utest.new_ones((Utest.shape[0], 1)), Utest), axis=1)
         if deterministic:
             FXTexpected = torch.empty((Xtest.shape[0], 1+m, n))
             for i in range(Xtest.shape[0]):

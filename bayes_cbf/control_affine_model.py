@@ -1,5 +1,6 @@
-from typing import Any
 import warnings
+from typing import Any
+from itertools import zip_longest
 
 import logging
 LOG = logging.getLogger(__name__)
@@ -20,6 +21,25 @@ import gpytorch.settings as gpsettings
 
 from bayes_cbf.matrix_variate_multitask_kernel import MatrixVariateIndexKernel, HetergeneousMatrixVariateKernel
 from bayes_cbf.matrix_variate_multitask_model import HetergeneousMatrixVariateMean
+
+
+def torch_kron(A, B):
+    """
+    >>> B = torch.rand(5,3,3)
+    >>> A = torch.rand(5,2,2)
+    >>> AB = torch_kron(A, B)
+    >>> torch.allclose(AB[1, :3, :3] , A[1, 0,0] * B[1, ...])
+    True
+    >>> BA = torch_kron(B, A)
+    >>> torch.allclose(BA[1, :2, :2] , B[1, 0,0] * A[1, ...])
+    True
+    """
+    b = B.shape[0]
+    assert A.shape[0] == b
+    B_shape = sum([[1, si] for si in B.shape[1:]], [])
+    A_shape = sum([[si, 1] for si in A.shape[1:]], [])
+    kron_shape = [a*b for a, b in zip_longest(A.shape[1:], B.shape[1:], fillvalue=1)]
+    return (A.reshape(b, *A_shape) * B.reshape(b, *B_shape)).reshape(b, *kron_shape)
 
 
 class Namespace:
@@ -188,9 +208,9 @@ class ControlAffineRegressor:
             warnings.simplefilter("ignore")
             return self._fit_with_warnings(*args, **kwargs)
 
-    def _fit_with_warnings(self, Xtrain, Utrain, XdotTrain, training_iter = 50,
+    def _fit_with_warnings(self, Xtrain_in, Utrain_in, XdotTrain_in, training_iter = 50,
                            lr=0.1):
-        if Xtrain.shape[0] == 0:
+        if Xtrain_in.shape[0] == 0:
             # Do nothing if no data
             return self
 
@@ -199,12 +219,23 @@ class ControlAffineRegressor:
         likelihood = self.likelihood
 
         # Convert to torch
-        if isinstance(Xtrain, np.ndarray):
-            Xtrain = torch.from_numpy(Xtrain).float().to(device=device)
-        if isinstance(Utrain, np.ndarray):
-            Utrain = torch.from_numpy(Utrain).float().to(device=device)
-        if isinstance(XdotTrain, np.ndarray):
-            XdotTrain = torch.from_numpy(XdotTrain).float().to(device=device)
+        if isinstance(Xtrain_in, np.ndarray):
+            Xtrain = torch.from_numpy(Xtrain_in)
+        else:
+            Xtrain = Xtrain_in
+        Xtrain = Xtrain.float().to(device=device)
+
+        if isinstance(Utrain_in, np.ndarray):
+            Utrain = torch.from_numpy(Utrain_in)
+        else:
+            Utrain = Utrain_in
+        Utrain = Utrain.float().to(device=device)
+
+        if isinstance(XdotTrain_in, np.ndarray):
+            XdotTrain = torch.from_numpy(XdotTrain_in).float().to(device=device)
+        else:
+            XdotTrain = XdotTrain_in
+        XdotTrain = XdotTrain.float().to(device=device)
 
         model.set_train_data(Xtrain, Utrain, XdotTrain)
 
@@ -254,10 +285,14 @@ class ControlAffineRegressor:
                 p.grad.detach_()
                 p.grad.zero_()
 
-    def predict(self, Xtest, return_cov=True):
+    def predict(self, Xtest_in, return_cov=True):
         device = self.device
-        if isinstance(Xtest, np.ndarray):
-            Xtest = torch.from_numpy(Xtest).float().to(device=device)
+        if isinstance(Xtest_in, np.ndarray):
+            Xtest = torch.from_numpy(Xtest_in)
+        else:
+            Xtest = Xtest_in
+        Xtest = Xtest.float().to(device=device)
+
         # Switch back to eval mode
         if self.model is None or self.likelihood is None:
             raise RuntimeError("Call fit() with training data before calling predict")
@@ -273,10 +308,12 @@ class ControlAffineRegressor:
         mean, cov = (output.mean.reshape(-1, *self.model.matshape),
                      output.covariance_matrix)
         #mean_np, cov_np = [arr.detach().cpu().numpy() for arr in (mean, cov)]
+        mean = mean.to(device=Xtest_in.device, dtype=Xtest_in.dtype)
+        cov = cov.to(device=Xtest_in.device, dtype=Xtest_in.dtype)
         return (mean, cov) if return_cov else mean
         #return mean, cov
 
-    def predict_flatten(self, Xtest, Utest):
+    def predict_flatten(self, Xtest_in, Utest_in):
         """
         Directly predict
 
@@ -285,11 +322,17 @@ class ControlAffineRegressor:
         If you need f only, put Utest = [1, 0]
         """
         device = self.device
-        if isinstance(Xtest, np.ndarray):
-            Xtest = torch.from_numpy(Xtest).float().to(device=device)
+        if isinstance(Xtest_in, np.ndarray):
+            Xtest = torch.from_numpy(Xtest_in)
+        else:
+            Xtest = Xtest_in
+        Xtest = Xtest.float().to(device=device)
 
-        if isinstance(Utest, np.ndarray):
-            Utest = torch.from_numpy(Utest).float().to(device=device)
+        if isinstance(Utest_in, np.ndarray):
+            Utest = torch.from_numpy(Utest_in)
+        else:
+            Utest = Utest_in
+        Utest = Utest.float().to(device=device)
 
         # Switch back to eval mode
         if self.model is None or self.likelihood is None:
@@ -304,7 +347,8 @@ class ControlAffineRegressor:
         output = self.model(MXUHtest)
 
         mean, cov = (output.mean, output.covariance_matrix)
-        return mean, cov
+        return (mean.to(device=Xtest_in.device, dtype=Xtest_in.dtype),
+                cov.to(device=Xtest_in.device, dtype=Xtest_in.dtype))
 
     def predict_grad(self, Xtest, Utest):
         """

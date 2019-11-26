@@ -24,7 +24,7 @@ def plot_2D_f_func(f_func,
     axs = axes_gen(FX)
     for i in range(FX.shape[-1]):
         ctf0 = axs[i].contourf(theta_omega_grid[0, ...], theta_omega_grid[1, ...],
-                               FX[:, :, i].numpy())
+                               FX[:, :, i].detach().cpu().numpy())
         plt.colorbar(ctf0, ax=axs[i])
         axs[i].set_title(axtitle.format(i=i))
         axs[i].set_ylabel(r"$\omega$")

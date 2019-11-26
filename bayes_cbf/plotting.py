@@ -1,6 +1,8 @@
 #plot the result
 import numpy as np
+import torch
 import matplotlib.pyplot as plt
+import os.path as osp
 from matplotlib import rc as mplibrc
 mplibrc('text', usetex=True)
 
@@ -16,11 +18,13 @@ def plot_2D_f_func(f_func,
     # Plot true f(x)
     theta_omega_grid = np.mgrid[theta_range, omega_range]
     D, N, M = theta_omega_grid.shape
-    FX = f_func(theta_omega_grid.transpose(1, 2, 0).reshape(-1, D)).reshape(N, M, D)
+    FX = f_func(
+        torch.from_numpy(theta_omega_grid.transpose(1, 2, 0).reshape(-1, D)).to(torch.float32)
+    ).reshape(N, M, D)
     axs = axes_gen(FX)
     for i in range(FX.shape[-1]):
         ctf0 = axs[i].contourf(theta_omega_grid[0, ...], theta_omega_grid[1, ...],
-                               FX[:, :, i])
+                               FX[:, :, i].numpy())
         plt.colorbar(ctf0, ax=axs[i])
         axs[i].set_title(axtitle.format(i=i))
         axs[i].set_ylabel(r"$\omega$")
@@ -46,9 +50,9 @@ def plot_results(time_vec, omega_vec, theta_vec, u_vec,
     axs[1,0].set_ylabel("u")
 
     axs[1,1].clear()
-    axs[1,1].plot(time_vec, np.cos(theta_vec),":", label="cos(theta)", color="blue")
+    axs[1,1].plot(time_vec, torch.cos(theta_vec).numpy(),":", label="cos(theta)", color="blue")
     axs[1,1].set_ylabel("cos/sin(theta)")
-    axs[1,1].plot(time_vec, np.sin(theta_vec),":", label="sin(theta)", color="red")
+    axs[1,1].plot(time_vec, torch.sin(theta_vec).numpy(),":", label="sin(theta)", color="red")
     axs[1,1].set_ylabel("sin(theta)")
     axs[1,1].legend()
 
@@ -61,10 +65,10 @@ def plot_results(time_vec, omega_vec, theta_vec, u_vec,
 def plot_learned_2D_func(Xtrain, learned_f_func, true_f_func,
                          axtitle="f(x)[{i}]"):
     fig, axs = plt.subplots(3,2)
-    theta_range = slice(np.min(Xtrain[:, 0]), np.max(Xtrain[:, 0]),
-                        (np.max(Xtrain[:, 0]) - np.min(Xtrain[:, 0])) / 20)
-    omega_range = slice(np.min(Xtrain[:, 1]), np.max(Xtrain[:, 1]),
-                      (np.max(Xtrain[:, 1]) - np.min(Xtrain[:, 1])) / 20)
+    theta_range = slice(Xtrain[:, 0].min(), Xtrain[:, 0].max(),
+                        (Xtrain[:, 0].max() - Xtrain[:, 0].min()) / 20)
+    omega_range = slice(Xtrain[:, 1].min(), Xtrain[:, 1].max(),
+                        (Xtrain[:, 1].max() - Xtrain[:, 1].min()) / 20)
     plot_2D_f_func(true_f_func, axes_gen=lambda _: axs[0, :],
                    theta_range=theta_range, omega_range=omega_range,
                    axtitle="True " + axtitle)
@@ -84,12 +88,11 @@ def plot_learned_2D_func(Xtrain, learned_f_func, true_f_func,
 class LinePlotSerialization:
     @staticmethod
     def serialize(filename, axes):
-        xydata = {
-            "ax_{i}_line_{j}_{xy}".format(i=i,j=j,xy=xy): method()
-            for xy, method in (("x", ax.get_xdata), ("y",ax.get_ydata))
-            for j in ax.lines
-            for i, ax in enumerate(axes)
-        }
+        xydata = dict()
+        for i, ax in enumerate(axes):
+            for j in ax.lines:
+                for xy, method in (("x", ax.get_xdata), ("y",ax.get_ydata)):
+                    xydata["ax_{i}_line_{j}_{xy}".format(i=i,j=j,xy=xy)] = method()
         np.savez_compressed(
             filename,
             **xydata

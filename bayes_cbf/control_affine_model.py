@@ -199,9 +199,12 @@ class ControlAffineRegressor:
         likelihood = self.likelihood
 
         # Convert to torch
-        Xtrain = torch.from_numpy(Xtrain).float().to(device=device)
-        Utrain = torch.from_numpy(Utrain).float().to(device=device)
-        XdotTrain = torch.from_numpy(XdotTrain).float().to(device=device)
+        if isinstance(Xtrain, np.ndarray):
+            Xtrain = torch.from_numpy(Xtrain).float().to(device=device)
+        if isinstance(Utrain, np.ndarray):
+            Utrain = torch.from_numpy(Utrain).float().to(device=device)
+        if isinstance(XdotTrain, np.ndarray):
+            XdotTrain = torch.from_numpy(XdotTrain).float().to(device=device)
 
         model.set_train_data(Xtrain, Utrain, XdotTrain)
 
@@ -245,9 +248,16 @@ class ControlAffineRegressor:
             scheduler.step()
         return self
 
+    def zero_grad(self):
+        for p in self.model.parameters():
+            if p.grad is not None:
+                p.grad.detach_()
+                p.grad.zero_()
+
     def predict(self, Xtest, return_cov=True):
         device = self.device
-        Xtest = torch.from_numpy(Xtest).float().to(device=device)
+        if isinstance(Xtest, np.ndarray):
+            Xtest = torch.from_numpy(Xtest).float().to(device=device)
         # Switch back to eval mode
         if self.model is None or self.likelihood is None:
             raise RuntimeError("Call fit() with training data before calling predict")
@@ -262,8 +272,65 @@ class ControlAffineRegressor:
 
         mean, cov = (output.mean.reshape(-1, *self.model.matshape),
                      output.covariance_matrix)
-        mean_np, cov_np = [arr.detach().cpu().numpy() for arr in (mean, cov)]
-        return (mean_np, cov_np) if return_cov else mean_np
+        #mean_np, cov_np = [arr.detach().cpu().numpy() for arr in (mean, cov)]
+        return (mean, cov) if return_cov else mean
+        #return mean, cov
+
+    def predict_flatten(self, Xtest, Utest):
+        """
+        Directly predict
+
+        f(x, u) = f(x) + g(x) @ u
+
+        If you need f only, put Utest = [1, 0]
+        """
+        device = self.device
+        if isinstance(Xtest, np.ndarray):
+            Xtest = torch.from_numpy(Xtest).float().to(device=device)
+
+        if isinstance(Utest, np.ndarray):
+            Utest = torch.from_numpy(Utest).float().to(device=device)
+
+        # Switch back to eval mode
+        if self.model is None or self.likelihood is None:
+            raise RuntimeError("Call fit() with training data before calling predict")
+
+        # Set in eval mode
+        self.model.eval()
+        self.likelihood.eval()
+
+        # Concatenate the test set
+        _, MXUHtest = self.model.encode_from_XU(Xtest, Utest=Utest)
+        output = self.model(MXUHtest)
+
+        mean, cov = (output.mean, output.covariance_matrix)
+        return mean, cov
+
+    def predict_grad(self, Xtest, Utest):
+        """
+        Directly predict
+
+        ∇ₓf(x; u) = ∇ₓ f(x) + ∇ₓ g(x) @ u
+
+        One way is to differentiate the kernel
+
+        E[∇ₓf(x; u)] = ∇ₓk(x, X) K(X,X)⁻¹ Y
+        Var(∇ₓf(x; u)) = Hₓₓk(x*,x*) - ∇ₓk(x, X)ᵀ K(X,X)⁻¹ ∇ₓk(X, x)
+
+        or let pytorch do all the heavy lifting for us
+        """
+        self.zero_grad()
+        Xtest = Xtest.requires_grad_(True)
+        mean, _ = self.predict_flatten(Xtest, Utest)
+        mean.backward(torch.eye(mean.shape[-1]))
+        grad_mean = Xtest.grad
+        self.zero_grad()
+        cov = self.model.input_covar(Xtest, Xtest)
+        cov.backward(retain_graph=True)
+        grad_cov = Xtest.grad
+        grad_cov.backward(torch.eye(grad_cov.shape[-1]))
+        H_cov = Xtest.grad
+        return grad_mean, grad_cov
 
     def f_func(self, Xtest, return_cov=False):
         if return_cov:

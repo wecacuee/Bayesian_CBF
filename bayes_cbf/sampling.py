@@ -1,8 +1,9 @@
 import numpy as np
+import torch
 
 
 def controller_sine(xi, m):
-    return np.sin(xi[0]) * np.abs(np.random.rand(m)) + 0.2 * np.random.rand()
+    return torch.sin(xi[0]) * torch.abs(torch.rand(m)) + 0.2 * torch.rand(1)
 
 
 def sample_generator_trajectory(dynamics_model, D, dt=0.01, x0=None,
@@ -11,10 +12,10 @@ def sample_generator_trajectory(dynamics_model, D, dt=0.01, x0=None,
     g = dynamics_model.g_func
     m = dynamics_model.ctrl_size
     n = dynamics_model.state_size
-    U = np.empty((D, m))
-    X = np.zeros((D+1, n))
-    X[0, :] = np.random.rand(n) if x0 is None else np.asarray(x0)
-    Xdot = np.zeros((D, n))
+    U = torch.empty((D, m))
+    X = torch.zeros((D+1, n))
+    X[0, :] = torch.rand(n) if x0 is None else torch.tensor(x0)
+    Xdot = torch.zeros((D, n))
     # Single trajectory
     for i in range(D):
         U[i, :] = controller_sine(X[i, :], m)
@@ -30,9 +31,9 @@ def sample_generator_independent(dynamics_model, D):
     m = dynamics_model.ctrl_size
     n = dynamics_model.state_size
 
-    U = np.random.rand(D, m)
-    X = np.random.rand(D, n)
-    Xdot = np.zeros((D, n))
+    U = torch.rand(D, m)
+    X = torch.rand(D, n)
+    Xdot = torch.zeros((D, n))
     for i in range(D):
         Xdot[i, :] = f(X[i, :]) + g(X[i, :]) @ U[i, :]
     return Xdot, X, U

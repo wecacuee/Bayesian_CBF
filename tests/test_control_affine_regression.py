@@ -3,6 +3,7 @@ import warnings
 from functools import partial
 
 import numpy as np
+import torch
 import matplotlib.pyplot as plt
 import torch
 import pytest
@@ -19,8 +20,8 @@ class RandomDynamicsModel:
         self.n = n
         self.m = m
         self.deterministic = deterministic
-        self.A = np.random.rand(n,n)
-        self.B = np.random.rand(n, m, n)
+        self.A = torch.rand(n,n)
+        self.B = torch.rand(n, m, n)
 
     @property
     def ctrl_size(self):
@@ -36,9 +37,9 @@ class RandomDynamicsModel:
         m = self.m
         deterministic = self.deterministic
         assert x.shape[-1] == n
-        cov = np.eye(n) * 0.0001
+        cov = torch.eye(n) * 0.0001
         return (A @ x if deterministic
-                else np.random.multivariate_normal(A @ x, cov))
+                else torch.distributions.MultivariateNormal(A @ x, cov).sample())
 
     def g_func(self, x):
         """
@@ -49,29 +50,28 @@ class RandomDynamicsModel:
         m = self.m
         deterministic = self.deterministic
         assert x.shape[-1] == n
-        cov_A = np.eye(n) * 0.0001
-        cov_B = np.eye(m) * 0.0002
-        cov = np.kron(cov_A, cov_B)
+        cov_A = torch.eye(n) * 0.0001
+        cov_B = torch.eye(m) * 0.0002
+        cov = (cov_A.reshape(n, 1, n, 1) * cov_B.reshape(1, m, 1, m)).reshape(n*m, n*m)
 
         return (
             B @ x if deterministic
-            else np.random.multivariate_normal(
+            else torch.distributions.MultivariateNormal(
                     (B @ x).flatten(), cov
-            ).reshape((n, m))
+            ).sample().reshape((n, m))
         )
 
 
 def test_GP_train_predict(n=2, m=3,
                           D = 20,
                           deterministic=False,
-                          rel_tol=0.05,
-                          abs_tol=0.05,
+                          rel_tol=0.10,
+                          abs_tol=0.10,
                           sample_generator=sample_generator_trajectory,
                           dynamics_model_class=RandomDynamicsModel):
-    chosen_seed = np.random.randint(100000)
+    chosen_seed = torch.randint(100000, (1,))
     #chosen_seed = 52648
     print("Random seed: {}".format(chosen_seed))
-    np.random.seed(chosen_seed)
     torch.manual_seed(chosen_seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
@@ -80,14 +80,14 @@ def test_GP_train_predict(n=2, m=3,
     dynamics_model = dynamics_model_class(m, n, deterministic=deterministic)
     Xdot, X, U = sample_generator(dynamics_model, D)
     if X.shape[-1] == 2 and U.shape[-1] == 1:
-        plot_results(np.arange(U.shape[0]),
+        plot_results(torch.arange(U.shape[0]),
                      omega_vec=X[:-1, 0],
                      theta_vec=X[:-1, 1],
                      u_vec=U[:, 0])
 
     # Test train split
-    shuffled_order = np.arange(D)
-    np.random.shuffle(shuffled_order)
+    shuffled_order = torch.arange(D)
+    #torch.random.shuffle(shuffled_order)
     train_indices = shuffled_order[:int(D*0.8)]
     test_indices = shuffled_order[int(D*0.8):]
 
@@ -103,28 +103,29 @@ def test_GP_train_predict(n=2, m=3,
     # Test prior
     _ = dgp.predict(Xtest, return_cov=False)
     dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50, lr=0.01)
-    if X.shape[-1] == 2 and U.shape[-1] == 1:
-        plot_learned_2D_func(Xtrain, dgp.f_func, dynamics_model.f_func)
-        plt.savefig('f_learned_vs_f_true.pdf')
-        plot_learned_2D_func(Xtrain, dgp.g_func, dynamics_model.g_func, axtitle="g(x)[{i}]")
-        plt.savefig('g_learned_vs_g_true.pdf')
+    with torch.no_grad():
+        if X.shape[-1] == 2 and U.shape[-1] == 1:
+            plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func, dynamics_model.f_func)
+            plt.savefig('f_learned_vs_f_true.pdf')
+            plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.g_func, dynamics_model.g_func, axtitle="g(x)[{i}]")
+            plt.savefig('g_learned_vs_g_true.pdf')
 
-    UHtest = np.concatenate((np.ones((Utest.shape[0], 1)), Utest), axis=1)
-    if deterministic:
-        FXTexpected = np.empty((Xtest.shape[0], 1+m, n))
+        UHtest = torch.cat((torch.ones((Utest.shape[0], 1)), Utest), axis=1)
+        if deterministic:
+            FXTexpected = torch.empty((Xtest.shape[0], 1+m, n))
+            for i in range(Xtest.shape[0]):
+                FXTexpected[i, ...] = torch.cat(
+                    (f(Xtest[i, :])[None, :], g(Xtest[i,  :]).T), axis=0)
+                assert torch.allclose(XdotTest[i, :], FXTexpected[i, :, :].T @ UHtest[i, :])
+
+        #FXTexpected = np.concatenate(((f.A @ Xtest.T).T.reshape(-1, 1, n),
+        #                              (g.B @ Xtest.T).T.reshape(-1, m, n)), axis=1)
+        FXTmean, FXTcov = dgp.predict(Xtest)
+
+        XdotGot = XdotTest.new_empty(XdotTest.shape)
         for i in range(Xtest.shape[0]):
-            FXTexpected[i, ...] = np.concatenate(
-                (f(Xtest[i, :])[None, :], g(Xtest[i,  :]).T), axis=0)
-            assert np.allclose(XdotTest[i, :], FXTexpected[i, :, :].T @ UHtest[i, :])
-
-    #FXTexpected = np.concatenate(((f.A @ Xtest.T).T.reshape(-1, 1, n),
-    #                              (g.B @ Xtest.T).T.reshape(-1, m, n)), axis=1)
-    FXTmean, FXTcov = dgp.predict(Xtest)
-
-    XdotGot = np.empty_like(XdotTest)
-    for i in range(Xtest.shape[0]):
-        XdotGot[i, :] = FXTmean[i, :, :].T @ UHtest[i, :]
-    assert XdotGot == pytest.approx(XdotTest, rel=rel_tol, abs=abs_tol)
+            XdotGot[i, :] = FXTmean[i, :, :].T @ UHtest[i, :]
+        assert XdotGot.detach().cpu().numpy() == pytest.approx(XdotTest.detach().cpu().numpy(), rel=rel_tol, abs=abs_tol)
 
 
 def relpath(path,
@@ -152,7 +153,7 @@ test_pendulum_train_predict = partial(
 
 
 if __name__ == '__main__':
-    test_GP_train_predict()
-    test_control_affine_gp()
+    #test_GP_train_predict()
+    #test_control_affine_gp()
     test_pendulum_train_predict()
 

@@ -313,6 +313,42 @@ class ControlAffineRegressor:
         return (mean, cov) if return_cov else mean
         #return mean, cov
 
+    def custom_predict(self, Xtest_in, Utest_in):
+        """
+        Gpytorch is complicated. It uses terminology like fantasy something,
+        something. Even simple exact prediction strategy uses Laczos. I do not
+        understand.
+        Once the training is done. Take things in my own hands and predict
+        myself.
+
+        Matrix variate GP: Separate A and B
+
+            f(x; u) ~ 𝕄𝕍ℙ(μ(x)u, A, B k(x, x'))
+            vec(f)(x; u) ~ ℕ(μ(x)u, uᵀBu ⊗ A k(x, x'))
+
+            K⁻¹:= k(X,X)
+            k* := k(X, x*)
+
+            f*(x*; u) ~ 𝕄𝕍ℙ( {[(k*ᵀK⁻¹) ⊗ Iₘ]U⁻ᵀ ⊗ Iₙ}(Y-μ(x)u), A,
+                            [k(x*,x*) - k*ᵀK⁻¹k*] uᵀBu)
+
+        Vector variate GP:
+            Kᶠ(u) = uᵀBu ⊗ A = (uᵀBu)A
+            ẋ = f(x;u)
+            cov(f(x;u), f(x';u)) = k(x,x')Kᶠ = k(x,x')Kᶠ(u)
+
+            f(x; u) ~ 𝔾ℙ(μ(x)u, k(x, x')Kᶠ(u))
+
+            K⁻¹:= k(X,X)
+            k* := k(X, x*)
+
+            f*(x*; u) ~ 𝔾ℙ( {[(k*ᵀK⁻¹) ⊗ Iₙ]}(Y-μ(x)u),
+                            [k(x*,x*) - k*ᵀK⁻¹k*]Kᶠ(u))
+        """
+        k = self.model.covar_module.data_covar_module
+        Y = self.model.train_targets - self.model.tra
+
+
     def predict_flatten(self, Xtest_in, Utest_in):
         """
         Directly predict

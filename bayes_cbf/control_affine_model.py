@@ -125,8 +125,6 @@ class IdentityLikelihood(_GaussianLikelihoodBase):
         return function_dist
 
 
-
-
 class ControlAffineExactGP(ExactGP):
     """
     ExactGP Model to capture the heterogeneous gaussian process
@@ -177,6 +175,18 @@ class ControlAffineExactGP(ExactGP):
             covar_x = self.covar_module(mxu)
         return MultivariateNormal(mean_x, covar_x)
 
+    def state_dict(self):
+        return dict(matshape=self.matshape,
+                    decoder=self.decoder,
+                    mean_module=self.mean_module,
+                    task_covar=self.task_covar,
+                    input_covar=self.input_covar,
+                    covar_module=self.covar_module)
+
+    def load_state_dict(self, state_dict):
+        for k, v in state_dict.items():
+            setattr(self, k, v)
+
 
 def default_device():
     return 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -202,6 +212,12 @@ class ControlAffineRegressor:
             x_dim, u_dim, self.likelihood
         ).to(device=self.device)
 
+    def _ensure_device_dtype(self, X):
+        if isinstance(X, np.ndarray):
+            X = torch.from_numpy(X)
+        X = X.float().to(device=self.device)
+        return X
+
     def fit(self, *args, max_cg_iterations=2000, **kwargs):
         with warnings.catch_warnings(), \
               gpsettings.max_cg_iterations(max_cg_iterations):
@@ -219,23 +235,9 @@ class ControlAffineRegressor:
         likelihood = self.likelihood
 
         # Convert to torch
-        if isinstance(Xtrain_in, np.ndarray):
-            Xtrain = torch.from_numpy(Xtrain_in)
-        else:
-            Xtrain = Xtrain_in
-        Xtrain = Xtrain.float().to(device=device)
-
-        if isinstance(Utrain_in, np.ndarray):
-            Utrain = torch.from_numpy(Utrain_in)
-        else:
-            Utrain = Utrain_in
-        Utrain = Utrain.float().to(device=device)
-
-        if isinstance(XdotTrain_in, np.ndarray):
-            XdotTrain = torch.from_numpy(XdotTrain_in).float().to(device=device)
-        else:
-            XdotTrain = XdotTrain_in
-        XdotTrain = XdotTrain.float().to(device=device)
+        Xtrain, Utrain, XdotTrain = [
+            self._ensure_device_dtype(X)
+            for X in (Xtrain_in, Utrain_in, XdotTrain_in)]
 
         model.set_train_data(Xtrain, Utrain, XdotTrain)
 
@@ -286,12 +288,7 @@ class ControlAffineRegressor:
                 p.grad.zero_()
 
     def predict(self, Xtest_in, return_cov=True):
-        device = self.device
-        if isinstance(Xtest_in, np.ndarray):
-            Xtest = torch.from_numpy(Xtest_in)
-        else:
-            Xtest = Xtest_in
-        Xtest = Xtest.float().to(device=device)
+        Xtest = self._ensure_device_dtype(Xtest_in)
 
         # Switch back to eval mode
         if self.model is None or self.likelihood is None:
@@ -326,27 +323,54 @@ class ControlAffineRegressor:
             f(x; u) ~ 𝕄𝕍ℙ(μ(x)u, A, B k(x, x'))
             vec(f)(x; u) ~ ℕ(μ(x)u, uᵀBu ⊗ A k(x, x'))
 
-            K⁻¹:= k(X,X)
-            k* := k(X, x*)
+            K⁻¹(XU,XU):= [k(xᵢ,xⱼ)uᵢᵀBuⱼ]ᵢⱼ
+            k* := [k(xᵢ, x*)uᵀᵢB]ᵢ
 
-            f*(x*; u) ~ 𝕄𝕍ℙ( {[(k*ᵀK⁻¹) ⊗ Iₘ]U⁻ᵀ ⊗ Iₙ}(Y-μ(x)u), A,
-                            [k(x*,x*) - k*ᵀK⁻¹k*] uᵀBu)
 
-        Vector variate GP:
-            Kᶠ(u) = uᵀBu ⊗ A = (uᵀBu)A
+            F*(x*)u ~ 𝕄𝕍ℙ( {[k*ᵀ K⁻¹] ⊗ Iₙ}(Y-μ(x)u), A,
+                            uᵀ[k(x*,x*)B - k*ᵀK⁻¹k*]u)
+
+        Vector variate GP (preffered):
+            Kᶠ(u, u') = uᵀBu' ⊗ A = (uᵀBu)A = bᶠ(u, u') A
             ẋ = f(x;u)
-            cov(f(x;u), f(x';u)) = k(x,x')Kᶠ = k(x,x')Kᶠ(u)
+            cov(f(x;u), f(x';u')) = k(x,x')Kᶠ(u, u') = k(x,x')bᶠ(u, u') ⊗ A
 
-            f(x; u) ~ 𝔾ℙ(μ(x)u, k(x, x')Kᶠ(u))
+            f(x; u) ~ 𝔾ℙ(μ(x)u, k(x, x')bᶠ(u, u') ⊗ A)
 
-            K⁻¹:= k(X,X)
-            k* := k(X, x*)
+            Kb⁻¹:= [k(xᵢ,xⱼ)uᵢᵀBuⱼ]ᵢⱼ
+            kb* := [k(xᵢ,xⱼ)uᵢᵀBuⱼ]ᵢⱼ
 
-            f*(x*; u) ~ 𝔾ℙ( {[(k*ᵀK⁻¹) ⊗ Iₙ]}(Y-μ(x)u),
-                            [k(x*,x*) - k*ᵀK⁻¹k*]Kᶠ(u))
+            f*(x*; u) ~ 𝔾ℙ( {[(kb*ᵀK_b⁻¹) ⊗ Iₙ]}(Y-μ(x)u),
+                            [kb(x*,x*) - k*bᵀKb⁻¹kb*] ⊗ A)
+
+        Algorithm (Rasmussen and Williams 2006)
+           1. L := cholesky(K)
+           2. α := Lᵀ \ ( L \ Y )
+           3. μ := kb*ᵀ α
+           4. v := L \ kb*
+           5. k* := k(x*,x*) - vᵀV
+           6. log p(y|X) := -0.5 yᵀ α - ∑ log Lᵢᵢ - 0.5 n log(2π)
         """
+        Xtest = self._ensure_device_dtype(Xtest_in)
+        Utest = self._ensure_device_dtype(Utest_in)
+        MXUHtrain = self.model.train_inputs[0]
+        Mtrain, Xtrain, UHtrain = self.model.decoder.decode(MXUHtrain)
+        nsamples = Xtrain.size(0)
         k = self.model.covar_module.data_covar_module
-        Y = self.model.train_targets - self.model.tra
+        A = self.model.covar_module.task_covar_module.U
+        B = self.model.covar_module.task_covar_module.V
+        Y = self.model.train_targets.reshape(nsamples, -1) - self.model.mean_module(Xtrain).reshape(nsamples, *self.model.matshape).transpose(-2,-1).bmm(UHtrain.unsqueeze(-1)).squeeze(-1)
+        KXX = k(Xtrain, Xtrain)
+        uBu = Utrain @ B @ Utrain.t()
+        Kb = KXX * uBu
+        Kb_sqrt = torch.cholesky(Kb)
+        kb_star = k(Xtrain, Xtest) * (Utrain @ B @ Utest.t())
+        kb_star_star = k(Xtest, Xtest) * (Utest @ B @ Utest.t())
+        α = torch.cholesky_solve(Y, Kb_sqrt) # check the shape of Y
+        mean = kb_star.t() @ α
+        v = torch.solve(kb_star, Kb_sqrt)
+        scalar_var = kb_star_star - v.t() @ v
+        return mean, scalar_var, A
 
 
     def predict_flatten(self, Xtest_in, Utest_in):

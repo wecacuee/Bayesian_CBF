@@ -353,18 +353,24 @@ class ControlAffineRegressor:
         """
         Xtest = self._ensure_device_dtype(Xtest_in)
         Utest = self._ensure_device_dtype(Utest_in)
+        UHtest = torch.cat((Utest.new_ones(Utest.shape[0], 1), Utest), dim=-1)
         MXUHtrain = self.model.train_inputs[0]
         Mtrain, Xtrain, UHtrain = self.model.decoder.decode(MXUHtrain)
         nsamples = Xtrain.size(0)
         k = self.model.covar_module.data_covar_module
-        A = self.model.covar_module.task_covar_module.U
-        B = self.model.covar_module.task_covar_module.V
+        A = self.model.covar_module.task_covar_module.U.covar_matrix.evaluate()
+        B = self.model.covar_module.task_covar_module.V.covar_module.evaluate()
         Y = self.model.train_targets.reshape(nsamples, -1) - self.model.mean_module(Xtrain).reshape(nsamples, *self.model.matshape).transpose(-2,-1).bmm(UHtrain.unsqueeze(-1)).squeeze(-1)
-        KXX = k(Xtrain, Xtrain)
-        uBu = Utrain @ B @ Utrain.t()
+        KXX = k(Xtrain, Xtrain).evaluate()
+        uBu = UHtrain @ B @ UHtrain.T
         Kb = KXX * uBu
-        Kb_sqrt = torch.cholesky(Kb)
-        kb_star = k(Xtrain, Xtest) * (Utrain @ B @ Utest.t())
+        # Kb can be singular because of repeated datasamples
+        # Add diagonal jitter
+        Kbp = Kb + 1e-5 * Kb.diag() * (
+            torch.eye(Kb.shape[0]) * torch.rand(Kb.shape[0])).float().to(device=Kb.device
+            )
+        Kb_sqrt = torch.cholesky(Kbp)
+        kb_star = k(Xtrain, Xtest) * (UHtrain @ B @ UHtest.t())
         kb_star_star = k(Xtest, Xtest) * (Utest @ B @ Utest.t())
         α = torch.cholesky_solve(Y, Kb_sqrt) # check the shape of Y
         mean = kb_star.t() @ α

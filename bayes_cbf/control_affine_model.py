@@ -211,6 +211,7 @@ class ControlAffineRegressor:
         self.model = ControlAffineExactGP(
             x_dim, u_dim, self.likelihood
         ).to(device=self.device)
+        self._cache = dict()
 
     def _ensure_device_dtype(self, X):
         if isinstance(X, np.ndarray):
@@ -310,11 +311,39 @@ class ControlAffineRegressor:
         return (mean, cov) if return_cov else mean
         #return mean, cov
 
+    def _perturbed_cholesky_compute(self, Kb,
+                           cholesky_tries=10,
+                           cholesky_perturb_init=1e-5,
+                           cholesky_perturb_scale=10):
 
-    def custom_predict(self, Xtest_in, Utest_in=None, UHfill=1,
-                       cholesky_tries=10,
-                       cholesky_perturb_init=1e-5,
-                       cholesky_perturb_scale=10):
+        # Kb can be singular because of repeated datasamples
+        # Add diagonal jitter
+        Kb_sqrt = None
+        cholesky_perturb_factor = cholesky_perturb_init
+        for _ in range(cholesky_tries):
+            try:
+                Kbp = Kb + cholesky_perturb_factor * Kb.diag() * (
+                    torch.eye(Kb.shape[0], dtype=Kb.dtype, device=Kb.device) *
+                    torch.rand(Kb.shape[0], dtype=Kb.dtype, device=Kb.device)
+                    )
+                Kb_sqrt = torch.cholesky(Kbp)
+            except RuntimeError as e:
+                LOG.warning("Cholesky failed with perturb={} on error {}".format(cholesky_perturb_factor, str(e)))
+                cholesky_perturb_factor = cholesky_perturb_factor * cholesky_perturb_scale
+                continue
+
+        if Kb_sqrt is None:
+            raise
+        return Kb_sqrt
+
+    def _perturbed_cholesky(self, Kb, cache_key="perturbed_cholesky" ):
+        if cache_key not in self._cache:
+            self._cache[cache_key] = self._perturbed_cholesky_compute(Kb)
+
+        return self._cache[cache_key]
+
+
+    def custom_predict(self, Xtest_in, Utest_in=None, UHfill=1):
         """
         Gpytorch is complicated. It uses terminology like fantasy something,
         something. Even simple exact prediction strategy uses Laczos. I do not
@@ -372,25 +401,8 @@ class ControlAffineRegressor:
         KXX = k(Xtrain, Xtrain).evaluate()
         uBu = UHtrain @ B @ UHtrain.T
         Kb = KXX * uBu
-        # Kb can be singular because of repeated datasamples
-        # Add diagonal jitter
-        Kb_sqrt = None
-        cholesky_perturb_factor = cholesky_perturb_init
-        for _ in range(cholesky_tries):
-            try:
-                Kbp = Kb + cholesky_perturb_factor * Kb.diag() * (
-                    torch.eye(Kb.shape[0], dtype=Kb.dtype, device=Kb.device) *
-                    torch.rand(Kb.shape[0], dtype=Kb.dtype, device=Kb.device)
-                    )
-                Kb_sqrt = torch.cholesky(Kbp)
-            except RuntimeError as e:
-                LOG.warning("Cholesky failed with perturb={} on error {}".format(cholesky_perturb_factor, str(e)))
-                cholesky_perturb_factor = cholesky_perturb_factor * cholesky_perturb_scale
-                continue
 
-        if Kb_sqrt is None:
-            raise
-
+        Kb_sqrt = self._perturbed_cholesky(Kb)
         kb_star = k(Xtrain, Xtest).evaluate() * (UHtrain @ B @ UHtest.t())
         kb_star_star = k(Xtest, Xtest).evaluate() * (UHtest @ B @ UHtest.t())
         α = torch.cholesky_solve(Y, Kb_sqrt) # check the shape of Y
@@ -472,11 +484,23 @@ class ControlAffineRegressor:
         mean_fx = mean_Fx[:, 0, :]
         return (mean_fx, cov_fx) if return_cov else mean_fx
 
-    def f_func_custom(self, Xtest, return_cov=False):
+    def f_func_custom(self, Xtest_in, return_cov=False):
+        Xtest = (Xtest_in.unsqueeze(0)
+                 if Xtest_in.ndim == 1
+                 else Xtest_in)
         mean_f, var_f, A =  self.custom_predict(Xtest)
+        if Xtest_in.ndim == 1:
+            mean_f = mean_f.squeeze(0)
+            var_f = var_f.squeeze(0)
         return (mean_f, var_f * A) if return_cov else mean_f
 
     f_func = f_func_custom
+
+    def mean_f_func(self, Xtest):
+        return self.f_func_custom(Xtest)
+
+    def cov_f_func(self, Xtest):
+        return self.f_func_custom(Xtest, return_cov=True)[1]
 
     def g_func(self, Xtest, return_cov=False):
         if return_cov:
@@ -487,8 +511,17 @@ class ControlAffineRegressor:
         mean_gx = mean_Fx[:, 1:, :]
         return (mean_gx, cov_gx) if return_cov else mean_gx
 
-    def gu_func(self, Xtest, Utest, return_cov=False):
+    def gu_func(self, Xtest_in, Utest_in, return_cov=False):
+        Xtest = (Xtest_in.unsqueeze(0)
+                 if Xtest_in.ndim == 1
+                 else Xtest_in)
+        Utest = (Utest_in.unsqueeze(0)
+                 if Utest_in.ndim == 1
+                 else Utest_in)
         mean_gu, var_gu, A =  self.custom_predict(Xtest, Utest, UHfill=0)
+        if Xtest_in.ndim == 1 and Utest_in.ndim == 1:
+            mean_gu = mean_gu.squeeze(0)
+            var_gu = var_gu.squeeze(0)
         return (mean_gu, var_gu * A) if return_cov else mean_gu
 
     def cbf_func(self, Xtest, grad_htest, return_cov=False):

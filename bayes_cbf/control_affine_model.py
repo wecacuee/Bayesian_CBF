@@ -1,6 +1,7 @@
 import warnings
 from typing import Any
 from itertools import zip_longest
+from collections import namedtuple
 
 import logging
 LOG = logging.getLogger(__name__)
@@ -21,6 +22,9 @@ import gpytorch.settings as gpsettings
 
 from bayes_cbf.matrix_variate_multitask_kernel import MatrixVariateIndexKernel, HetergeneousMatrixVariateKernel
 from bayes_cbf.matrix_variate_multitask_model import HetergeneousMatrixVariateMean
+
+
+GaussianProcess = namedtuple('GaussianProcess', ["mean", "k", "covar"])
 
 
 def torch_kron(A, B):
@@ -353,7 +357,7 @@ class ControlAffineRegressor:
 
         Matrix variate GP: Separate A and B
 
-            f(x; u) ~ 𝕄𝕍ℙ(μ(x)u, A, B k(x, x'))
+            f(x; u) ~ 𝕄𝕍ℙ(mean(x)u, A, B k(x, x'))
             vec(f)(x; u) ~ ℕ(μ(x)u, uᵀBu ⊗ A k(x, x'))
 
             K⁻¹(XU,XU):= [k(xᵢ,xⱼ)uᵢᵀBuⱼ]ᵢⱼ
@@ -391,7 +395,7 @@ class ControlAffineRegressor:
             UHtest[:, 0] = 1
         else:
             Utest = self._ensure_device_dtype(Utest_in)
-            UHtest = torch.cat((Utest.new_fill((Utest.shape[0], 1), UHfill), Utest), dim=-1)
+            UHtest = torch.cat((Utest.new_full((Utest.shape[0], 1), UHfill), Utest), dim=-1)
         MXUHtrain = self.model.train_inputs[0]
         Mtrain, Xtrain, UHtrain = self.model.decoder.decode(MXUHtrain)
         nsamples = Xtrain.size(0)
@@ -489,11 +493,11 @@ class ControlAffineRegressor:
         mean_fx = mean_Fx[:, 0, :]
         return (mean_fx, cov_fx) if return_cov else mean_fx
 
-    def f_func_custom(self, Xtest_in, return_cov=False):
+    def f_func_custom(self, Xtest_in, return_cov=False, Xtestp_in=None):
         Xtest = (Xtest_in.unsqueeze(0)
                  if Xtest_in.ndim == 1
                  else Xtest_in)
-        mean_f, var_f, A =  self.custom_predict(Xtest)
+        mean_f, var_f, A =  self.custom_predict(Xtest, Xtestp_in=Xtestp_in)
         if Xtest_in.ndim == 1:
             mean_f = mean_f.squeeze(0)
             var_f = var_f.squeeze(0)
@@ -501,11 +505,24 @@ class ControlAffineRegressor:
 
     f_func = f_func_custom
 
-    def mean_f_func(self, Xtest):
-        return self.f_func_custom(Xtest)
+    def f_func_gp(self, Xtest):
+        return GaussianProcess(
+            self.f_func_custom(Xtest),
+            self.f_func_custom(Xtest, return_cov=True)[1],
+            None)
 
-    def cov_f_func(self, Xtest):
-        return self.f_func_custom(Xtest, return_cov=True)[1]
+    def fu_func_gp(self, Xtest_in, Utest_in, Xtestp_in=None):
+        Xtest = (Xtest_in.unsqueeze(0)
+                 if Xtest_in.ndim == 1
+                 else Xtest_in)
+        Utest = (Utest_in.unsqueeze(0)
+                 if Utest_in.ndim == 1
+                 else Utest_in)
+        mean_f, var_f, A =  self.custom_predict(Xtest, Utest, Xtestp_in=Xtestp_in)
+        if Xtest_in.ndim == 1:
+            mean_f = mean_f.squeeze(0)
+            var_f = var_f.squeeze(0)
+        return GaussianProcess(mean_f, var_f * A, None)
 
     def g_func(self, Xtest, return_cov=False):
         if return_cov:
@@ -516,14 +533,15 @@ class ControlAffineRegressor:
         mean_gx = mean_Fx[:, 1:, :]
         return (mean_gx, cov_gx) if return_cov else mean_gx
 
-    def gu_func(self, Xtest_in, Utest_in, return_cov=False):
+    def gu_func(self, Xtest_in, Utest_in, return_cov=False, Xtestp_in=None):
         Xtest = (Xtest_in.unsqueeze(0)
                  if Xtest_in.ndim == 1
                  else Xtest_in)
         Utest = (Utest_in.unsqueeze(0)
                  if Utest_in.ndim == 1
                  else Utest_in)
-        mean_gu, var_gu, A =  self.custom_predict(Xtest, Utest, UHfill=0)
+        mean_gu, var_gu, A = self.custom_predict(Xtest, Utest, UHfill=0,
+                                                 Xtestp_in=Xtestp_in)
         if Xtest_in.ndim == 1 and Utest_in.ndim == 1:
             mean_gu = mean_gu.squeeze(0)
             var_gu = var_gu.squeeze(0)

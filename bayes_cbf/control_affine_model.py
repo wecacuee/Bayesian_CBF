@@ -343,13 +343,13 @@ class ControlAffineRegressor:
         return self._cache[cache_key]
 
 
-    def custom_predict(self, Xtest_in, Utest_in=None, UHfill=1):
+    def custom_predict(self, Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None):
         """
         Gpytorch is complicated. It uses terminology like fantasy something,
         something. Even simple exact prediction strategy uses Laczos. I do not
-        understand.
-        Once the training is done. Take things in my own hands and predict
-        myself.
+        understand Laczos and Gpytorch code.
+        Let the training be handled by Gpytorch. After that i take things in my
+        own hands and predict myself.
 
         Matrix variate GP: Separate A and B
 
@@ -385,6 +385,7 @@ class ControlAffineRegressor:
            6. log p(y|X) := -0.5 yᵀ α - ∑ log Lᵢᵢ - 0.5 n log(2π)
         """
         Xtest = self._ensure_device_dtype(Xtest_in)
+        Xtestp = self._ensure_device_dtype(Xtestp_in) if Xtestp_in is not None else Xtest
         if Utest_in is None:
             UHtest = Xtest.new_zeros(Xtest.shape[0], self.model.matshape[0])
             UHtest[:, 0] = 1
@@ -404,11 +405,15 @@ class ControlAffineRegressor:
 
         Kb_sqrt = self._perturbed_cholesky(Kb)
         kb_star = k(Xtrain, Xtest).evaluate() * (UHtrain @ B @ UHtest.t())
-        kb_star_star = k(Xtest, Xtest).evaluate() * (UHtest @ B @ UHtest.t())
+        kb_star_p = (k(Xtrain, Xtestp).evaluate() * (UHtrain @ B @ UHtest.t())
+                     if Xtestp_in is not None
+                     else kb_star)
+        kb_star_starp = k(Xtest, Xtestp).evaluate() * (UHtest @ B @ UHtest.t())
         α = torch.cholesky_solve(Y, Kb_sqrt) # check the shape of Y
         mean = kb_star.t() @ α
         v = torch.solve(kb_star, Kb_sqrt).solution
-        scalar_var = kb_star_star - v.t() @ v
+        vp = torch.solve(kb_star_p, Kb_sqrt).solution if Xtestp_in is not None else v
+        scalar_var = kb_star_starp - v.t() @ vp
         return mean, scalar_var, A
 
 

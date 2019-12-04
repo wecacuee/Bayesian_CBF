@@ -26,10 +26,8 @@ CALOG.setLevel(logging.WARNING)
 
 from bayes_cbf.plotting import plot_results, plot_learned_2D_func, plt_savefig_with_data
 from bayes_cbf.sampling import sample_generator_trajectory, controller_sine
-
-
-def t_vstack(xs):
-    torch.cat(xs, dim=-2)
+from bayes_cbf.controllers import cvxopt_solve_qp, control_QP_cbf_clf
+from bayes_cbf.misc import t_vstack
 
 
 def control_trivial(xi, m=1, mass=None, length=None, gravity=None):
@@ -385,36 +383,6 @@ def learn_dynamics(
     return dgp, dX, U
 
 
-def cvxopt_solve_qp(P, q, G=None, h=None, A=None, b=None, solver=None,
-                    initvals=None, **kwargs):
-    import cvxopt
-    from cvxopt import matrix
-    #P = (P + P.T)  # make sure P is symmetric
-    args = [matrix(P), matrix(q)]
-    if G is not None:
-        args.extend([matrix(G), matrix(h)])
-    else:
-        args.extend([None, None])
-    if A is not None:
-        args.extend([matrix(A), matrix(b)])
-    else:
-        args.extend([None, None])
-    args.extend([initvals, solver])
-    solvers = cvxopt.solvers
-    old_options = solvers.options.copy()
-    solvers.options.update(kwargs)
-    try:
-        sol = cvxopt.solvers.qp(*args)
-    except ValueError:
-        return None
-    finally:
-        solvers.options.update(old_options)
-    if 'optimal' not in sol['status']:
-        return None
-    return np.asarray(sol['x']).reshape((P.shape[1],))
-
-
-
 class NamedAffineFunc(ABC):
     @property
     def __name__(self):
@@ -738,12 +706,18 @@ class PendulumCBFCLFDirect:
 class ControlCBFCLFLearned(PendulumCBFCLFDirect):
     @store_args
     def __init__(self,
+                 theta_goal=0,
+                 omega_goal=0,
+                 quad_goal_cost=[[1, 0],
+                                 [0, 0]],
                  x_dim=2,
                  u_dim=1,
                  gamma_sr=1,
                  delta_sr=10,
                  train_every_n_steps=50,
-                 mean_dynamics_model_class=MeanPendulumDynamicsModel
+                 mean_dynamics_model_class=MeanPendulumDynamicsModel,
+                 egreedy_scheme=[1, 0.01],
+                 iterations=1000
     ):
         self.Xtrain = []
         self.Utrain = []
@@ -751,19 +725,8 @@ class ControlCBFCLFLearned(PendulumCBFCLFDirect):
         self.mean_dynamics_model = mean_dynamics_model_class(m=u_dim, n=x_dim)
         self.ctrl_aff_constraints=[EnergyCLF(self),
                                    RadialCBF(self)]
-
-    def f_g(self, x):
-        X = torch.tensor([x])
-        FXTmean = self.dgp.predict(X, return_cov=False)
-        fx = FXTmean[0, 0, :]
-        gx = FXTmean[0, 1:, :].T
-        return fx, gx
-
-    def f_func(self, x):
-        return self.f_g(x)[0] + self.mean_dynamics_model.f_func(x)
-
-    def g_func(self, x):
-        return self.f_g(x)[1] + self.mean_dynamics_model.g_func(x)
+        self.x_goal = torch.tensor([theta_goal, omega_goal])
+        self.x_quad_goal_cost = torch.tensor(quad_goal_cost)
 
     def train(self):
         if not len(self.Xtrain):
@@ -781,14 +744,22 @@ class ControlCBFCLFLearned(PendulumCBFCLFDirect):
             'plots/pendulum_data_{}.pdf'.format(Xtrain.shape[0]))
         assert torch.all((Xtrain[:, 0] <= math.pi) & (-math.pi <= Xtrain[:, 0]))
         LOG.info("Training model with datasize {}".format(XdotTrain.shape[0]))
-        try:
-            self.dgp.fit(Xtrain[:-1, :], Utrain[:-1, :], XdotTrain)
-        except AssertionError:
-            train_data = (Xtrain[:-1, :], Utrain[:-1, :], XdotTrain)
-            filename = hashlib.sha224(pickle.dumps(train_data)).hexdigest()
-            filepath = 'tests/data/{}.pickle'.format(filename)
-            pickle.dump(train_data, open(filepath, 'wb'))
-            raise
+        self.dgp.fit(Xtrain[:-1, :], Utrain[:-1, :], XdotTrain)
+
+    def egreedy(self, i):
+        se, ee = map(math.log, self.egreedy_scheme)
+        T = self.iterations
+        return math.exp( i * (ee - se) / T )
+
+    def objective(self, i, x, u0, u):
+        xg = self.x_goal
+        Q = self.x_quad_goal_cost
+        R = np.eye(u.shape[0])
+        λ = self.egreedy(i)
+        return (1-λ)*(x - x_g).T @ Q @ (x - x_g) + λ * (u - u0).T @ R @ (u - u0)
+
+    def quadtratic_contraints(self):
+        pass
 
     def control(self, xi):
         if len(self.Xtrain) % self.train_every_n_steps == 0:
@@ -798,78 +769,11 @@ class ControlCBFCLFLearned(PendulumCBFCLFDirect):
 
         assert torch.all((xi[0] <= math.pi) & (-math.pi <= xi[0]))
         self.Xtrain.append(xi)
-        u = control_QP_cbf_clf(xi,
-                               ctrl_aff_constraints=self.ctrl_aff_constraints,
-                               constraint_margin_weights=[1, 10000])
+        u = controller_qcqp(xi,
+                            self.objective,
+                            self.quadtratic_contraints())
         self.Utrain.append(u)
         return u
-
-
-def control_QP_cbf_clf(x,
-                       ctrl_aff_constraints,
-                       constraint_margin_weights=[]):
-    """
-    Args:
-          A_cbfs: A tuple of CBF functions
-          b_cbfs: A tuple of CBF functions
-          constraint_margin_weights: Add a margin constant to the constraint
-                                     that is maximized.
-
-    """
-    #import ipdb; ipdb.set_trace()
-    clf_idx = 0
-    A_total = np.vstack([af.A(x).detach().numpy()
-                         for af in ctrl_aff_constraints])
-    b_total = np.vstack([af.b(x).detach().numpy()
-                         for af in ctrl_aff_constraints]).flatten()
-    D_u = A_total.shape[1]
-    N_const = A_total.shape[0]
-
-    # u0 = l*g*sin(theta)
-    # uopt = 0.1*g
-    # contraints = A_total.dot(uopt) - b_total
-    # assert contraints[0] <= 0
-    # assert contraints[1] <= 0
-    # assert contraints[2] <= 0
-
-
-    # [A, I][ u ]
-    #       [ ρ ] ≤ b for all constraints
-    #
-    # minimize
-    #         [ u, ρ1, ρ2 ] [ 1,     0] [  u ]
-    #                       [ 0,   100] [ ρ2 ]
-    #         [A_cbf, 1] [ u, -ρ ] ≤ b_cbf
-    #         [A_clf, 1] [ u, -ρ ] ≤ b_clf
-    N_slack = len(constraint_margin_weights)
-    A_total_rho = np.hstack(
-        (A_total,
-         np.vstack((-np.eye(N_slack),
-                    np.zeros((N_const - N_slack, N_slack))))
-        ))
-    A = A_total
-    P_rho = np.eye(D_u + N_slack)
-    P_rho[D_u:, D_u:] = np.diag(constraint_margin_weights)
-    q_rho = np.zeros(P_rho.shape[0])
-    #u_rho_init = np.linalg.lstsq(A_total_rho, b_total - 1e-1, rcond=-1)[0]
-    u_rho = cvxopt_solve_qp(P_rho.astype(np.float64),
-                            q_rho.astype(np.float64),
-                            G=A_total_rho.astype(np.float64),
-                            h=b_total.astype(np.float64),
-                            show_progress=False,
-                            maxiters=1000)
-    if u_rho is None:
-        raise RuntimeError("""QP is infeasible
-        minimize
-        u_rhoᵀ {P_rho} u_rho
-        s.t.
-        {A_total_rho} u_rho ≤ {b_total}""".format(
-            P_rho=P_rho,
-            A_total_rho=A_total_rho, b_total=b_total))
-    # Constraints should be satisfied
-    constraint = A_total_rho @ u_rho - b_total
-    assert np.all((constraint <= 1e-2) | (constraint / np.abs(b_total) <= 1e-2))
-    return torch.from_numpy(u_rho[:D_u]).to(dtype=x.dtype)
 
 
 run_pendulum_control_trival = partial(

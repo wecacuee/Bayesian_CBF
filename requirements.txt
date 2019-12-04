@@ -4,3 +4,4 @@ gpytorch@git+https://github.com/wecacuee/gpytorch.git@fractional-outputs-per-inp
 torch
 torch-vision
 pyro-ppl
+cvxpy

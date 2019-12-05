@@ -13,13 +13,15 @@ from bayes_cbf.control_affine_model import ControlAffineRegressor
 from bayes_cbf.plotting import plot_2D_f_func, plot_results, plot_learned_2D_func
 from bayes_cbf.pendulum import PendulumDynamicsModel
 from bayes_cbf.sampling import sample_generator_independent, sample_generator_trajectory
+from bayes_cbf.misc import torch_kron
 
 
 class RandomDynamicsModel:
-    def __init__(self, m, n, deterministic=False):
+    def __init__(self, m, n, deterministic=False, diag_cov=1e-5):
         self.n = n
         self.m = m
         self.deterministic = deterministic
+        self.diag_cov = diag_cov
         self.A = torch.rand(n,n)
         self.B = torch.rand(n, m, n)
 
@@ -37,7 +39,7 @@ class RandomDynamicsModel:
         m = self.m
         deterministic = self.deterministic
         assert x.shape[-1] == n
-        cov = torch.eye(n) * 0.0001
+        cov = torch.eye(n) * self.diag_cov
         return (A @ x if deterministic
                 else torch.distributions.MultivariateNormal(A @ x, cov).sample())
 
@@ -50,10 +52,9 @@ class RandomDynamicsModel:
         m = self.m
         deterministic = self.deterministic
         assert x.shape[-1] == n
-        cov_A = torch.eye(n) * 0.0001
-        cov_B = torch.eye(m) * 0.0002
-        cov = (cov_A.reshape(n, 1, n, 1) * cov_B.reshape(1, m, 1, m)).reshape(n*m, n*m)
-
+        cov_A = torch.eye(n) * self.diag_cov
+        cov_B = torch.eye(m) * 2 * self.diag_cov
+        cov = torch_kron(cov_A.unsqueeze(0), cov_B.unsqueeze(0)).squeeze(0)
         return (
             B @ x if deterministic
             else torch.distributions.MultivariateNormal(
@@ -68,7 +69,8 @@ def test_GP_train_predict(n=2, m=3,
                           rel_tol=0.10,
                           abs_tol=0.10,
                           sample_generator=sample_generator_trajectory,
-                          dynamics_model_class=RandomDynamicsModel):
+                          dynamics_model_class=RandomDynamicsModel,
+                          training_iter=200):
     chosen_seed = torch.randint(100000, (1,))
     #chosen_seed = 52648
     print("Random seed: {}".format(chosen_seed))
@@ -86,14 +88,17 @@ def test_GP_train_predict(n=2, m=3,
                      u_vec=U[:, 0])
 
     # Test train split
-    shuffled_order = torch.arange(D)
-    #torch.random.shuffle(shuffled_order)
+    shuffled_order = np.arange(D)
+    #shuffled_order = torch.randint(D, size=(D,))
+    np.random.shuffle(shuffled_order)
+    shuffled_order = torch.from_numpy(shuffled_order)
     train_indices = shuffled_order[:int(D*0.8)]
     test_indices = shuffled_order[int(D*0.8):]
 
     # Train data
     Xtrain, Utrain, XdotTrain = [Mat[train_indices, :]
                                  for Mat in (X, U, Xdot)]
+    UHtrain = torch.cat((Utrain.new_ones((Utrain.shape[0], 1)), Utrain), dim=1)
     # Test data
     Xtest, Utest, XdotTest = [Mat[test_indices, :]
                               for Mat in (X, U, Xdot)]
@@ -102,30 +107,55 @@ def test_GP_train_predict(n=2, m=3,
     dgp = ControlAffineRegressor(Xtrain.shape[-1], Utrain.shape[-1])
     # Test prior
     _ = dgp.predict(Xtest, return_cov=False)
-    dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50, lr=0.01)
+    dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=training_iter, lr=0.01)
     with torch.no_grad():
         if X.shape[-1] == 2 and U.shape[-1] == 1:
-            plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func, dynamics_model.f_func)
-            #plt.savefig('f_learned_vs_f_true.pdf')
-            plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.g_func, dynamics_model.g_func, axtitle="g(x)[{i}]")
-            #plt.savefig('g_learned_vs_g_true.pdf')
+            plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func,
+                                 dynamics_model.f_func)
+            plt.savefig('/tmp/f_learned_vs_f_true.pdf')
+            plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.g_func,
+                                 dynamics_model.g_func, axtitle="g(x)[{i}]")
+            plt.savefig('/tmp/g_learned_vs_g_true.pdf')
 
-        UHtest = torch.cat((Utest.new_ones((Utest.shape[0], 1)), Utest), axis=1)
+        # check predicting training values
+        #FXT_train_mean, FXT_train_cov = dgp.predict(Xtrain)
+        #XdotGot_train = XdotTrain.new_empty(XdotTrain.shape)
+        #for i in range(Xtrain.shape[0]):
+        #    XdotGot_train[i, :] = FXT_train_mean[i, :, :].T @ UHtrain[i, :]
+        XdotGot_train_mean, XdotGot_train_cov = dgp.predict_flatten(
+            Xtrain[:-1], Utrain[:-1])
+        assert XdotGot_train_mean.detach().cpu().numpy() == pytest.approx(
+            XdotTrain[:-1].detach().cpu().numpy(), rel=rel_tol, abs=abs_tol)
+
+        UHtest = torch.cat((Utest.new_ones((Utest.shape[0], 1)), Utest), dim=1)
         if deterministic:
             FXTexpected = torch.empty((Xtest.shape[0], 1+m, n))
             for i in range(Xtest.shape[0]):
                 FXTexpected[i, ...] = torch.cat(
-                    (f(Xtest[i, :])[None, :], g(Xtest[i,  :]).T), axis=0)
-                assert torch.allclose(XdotTest[i, :], FXTexpected[i, :, :].T @ UHtest[i, :])
+                    (dynamics_model.f_func(Xtest[i, :])[None, :],
+                     dynamics_model.g_func(Xtest[i,  :]).T), dim=0)
+                assert torch.allclose(
+                    XdotTest[i, :], FXTexpected[i, :, :].T @ UHtest[i, :])
 
-        #FXTexpected = np.concatenate(((f.A @ Xtest.T).T.reshape(-1, 1, n),
-        #                              (g.B @ Xtest.T).T.reshape(-1, m, n)), axis=1)
-        FXTmean, FXTcov = dgp.predict(Xtest)
+        # check predicting train values
+        XdotTrain_mean, XdotTrain_cov, A = dgp.custom_predict(Xtrain[:-1], Utrain[:-1])
+        assert XdotTrain_mean.detach().cpu().numpy() == pytest.approx(
+            XdotTrain[:-1].detach().cpu().numpy(), rel=rel_tol, abs=abs_tol)
 
-        XdotGot = XdotTest.new_empty(XdotTest.shape)
-        for i in range(Xtest.shape[0]):
-            XdotGot[i, :] = FXTmean[i, :, :].T @ UHtest[i, :]
-        #assert XdotGot.detach().cpu().numpy() == pytest.approx(XdotTest.detach().cpu().numpy(), rel=rel_tol, abs=abs_tol)
+        # check predicting test values
+        # FXTmean, FXTcov = dgp.predict(Xtest)
+        # XdotGot = XdotTest.new_empty(XdotTest.shape)
+        # for i in range(Xtest.shape[0]):
+        #     XdotGot[i, :] = FXTmean[i, :, :].T @ UHtest[i, :]
+        XdotGot_mean, XdotGot_cov = dgp.predict_flatten(Xtest, Utest)
+        assert XdotGot_mean.detach().cpu().numpy() == pytest.approx(
+            XdotTest.detach().cpu().numpy(), rel=rel_tol, abs=abs_tol)
+            #abs=XdotGot_cov.flatten().max())
+
+        # check predicting test values
+        Xdot_mean, Xdot_cov, A = dgp.custom_predict(Xtest, Utest)
+        assert Xdot_mean.detach().cpu().numpy() == pytest.approx(
+            XdotTest.detach().cpu().numpy(), rel=rel_tol, abs=abs_tol)
         return dgp
 
 
@@ -142,19 +172,41 @@ def test_control_affine_gp(
     Xtest = loaded_data['X']
     XdotTrain = Xtrain[1:, :] - Xtrain[:-1, :]
     dgp = ControlAffineRegressor(Xtrain.shape[-1], Utrain.shape[-1])
-    dgp.fit(Xtrain[:-1, :], Utrain, XdotTrain)
-    dgp.predict(Xtest)
+    dgp.fit(torch.from_numpy(Xtrain[:-1, :]), torch.from_numpy(Utrain),
+            torch.from_numpy(XdotTrain))
+    dgp.predict(torch.from_numpy(Xtest))
+
+
+test_GP_train_predict_detrministic = partial(
+    test_GP_train_predict,
+    deterministic=True,
+    sample_generator=sample_generator_independent)
+"""
+Simplest scenario with random samples generated without a trajectory model and
+no randomness.
+"""
+
+@pytest.mark.skip(reason="Not succeding right now. Fix later.")
+def test_GP_train_predict_independent():
+    """
+    Level 2: Simplest scenario with random samples generated without a trajectory model
+    """
+    test_GP_train_predict(sample_generator=sample_generator_independent)
 
 
 test_pendulum_train_predict = partial(
     test_GP_train_predict,
     n=2, m=1,
-    D=200,
+    training_iter=200,
     dynamics_model_class=PendulumDynamicsModel)
-
+"""
+Level 4: Pendulum model
+"""
 
 if __name__ == '__main__':
+    test_GP_train_predict_detrministic()
+    test_GP_train_predict_independent()
     #test_GP_train_predict()
     #test_control_affine_gp()
-    test_pendulum_train_predict()
+    #test_pendulum_train_predict()
 

@@ -23,29 +23,11 @@ import gpytorch.settings as gpsettings
 
 from bayes_cbf.matrix_variate_multitask_kernel import MatrixVariateIndexKernel, HetergeneousMatrixVariateKernel
 from bayes_cbf.matrix_variate_multitask_model import HetergeneousMatrixVariateMean
+from bayes_cbf.misc import torch_kron
 
 
 GaussianProcess = namedtuple('GaussianProcess', ["mean", "k"])
 GaussianProcessFunc = namedtuple('GaussianProcessFunc', ["mean", "knl"])
-
-
-def torch_kron(A, B):
-    """
-    >>> B = torch.rand(5,3,3)
-    >>> A = torch.rand(5,2,2)
-    >>> AB = torch_kron(A, B)
-    >>> torch.allclose(AB[1, :3, :3] , A[1, 0,0] * B[1, ...])
-    True
-    >>> BA = torch_kron(B, A)
-    >>> torch.allclose(BA[1, :2, :2] , B[1, 0,0] * A[1, ...])
-    True
-    """
-    b = B.shape[0]
-    assert A.shape[0] == b
-    B_shape = sum([[1, si] for si in B.shape[1:]], [])
-    A_shape = sum([[si, 1] for si in A.shape[1:]], [])
-    kron_shape = [a*b for a, b in zip_longest(A.shape[1:], B.shape[1:], fillvalue=1)]
-    return (A.reshape(b, *A_shape) * B.reshape(b, *B_shape)).reshape(b, *kron_shape)
 
 
 class Namespace:
@@ -458,38 +440,15 @@ class ControlAffineRegressor:
         self.likelihood.eval()
 
         # Concatenate the test set
-        _, MXUHtest = self.model.encode_from_XU(Xtest, Utest=Utest)
+        _, MXUHtest = self.model.encode_from_XU(Xtest, Utrain=Utest, M=1)
         output = self.model(MXUHtest)
 
-        mean, cov = (output.mean, output.covariance_matrix)
+        mean = output.mean.reshape(Xtest.shape[0], -1)
+        cov =  output.covariance_matrix.reshape(Xtest.shape[0],
+                                                mean.shape[-1], mean.shape[-1],
+                                                Xtest.shape[0])
         return (mean.to(device=Xtest_in.device, dtype=Xtest_in.dtype),
                 cov.to(device=Xtest_in.device, dtype=Xtest_in.dtype))
-
-    def predict_grad(self, Xtest, Utest):
-        """
-        Directly predict
-
-        ∇ₓf(x; u) = ∇ₓ f(x) + ∇ₓ g(x) @ u
-
-        One way is to differentiate the kernel
-
-        E[∇ₓf(x; u)] = ∇ₓk(x, X) K(X,X)⁻¹ Y
-        Var(∇ₓf(x; u)) = Hₓₓk(x*,x*) - ∇ₓk(x, X)ᵀ K(X,X)⁻¹ ∇ₓk(X, x)
-
-        or let pytorch do all the heavy lifting for us
-        """
-        self.zero_grad()
-        Xtest = Xtest.requires_grad_(True)
-        mean, _ = self.predict_flatten(Xtest, Utest)
-        mean.backward(torch.eye(mean.shape[-1]))
-        grad_mean = Xtest.grad
-        self.zero_grad()
-        cov = self.model.input_covar(Xtest, Xtest)
-        cov.backward(retain_graph=True)
-        grad_cov = Xtest.grad
-        grad_cov.backward(torch.eye(grad_cov.shape[-1]))
-        H_cov = Xtest.grad
-        return grad_mean, grad_cov
 
     def f_func_orig(self, Xtest, return_cov=False):
         if return_cov:

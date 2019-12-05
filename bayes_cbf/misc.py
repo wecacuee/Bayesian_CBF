@@ -4,6 +4,7 @@ Home for functions/classes that haven't find a home of their own
 import torch
 import inspect
 from functools import wraps, partial
+from itertools import zip_longest
 
 t_hstack = partial(torch.cat, dim=-1)
 """
@@ -47,3 +48,23 @@ def store_args(method):
         method(self, *args, **kwargs)
 
     return wrapped_method
+
+
+def torch_kron(A, B):
+    """
+    >>> B = torch.rand(5,3,3)
+    >>> A = torch.rand(5,2,2)
+    >>> AB = torch_kron(A, B)
+    >>> torch.allclose(AB[1, :3, :3] , A[1, 0,0] * B[1, ...])
+    True
+    >>> BA = torch_kron(B, A)
+    >>> torch.allclose(BA[1, :2, :2] , B[1, 0,0] * A[1, ...])
+    True
+    """
+    b = B.shape[0]
+    assert A.shape[0] == b
+    B_shape = sum([[1, si] for si in B.shape[1:]], [])
+    A_shape = sum([[si, 1] for si in A.shape[1:]], [])
+    kron_shape = [a*b for a, b in zip_longest(A.shape[1:], B.shape[1:], fillvalue=1)]
+    return (A.reshape(b, *A_shape) * B.reshape(b, *B_shape)).reshape(b, *kron_shape)
+

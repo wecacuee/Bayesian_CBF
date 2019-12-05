@@ -50,9 +50,9 @@ def plot_results(time_vec, omega_vec, theta_vec, u_vec,
     axs[1,0].set_ylabel("u")
 
     axs[1,1].clear()
-    axs[1,1].plot(time_vec, torch.cos(theta_vec).numpy(),":", label="cos(theta)", color="blue")
+    axs[1,1].plot(time_vec, np.cos(theta_vec),":", label="cos(theta)", color="blue")
     axs[1,1].set_ylabel("cos/sin(theta)")
-    axs[1,1].plot(time_vec, torch.sin(theta_vec).numpy(),":", label="sin(theta)", color="red")
+    axs[1,1].plot(time_vec, np.sin(theta_vec),":", label="sin(theta)", color="red")
     axs[1,1].set_ylabel("sin(theta)")
     axs[1,1].legend()
 
@@ -90,9 +90,9 @@ class LinePlotSerialization:
     def serialize(filename, axes):
         xydata = dict()
         for i, ax in enumerate(axes):
-            for j in ax.lines:
-                for xy, method in (("x", ax.get_xdata), ("y",ax.get_ydata)):
-                    xydata["ax_{i}_line_{j}_{xy}".format(i=i,j=j,xy=xy)] = method()
+            for j, lin in enumerate(ax.lines):
+                for xy, method in (("x", lin.get_xdata), ("y", lin.get_ydata)):
+                    xydata["ax-{i}_lines-{j}_{xy}".format(i=i,j=j,xy=xy)] = method()
         np.savez_compressed(
             filename,
             **xydata

@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from collections import namedtuple
 
 from bayes_cbf.control_affine_model import GaussianProcess
+from bayes_cbf.misc import t_jac
 
 def torchify_method(method):
     for k, v in vars(method.__self__).items():
@@ -31,35 +32,52 @@ def get_torch_grad_from_numpy_method(method, x):
         tmethod(xtorch).backward()
         return xtorch.grad
 
-def affine_gp(affine, f):
+class FunctionGroup:
+    def __getattribute__(self, name):
+        val = object.__getattr__(self, name)
+        if not isinstance(val, classmethod):
+            return staticmethod(val)
+
+class GPFunctionGroup:
+    @classmethod
+    def gp(cls, *args):
+        return (GaussianProcess(mean=cls.mean(*args), k=cls.knl(*args)),
+                cls.covar(*args))
+
+class Affine(GPFunctionGroup):
     """
     return aᵀf, aᵀk_fa, k_fa
     """
-    mean_a = affine.T @ f.mean
-    k_a = affine.T @ f.k @ affine
-    covar_af = f.k @ affine.T
-    return GaussianProcess(mean=mean_a, k=k_a, covar=covar_af)
+    def mean(affine, f):
+        return affine.T @ f.mean
+
+    def knl(affine, f):
+        return affine.T @ f.k @ affine
 
 
-def t_jac(f_x, x):
-    return torch.cat(
-        [torch.autograd.grad(f_x[i], x, retain_graph=True)[0].unsqueeze(0)
-         for i in range(f_x.shape[0])], dim=0)
+    def covar(affine, f):
+        return f.k @ affine.T
 
 
-def grad_gp(f, x):
-    grad_k = torch.autograd.grad(f.k, x, create_graph=True)[0]
-    Hxx_k_v_prod = lambda v: torch.autograd.grad(grad_k, x, grad_outputs=v,
-                                                 retain_graph=True)[0]
-    y = x.clone().detach().requires_grad_(False)
-    covar_f = f.covar
-    J_covar_f = t_jac(covar_f, x)
-    return GaussianProcess(mean=torch.autograd.grad(f.mean, x, retain_graph=True)[0],
-                           k=Hxx_k_v_prod,
-                           covar=J_covar_f)
+class GradientGP(GPFunctionGroup):
+    """
+    return ∇f, Hₓₓ k_f, ∇ covar_fg
+    """
+    def mean(f, x, covar_fg):
+        return torch.autograd.grad(f.mean, x, retain_graph=True)[0]
+
+    def knl(f, x, covar_fg):
+        grad_k = torch.autograd.grad(f.k, x, create_graph=True)[0]
+        Hxx_k_v_prod = lambda v: torch.autograd.grad(grad_k, x, grad_outputs=v,
+                                                    retain_graph=True)[0]
+        return Hxx_k_v_prod
+
+    def covar(f, x, covar_fg):
+        J_covar_fg = t_jac(covar_fg, x)
+        return J_covar_fg
 
 
-def quadratic_form_of_gps(g, f):
+class QuadraticFormOfGP(GPFunctionGroup):
     """
     s = fᵀ g = fᵀ [0, 0.5]
                   [0.5, 0] g
@@ -91,20 +109,43 @@ def quadratic_form_of_gps(g, f):
     The result of the quadratic form on Sub-exponential RV is a tail that
     decays (α exp(-t) / 2)
     """
-    covar_xf = g.covar
-    mean_quad = g.mean @ f.mean + covar_xf.trace()
-    k_quad = (2 * covar_xf.trace()
-              + 2 * g.mean.T @ covar_xf @ f.mean
-              + g.mean.T @ f.k @ f.mean
-              + f.mean.T @ g.k(f.mean))
-    covar_quad_f = covar_xf @ f.mean + f.k @ g.mean
-    return GaussianProcess(mean=mean_quad, k=k_quad, covar=covar_quad_f)
+    def mean(g, f, covar_gf):
+        mean_quad = g.mean @ f.mean + covar_gf.trace()
+        return mean_quad
 
-def add_gp(f, g):
+    def knl(g, f, covar_gf):
+        k_quad = (2 * covar_gf.trace()
+                + 2 * g.mean.T @ covar_gf @ f.mean
+                + g.mean.T @ f.k @ f.mean
+                + f.mean.T @ g.k(f.mean))
+        return k_quad
+
+    def covar(g, f, covar_hg, covar_hf=None):
+        """
+        Computes cov(h, g*f)
+
+        If covar_hf is None, then computes cov(f, g*f), then covar_hg should be
+        cov(f, g)
+        """
+        if covar_hf is None:
+            # this means that h = f
+            covar_hf = f.k
+        covar_quad_f = covar_hg @ f.mean + covar_hf @ g.mean
+        return covar_quad_f
+
+
+class AddGP(GPFunctionGroup):
     """
     s = f + g
     """
-    return GaussianProcess(mean=f.mean + g.mean, k=f.k + g.k + 2 * f.covar, covar=f.k)
+    def mean(f, g, covar_fg):
+        return f.mean + g.mean
+
+    def knl(f, g, covar_fg):
+        return f.k + g.k + 2*covar_fg
+
+    def covar(f, g, covar_fg):
+        return covar_fg
 
 
 def lie1_gp(h, fu, x):
@@ -112,7 +153,7 @@ def lie1_gp(h, fu, x):
     L_f h(x) = ∇ h(x)ᵀ f(x; u)
     """
     grad_h = torch.autograd.grad(h, x, retain_graph=True, create_graph=True)[0]
-    return affine_gp(grad_h, fu)
+    return Affine.gp(grad_h, fu)
 
 
 def lie2_gp(h_func, fu_func, x, u):
@@ -122,9 +163,15 @@ def lie2_gp(h_func, fu_func, x, u):
     x = x.requires_grad_(True)
     h = h_func(x)
     fu = fu_func(x, u)
-    L1h = lie1_gp(h, fu, x)
-    grad_L1h = grad_gp(L1h, x)
-    return quadratic_form_of_gps(grad_L1h, fu)
+    L1h, covar_L1h_fu = lie1_gp(h, fu, x)
+    grad_L1h, covar_grad_L1h_fu = GradientGP.gp(L1h, x, covar_L1h_fu)
+    covar_grad_L1h_L1h = GradientGP.covar(L1h, x, L1h.k)
+    L2h, covar_L2h_fu = QuadraticFormOfGP.gp(grad_L1h, fu, covar_grad_L1h_fu)
+    covar_L2h_L1h = QuadraticFormOfGP.covar(grad_L1h, fu,
+                                            covar_grad_L1h_L1h,
+                                            covar_L1h_fu)
+    assert L2h.mean.ndim == 0
+    return L2h, covar_L2h_fu, covar_L2h_L1h
 
 
 def cbc2_gp(h_func, fu_func, x, u, K_α=[1,1]):
@@ -134,19 +181,22 @@ def cbc2_gp(h_func, fu_func, x, u, K_α=[1,1]):
     """
     x.requires_grad_(True)
     u.requires_grad_(True)
-    L1h = lie1_gp(h_func(x), fu_func(x, u), x)
-    L2h = lie2_gp(h_func, fu_func, x, u)
+    L1h, _ = lie1_gp(h_func(x), fu_func(x, u), x)
+    L2h, _, covar_L2h_L1h = lie2_gp(h_func, fu_func, x, u)
     h = h_func(x)
-    return add_gp(L2h, GaussianProcess(K_α[1] * L1h.mean + K_α[0] * h,
-                                       K_α[1] * K_α[1] * L1h.k,
-                                       K_α[1] * L1h.covar))
+    cbc2, _ = AddGP.gp(L2h, GaussianProcess(K_α[1] * L1h.mean + K_α[0] * h,
+                                         K_α[1] * K_α[1] * L1h.k),
+                                   K_α[1] * covar_L2h_L1h)
+    assert cbc2.mean.ndim == 0
+    assert cbc2.k.ndim == 0
+    return cbc2
 
-def get_affine_terms(affine_func, x):
+def get_affine_terms(func, x):
     x = x.requires_grad_(True)
     f_x = func(x)
     linear = torch.autograd.grad(f_x, x, create_graph=True)[0]
     with torch.no_grad():
-        const = f_ - linear @ x
+        const = f_x - linear @ x
     return linear, const
 
 
@@ -168,10 +218,13 @@ def cbf2_quadratic_constraint(h_func, fu_func, x, u, δ):
     """
     mean_func = lambda up : cbc2_gp(h_func, fu_func, x, up).mean
     mean_A, mean_b = get_affine_terms(mean_func, u)
+    mean_Q = mean_A.T @ mean_A
+    mean_p = 2 * mean_A @ mean_b if mean_b.ndim else 2 * mean_A * mean_b
+    mean_r = mean_b @ mean_b if mean_b.ndim else mean_b * mean_b
     k_func = lambda up : cbc2_gp(h_func, fu_func, x, up).k
     k_Q, k_p, k_r = get_quadratic_terms(k_func, u)
     ratio = (1-δ) / δ
-    return ratio * k_Q, ratio * k_p - mean_A, ratio * k_r - mean_b
+    return ratio * k_Q - mean_Q, ratio * k_p - mean_p, ratio * k_r - mean_r
 
 
 

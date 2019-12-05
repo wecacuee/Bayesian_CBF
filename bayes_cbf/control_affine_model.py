@@ -24,7 +24,7 @@ from bayes_cbf.matrix_variate_multitask_kernel import MatrixVariateIndexKernel, 
 from bayes_cbf.matrix_variate_multitask_model import HetergeneousMatrixVariateMean
 
 
-GaussianProcess = namedtuple('GaussianProcess', ["mean", "k", "covar"])
+GaussianProcess = namedtuple('GaussianProcess', ["mean", "k"])
 
 
 def torch_kron(A, B):
@@ -244,6 +244,7 @@ class ControlAffineRegressor:
             self._ensure_device_dtype(X)
             for X in (Xtrain_in, Utrain_in, XdotTrain_in)]
 
+        self.clear_cache()
         model.set_train_data(Xtrain, Utrain, XdotTrain)
 
         # Set in train mode
@@ -346,6 +347,8 @@ class ControlAffineRegressor:
 
         return self._cache[cache_key]
 
+    def clear_cache(self):
+        self._cache = dict()
 
     def custom_predict(self, Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None):
         """
@@ -414,7 +417,9 @@ class ControlAffineRegressor:
                      else kb_star)
         kb_star_starp = k(Xtest, Xtestp).evaluate() * (UHtest @ B @ UHtest.t())
         α = torch.cholesky_solve(Y, Kb_sqrt) # check the shape of Y
-        mean = kb_star.t() @ α
+        mean = self.model.mean_module(Xtest).reshape(
+            Xtest.shape[0], *self.model.matshape).transpose(-2, -1).bmm(
+                UHtest.unsqueeze(-1)).squeeze(-1) + kb_star.t() @ α
         v = torch.solve(kb_star, Kb_sqrt).solution
         vp = torch.solve(kb_star_p, Kb_sqrt).solution if Xtestp_in is not None else v
         scalar_var = kb_star_starp - v.t() @ vp
@@ -498,18 +503,20 @@ class ControlAffineRegressor:
                  if Xtest_in.ndim == 1
                  else Xtest_in)
         mean_f, var_f, A =  self.custom_predict(Xtest, Xtestp_in=Xtestp_in)
+        var_f = var_f.reshape(-1, 1, 1) * A
         if Xtest_in.ndim == 1:
             mean_f = mean_f.squeeze(0)
             var_f = var_f.squeeze(0)
-        return (mean_f, var_f * A) if return_cov else mean_f
+        mean_f = mean_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
+        var_f = var_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
+        return (mean_f, var_f) if return_cov else mean_f
 
     f_func = f_func_custom
 
     def f_func_gp(self, Xtest):
         return GaussianProcess(
             self.f_func_custom(Xtest),
-            self.f_func_custom(Xtest, return_cov=True)[1],
-            None)
+            self.f_func_custom(Xtest, return_cov=True)[1])
 
     def fu_func_gp(self, Xtest_in, Utest_in, Xtestp_in=None):
         Xtest = (Xtest_in.unsqueeze(0)
@@ -519,19 +526,23 @@ class ControlAffineRegressor:
                  if Utest_in.ndim == 1
                  else Utest_in)
         mean_f, var_f, A =  self.custom_predict(Xtest, Utest, Xtestp_in=Xtestp_in)
+        var_f = var_f.reshape(-1, 1, 1) * A
         if Xtest_in.ndim == 1:
             mean_f = mean_f.squeeze(0)
             var_f = var_f.squeeze(0)
-        return GaussianProcess(mean_f, var_f * A, None)
 
-    def g_func(self, Xtest, return_cov=False):
-        if return_cov:
-            mean_Fx, cov_Fx = self.predict(Xtest, return_cov=return_cov)
-            cov_gx = cov_Fx[:, 1:, 1:]
-        else:
-            mean_Fx = self.predict(Xtest, return_cov=return_cov)
+        mean_f = mean_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
+        var_f = var_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
+        return GaussianProcess(mean_f, var_f)
+
+    def g_func(self, Xtest_in, return_cov=False):
+        assert not return_cov, "Don't know what matrix covariance looks like"
+        mean_Fx = self.predict(Xtest_in, return_cov=return_cov)
         mean_gx = mean_Fx[:, 1:, :]
-        return (mean_gx, cov_gx) if return_cov else mean_gx
+        if Xtest_in.ndim == 1:
+            mean_gx = mean_gx.squeeze(0)
+        mean_gx = mean_gx.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
+        return mean_gx.transpose(-2, -1)
 
     def gu_func(self, Xtest_in, Utest_in, return_cov=False, Xtestp_in=None):
         Xtest = (Xtest_in.unsqueeze(0)

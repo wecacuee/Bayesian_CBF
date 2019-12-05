@@ -30,8 +30,6 @@ def cvxopt_solve_qp(P, q, G=None, h=None, A=None, b=None, solver=None,
     return np.asarray(sol['x']).reshape((P.shape[1],))
 
 
-
-
 def control_QP_cbf_clf(x,
                        ctrl_aff_constraints,
                        constraint_margin_weights=[]):
@@ -102,15 +100,30 @@ def control_QP_cbf_clf(x,
 def to_numpy(x):
     return x.detach().double().cpu().numpy() if isinstance(x, torch.Tensor) else x
 
-def controller_qcqp(x, objective, quadratic_contraints):
+
+def controller_qcqp(u0, objective, quadratic_contraints):
     import cvxpy as cp
     import gurobipy
-    x = to_numpy(x)
-    u = cp.Variable()
-    ρ = cp.Variable()
-    cp_obj = objective(x, u, ρ)
-    cp_qc = [qc(x, u, ρ) for qc in quadratic_contraints(x, u)]
+    u = cp.Variable(u0.shape)
+    cp_obj = objective(u)
+    cp_qc = [qc(u) for qc in quadratic_contraints]
     prob = cp.Problem(cp.Minimize(cp_obj), cp_qc)
     prob.solve(solver=cp.GUROBI)
     return u.value
 
+def controller_qcqp_gurobi(u0, quad_objective, quadratic_contraints):
+    import gurobipy as gp
+    from gurobipy import GRB
+    # Create a new model
+    m = gp.Model("controller_qcqp_gurobi")
+
+    # Create variables
+    u = m.addMVar(shape=u0.shape, vtype=GRB.CONTINUOUS, name="u")
+
+
+    m.setMObjective(*quad_objective, sense=GRB.MINIMIZE)
+    for i, qc in enumerate(quadratic_contraints):
+        Q, c, const = qc
+        m.addMQConstr(Q, c, "<", -const, xQ_L=u, xQ_R=u, xc=u, name="%d" % i)
+    m.optimize()
+    return u.X

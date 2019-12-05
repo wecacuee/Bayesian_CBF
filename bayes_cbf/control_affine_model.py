@@ -26,7 +26,7 @@ from bayes_cbf.matrix_variate_multitask_model import HetergeneousMatrixVariateMe
 
 
 GaussianProcess = namedtuple('GaussianProcess', ["mean", "k"])
-GaussianProcessFunc = namedtuple('GaussianProcessFunc', ["mean_func", "k_func"])
+GaussianProcessFunc = namedtuple('GaussianProcessFunc', ["mean", "knl"])
 
 
 def torch_kron(A, B):
@@ -540,8 +540,11 @@ class ControlAffineRegressor:
         Utest = (Utest_in.unsqueeze(0)
                  if Utest_in.ndim == 1
                  else Utest_in)
+        Xtestp = (Xtestp_in.unsqueeze(0)
+                 if Xtestp_in.ndim == 1
+                 else Xtestp_in)
         mean_f, var_f, A = self.custom_predict(Xtest, Utest,
-                                               Xtestp_in=Xtestp_in)
+                                               Xtestp_in=Xtestp)
         var_f = var_f.reshape(-1, 1, 1) * A
         if Xtest_in.ndim == 1:
             var_f = var_f.squeeze(0)

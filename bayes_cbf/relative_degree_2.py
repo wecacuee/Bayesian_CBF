@@ -7,44 +7,6 @@ from functools import partial
 from bayes_cbf.control_affine_model import GaussianProcess, GaussianProcessFunc
 from bayes_cbf.misc import t_jac
 
-def torchify_method(method):
-    for k, v in vars(method.__self__).items():
-        if isinstance(v, (float, np.ndarray)):
-            setattr(method.__self__, k, torch.from_numpy(np.asarray(v)))
-
-def untorchify_method(method):
-    for k, v in vars(method.__self__).items():
-        if isinstance(v, (torch.Tensor,)):
-            setattr(method.__self__, k, np.asarray(v))
-
-def torchified_method(method):
-    if not hasattr(method, "__self__"):
-        # do nothing
-        return method
-
-    try:
-        yield torchify_method(method)
-    finally:
-        untorchify_method(method)
-
-def get_torch_grad_from_numpy_method(method, x):
-    xtorch = torch.from_numpy(x).requires_grad_(True)
-    with torchify_method(method) as tmethod:
-        tmethod(xtorch).backward()
-        return xtorch.grad
-
-class FunctionGroup:
-    def __getattribute__(self, name):
-        val = object.__getattr__(self, name)
-        if not isinstance(val, classmethod):
-            return staticmethod(val)
-
-class GPFunctionGroup:
-    @classmethod
-    def gp(cls, *args):
-        return (GaussianProcess(mean=cls.mean(*args), k=cls.knl(*args)),
-                cls.covar(*args))
-
 class AffineGP:
     """
     return aᵀf, aᵀk_fa, k_fa
@@ -59,10 +21,11 @@ class AffineGP:
 
     def knl(self, x, xp):
         affine, f = self.affine, self.f
-        return affine(x).T @ f.knl_func(x, xp) @ affine(x)
+        return affine(x).T @ f.knl(x, xp) @ affine(x)
 
     def covar_f(self, x, xp):
-        return f.knl_func(x, xp) @ affine(xp).T
+        affine, f = self.affine, self.f
+        return f.knl(x, xp) @ affine(xp).T
 
 
 class GradientGP:
@@ -82,8 +45,8 @@ class GradientGP:
         x.requires_grad_(True)
         xp.requires_grad_(True)
         grad_k = torch.autograd.grad(f.knl(x, xp), x, create_graph=True)[0]
-        Hxx_k_v_prod = lambda v: torch.autograd.grad(grad_k, xp, grad_outputs=v)[0]
-        return Hxx_k_v_prod
+        Hxx_k = t_jac(grad_k, xp)
+        return Hxx_k
 
     def covar_g(self, covar_fg_func, x, xp):
         """
@@ -135,7 +98,7 @@ class QuadraticFormOfGP:
 
     def mean(self, x):
         g, f, covar_gf = self.g, self.f, self.covar_gf
-        mean_quad = g.mean(x) @ f.mean(x) + covar_gf(x).trace()
+        mean_quad = g.mean(x) @ f.mean(x) + covar_gf(x, x).trace()
         return mean_quad
 
     def knl(self, x, xp):
@@ -190,7 +153,7 @@ class AddGP:
 def grad_operator(func):
     def grad_func(x):
         x.requires_grad_(True)
-        torch.autograd.grad(func(x), x, create_graph=True)[0]
+        return torch.autograd.grad(func(x), x, create_graph=True)[0]
     return grad_func
 
 
@@ -198,7 +161,7 @@ class Lie1GP:
     """
     L_f h(x) = ∇ h(x)ᵀ f(x; u)
     """
-    def __init__(h, fu_gp):
+    def __init__(self, h, fu_gp):
         self.h = h
         self.fu_gp = fu_gp
         self._affine = AffineGP(grad_operator(h), fu_gp)
@@ -210,7 +173,7 @@ class Lie1GP:
         return self._affine.knl(x, xp)
 
     def covar_fu(self, x, xp):
-        return self._affine.covar(x, xp)
+        return self._affine.covar_f(x, xp)
 
 
 class Lie2GP:
@@ -220,8 +183,11 @@ class Lie2GP:
     def __init__(self, lie1_gp, fu_gp):
         self.fu = fu_gp
         self._lie1_gp = lie1_gp
-        self._grad_lie1_gp = GradientGP(self._lie1_gp)
-        self._quad_gp = QuadraticFormOfGP(self._grad_lie1_gp, fu_gp)
+        self._grad_lie1_gp = GradientGP(lie1_gp)
+        covar_grad_Lie1_fu = partial(self._grad_lie1_gp.covar_g,
+                                     lie1_gp.covar_fu)
+        self._quad_gp = QuadraticFormOfGP(self._grad_lie1_gp, fu_gp,
+                                          covar_grad_Lie1_fu)
 
     def mean(self, x):
         return self._quad_gp.mean(x)

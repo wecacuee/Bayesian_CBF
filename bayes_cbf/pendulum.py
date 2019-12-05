@@ -27,26 +27,40 @@ CALOG.setLevel(logging.WARNING)
 from bayes_cbf.plotting import plot_results, plot_learned_2D_func, plt_savefig_with_data
 from bayes_cbf.sampling import sample_generator_trajectory, controller_sine
 from bayes_cbf.controllers import cvxopt_solve_qp, control_QP_cbf_clf, controller_qcqp_gurobi
-from bayes_cbf.misc import t_vstack, to_numpy
+from bayes_cbf.misc import t_vstack, t_hstack, to_numpy, store_args
 from bayes_cbf.relative_degree_2 import cbf2_quadratic_constraint
 
 
-def control_trivial(xi, m=1, mass=None, length=None, gravity=None):
-    assert mass is not None
-    assert length is not None
-    assert gravity is not None
-    theta, w = xi
-    u = mass * gravity * torch.sin(theta)
-    return torch.tensor([u])
+class Controller(ABC):
+    """
+    Controller interface
+    """
+    @abstractmethod
+    def control(self, xi, i=None):
+        pass
 
 
-def control_random(xi, m=1, mass=None, length=None, gravity=None):
-    assert mass is not None
-    assert length is not None
-    assert gravity is not None
-    return control_trivial(
-        xi, mass=mass, length=length, gravity=gravity
-    ) * torch.abs(torch.rand(1)) + torch.rand(1)
+class ControlTrivial(Controller):
+    @store_args
+    def __init__(self, m=1, mass=None, length=None, gravity=None, dt=None):
+        pass
+
+    def control(self, xi, i=None):
+        mass, gravity, length = self.mass, self.gravity, self.length
+        theta, w = xi
+        u = mass * gravity * torch.sin(theta)
+        return torch.tensor([u])
+
+
+class ControlRandom(Controller):
+    @store_args
+    def __init__(self, **kwargs):
+        self.control_trivial = ControlTrivial(**kwargs)
+
+    def control(self, xi, i=None):
+        return self.control_trivial.control(
+            xi, i=i
+        ) * torch.abs(torch.rand(1)) + torch.rand(1)
 
 
 class DynamicsModel(ABC):
@@ -197,11 +211,12 @@ class PendulumDynamicsModel(DynamicsModel):
 
 
 def sampling_pendulum(dynamics_model, numSteps,
+                      controller=None,
                       x0=None,
                       dt=0.01,
-                      controller=control_trivial,
                       plot_every_n_steps=100,
                       axs=None):
+    assert controller is not None, 'Surprise !! Changed interface to make controller a required argument'
     m, g, l = (dynamics_model.mass, dynamics_model.gravity,
                dynamics_model.length)
     tau = dt
@@ -271,10 +286,10 @@ def sampling_pendulum_data(dynamics_model, D=100, dt=0.01, **kwargs):
         dynamics_model, numSteps=D+1, dt=tau, **kwargs)
 
     # X.shape = Nx2
-    X = t_vstack((theta_vec, omega_vec)).T
+    X = t_vstack((theta_vec.unsqueeze(0), omega_vec.unsqueeze(0))).T
     # XU.shape = Nx3
     U = u_vec.reshape(-1, 1)
-    XU = torch.hstack((X, u_vec.reshape(-1, 1)))
+    XU = t_hstack((X, u_vec.reshape(-1, 1)))
 
     # compute discrete derivative
     # dxₜ₊₁ = xₜ₊₁ - xₜ / dt
@@ -297,11 +312,14 @@ def run_pendulum_experiment(#parameters
         length=1,
         numSteps=10000,
         ground_truth_model=True,
-        controller=control_trivial,
+        controller_class=ControlTrivial,
         pendulum_dynamics_class=PendulumDynamicsModel,
         plotfile='plots/run_pendulum_experiment{suffix}.pdf'):
     if ground_truth_model:
-        controller = partial(controller, mass=mass, gravity=gravity, length=length)
+        controller = controller_class(mass=mass, gravity=gravity,
+                                      length=length, dt=tau).control
+    else:
+        controller = controller_class(dt=tau).control
     damge_perc,time_vec,theta_vec,omega_vec,u_vec = sampling_pendulum(
         pendulum_dynamics_class(m=1, n=2, mass=mass, gravity=gravity,
                               length=length),
@@ -341,14 +359,13 @@ def learn_dynamics(
     dX, X, U = sampling_pendulum_data(
         pend_env, D=numSteps, x0=torch.tensor([theta0,omega0]),
         dt=tau,
-        controller=partial(control_random, mass=mass, gravity=gravity,
-                           length=length))
+        controller=ControlRandom(mass=mass, gravity=gravity, length=length).control)
 
-    UH = torch.hstack((torch.ones((U.shape[0], 1), dtype=U.dtype), U))
+    UH = t_hstack((torch.ones((U.shape[0], 1), dtype=U.dtype), U))
 
     # Do not need the full dataset . Take a small subset
     N = min(numSteps-1, max_train)
-    shuffled_range = torch.randint(numSteps - 1, size=N)
+    shuffled_range = torch.randint(numSteps - 1, size=(N,))
     XdotTrain = dX[shuffled_range, :]
     Xtrain = X[shuffled_range, :]
     Utrain = U[shuffled_range, :]
@@ -356,7 +373,7 @@ def learn_dynamics(
     #                              alpha=1e6).fit(Z_shuffled, Y_shuffled)
     dgp = ControlAffineRegressor(Xtrain.shape[-1], Utrain.shape[-1])
     dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50, lr=0.01)
-    dgp.save()
+    #dgp.save()
 
     # Plot the pendulum trajectory
     plot_results(torch.arange(U.shape[0]), omega_vec=X[:, 0],
@@ -425,25 +442,6 @@ class NamedFunc:
     def __call__(self, *args, **kwargs):
         return self.func(*args, **kwargs)
 
-
-def store_args(method):
-    argspec = inspect.getfullargspec(method)
-    @wraps(method)
-    def wrapped_method(self, *args, **kwargs):
-        if argspec.defaults is not None:
-          for name, val in zip(argspec.args[::-1], argspec.defaults[::-1]):
-              setattr(self, name, val)
-        if argspec.kwonlydefaults and args.kwonlyargs:
-            for name, val in zip(argspec.kwonlyargs, argspec.kwonlydefaults):
-                setattr(self, name, val)
-        for name, val in zip(argspec.args, args):
-            setattr(self, name, val)
-        for name, val in kwargs.items():
-            setattr(self, name, val)
-
-        method(self, *args, **kwargs)
-
-    return wrapped_method
 
 class EnergyCLF(NamedAffineFunc):
     @store_args
@@ -616,31 +614,8 @@ class RadialCBFRelDegree2(NamedAffineFunc):
         return getattr(self.model, name)
 
 
-class PendulumCBFCLFDirect:
-    @store_args
-    def __init__(self, mass=None, length=None, gravity=None,
-                 axes=None,
-                 constraint_hists=[],
-                 pendulum_dynamics_class=PendulumDynamicsModel,
-    ):
-        self.set_model_params(mass=mass, length=length, gravity=gravity)
-
-    def set_model_params(self, **kwargs):
-        self.model = self.pendulum_dynamics_class(m=1, n=2, **kwargs)
-        self.aff_constraints = [
-            #NamedAffineFunc(self.A_clf, self.b_clf, "clf"),
-            EnergyCLF(self.model),
-            RadialCBFRelDegree2(self.model),
-            #NamedAffineFunc(self.A_col, self.b_col, "col")
-            RadialCBFRelDegree2(self.model),
-        ]
-
-    def f_func(self, x):
-        return self.model.f_func(torch.tensor(x))
-
-    def g_func(self, x):
-        return self.model.g_func(torch.tensor(x))
-
+class CBFSr(NamedAffineFunc):
+    # UNUSED
     def _A_sr(self, x):
         # UNUSED
         warnings.warn_once("DEPRECATED")
@@ -658,6 +633,14 @@ class PendulumCBFCLFDirect:
         gamma_sr = cbf_sr_gamma
         delta_sr = cbf_sr_delta
         return torch.tensor([gamma_sr*(delta_sr-w**2)+(2*g*torch.sin(theta)*w)/(l)])
+
+
+class ConstraintPlotter:
+    @store_args
+    def __init__(self,
+                 axes=None,
+                 constraint_hists=[]):
+        pass
 
     def plot_constraints(self, funcs, x, u):
         axs = self.axes
@@ -686,17 +669,37 @@ class PendulumCBFCLFDirect:
                 plt.pause(0.0001)
 
 
-    def control(self, xi, mass=None, gravity=None, length=None):
-        assert mass is not None
-        assert length is not None
-        assert gravity is not None
-        self.set_model_params(mass=mass, gravity=gravity, length=length)
+class PendulumCBFCLFDirect(Controller):
+    @store_args
+    def __init__(self, mass=None, length=None, gravity=None, dt=None,
+                 constraint_plotter_class=ConstraintPlotter,
+                 pendulum_dynamics_class=PendulumDynamicsModel,
+    ):
+        self.set_model_params(mass=mass, length=length, gravity=gravity)
+        self.constraint_plotter = constraint_plotter_class()
 
+    def set_model_params(self, **kwargs):
+        self.model = self.pendulum_dynamics_class(m=1, n=2, **kwargs)
+        self.aff_constraints = [
+            #NamedAffineFunc(self.A_clf, self.b_clf, "clf"),
+            EnergyCLF(self.model),
+            RadialCBFRelDegree2(self.model),
+            #NamedAffineFunc(self.A_col, self.b_col, "col")
+            RadialCBFRelDegree2(self.model),
+        ]
+
+    def f_func(self, x):
+        return self.model.f_func(torch.tensor(x))
+
+    def g_func(self, x):
+        return self.model.g_func(torch.tensor(x))
+
+    def control(self, xi, i=None):
         u = control_QP_cbf_clf(
             xi,
             ctrl_aff_constraints=self.aff_constraints,
             constraint_margin_weights=[100])
-        self.plot_constraints(
+        self.constraint_plotter.plot_constraints(
             self.aff_constraints + [
                 NamedFunc(lambda x, u: f.value(x), r"\verb!%s!" % f.__name__)
                 for f in self.aff_constraints],
@@ -704,7 +707,7 @@ class PendulumCBFCLFDirect:
         return u
 
 
-class ControlCBFCLFLearned(PendulumCBFCLFDirect):
+class ControlCBFCLFLearned(Controller):
     @store_args
     def __init__(self,
                  theta_goal=0.,
@@ -757,8 +760,8 @@ class ControlCBFCLFLearned(PendulumCBFCLFDirect):
         LOG.info("Training model with datasize {}".format(XdotTrain.shape[0]))
         if XdotTrain.shape[0] > self.max_train:
             indices = torch.randint(XdotTrain.shape[0], (self.max_train,))
-            self.model.fit(Xtrain[indices, :].clone(), Utrain[indices, :].clone(),
-                           XdotTrain[indices, :].clone())
+            self.model.fit(Xtrain[indices, :], Utrain[indices, :],
+                           XdotTrain[indices, :])
         else:
             self.model.fit(Xtrain[:-1, :], Utrain[:-1, :], XdotTrain)
 
@@ -816,16 +819,20 @@ class ControlCBFCLFLearned(PendulumCBFCLFDirect):
                                        self.quad_objective(i, xi, u0),
                                        self.quadtratic_contraints(i, xi, u0))
             u = torch.from_numpy(u).to(dtype=xi.dtype, device=xi.device)
+            self.constraint_plotter.plot_constraints(
+                [NamedFunc(lambda _, up: up.T @ Q @ up + c.T @ up + const, r"CBC2")
+                 for Q, c, const in self.quadtratic_contraints(i, xi, u0)],
+                xi, u)
         else:
             u = torch.rand(self.u_dim)
         # record the xi, ui pair
-        self.Xtrain.append(xi)
-        self.Utrain.append(u)
+        self.Xtrain.append(xi.detach())
+        self.Utrain.append(u.detach())
         return u
 
 
 run_pendulum_control_trival = partial(
-    run_pendulum_experiment, controller=control_trivial,
+    run_pendulum_experiment, controller_class=ControlTrivial,
     plotfile='plots/run_pendulum_control_trival{suffix}.pdf')
 """
 Run pendulum with a trivial controller.
@@ -833,7 +840,7 @@ Run pendulum with a trivial controller.
 
 
 run_pendulum_control_cbf_clf = partial(
-    run_pendulum_experiment, controller=PendulumCBFCLFDirect().control,
+    run_pendulum_experiment, controller_class=PendulumCBFCLFDirect,
     plotfile='plots/run_pendulum_control_cbf_clf{suffix}.pdf',
     theta0=5*math.pi/12,
     tau=0.001,
@@ -850,13 +857,13 @@ def run_pendulum_control_online_learning(numSteps=15000):
     return run_pendulum_experiment(
         ground_truth_model=False,
         plotfile='plots/run_pendulum_control_online_learning{suffix}.pdf',
-        controller=ControlCBFCLFLearned(dt=0.001).control,
+        controller_class=ControlCBFCLFLearned,
         numSteps=numSteps,
         tau=0.001)
 
 
 if __name__ == '__main__':
     #run_pendulum_control_trival()
-    #run_pendulum_control_cbf_clf()
+    run_pendulum_control_cbf_clf()
     #learn_dynamics()
-    run_pendulum_control_online_learning()
+    #run_pendulum_control_online_learning()

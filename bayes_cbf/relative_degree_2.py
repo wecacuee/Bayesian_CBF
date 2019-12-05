@@ -37,13 +37,13 @@ class GradientGP:
 
     def mean(self, x):
         f = self.f
-        x.requires_grad_(True)
+        x = x.requires_grad_(True)
         return torch.autograd.grad(f.mean(x), x)[0]
 
     def knl(self, x, xp):
         f = self.f
-        x.requires_grad_(True)
-        xp.requires_grad_(True)
+        x = x.requires_grad_(True)
+        xp = xp.requires_grad_(True)
         grad_k = torch.autograd.grad(f.knl(x, xp), x, create_graph=True)[0]
         Hxx_k = t_jac(grad_k, xp)
         return Hxx_k
@@ -53,8 +53,8 @@ class GradientGP:
         returns cov(∇f, g) given cov(f, g)
         """
         f = self.f
-        x.requires_grad_(True)
-        xp.requires_grad_(True)
+        x = x.requires_grad_(True)
+        xp = xp.requires_grad_(True)
         J_covar_fg = t_jac(covar_fg_func(x, xp), x)
         return J_covar_fg
 
@@ -222,9 +222,8 @@ def cbc2_gp(h_func, fu_func, K_α=[1,1]):
     cbc2 = AddGP(L2h,
                  GaussianProcessFunc(
                      mean=lambda x: K_α[1] * L1h.mean(x) + K_α[0] * h_func(x),
-                     knl=lambda x, xp: K_α[1] * K_α[1] * L1h.knl(x, xp)))
-    assert cbc2.mean.ndim == 0
-    assert cbc2.k.ndim == 0
+                     knl=lambda x, xp: K_α[1] * K_α[1] * L1h.knl(x, xp)),
+                 lambda x, xp: K_α[1] * L2h.covar_lie1(x, xp))
     return cbc2
 
 def get_affine_terms(func, x):

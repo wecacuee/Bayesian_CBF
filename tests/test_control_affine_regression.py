@@ -106,9 +106,9 @@ def test_GP_train_predict(n=2, m=3,
     with torch.no_grad():
         if X.shape[-1] == 2 and U.shape[-1] == 1:
             plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func, dynamics_model.f_func)
-            plt.savefig('f_learned_vs_f_true.pdf')
+            #plt.savefig('f_learned_vs_f_true.pdf')
             plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.g_func, dynamics_model.g_func, axtitle="g(x)[{i}]")
-            plt.savefig('g_learned_vs_g_true.pdf')
+            #plt.savefig('g_learned_vs_g_true.pdf')
 
         UHtest = torch.cat((Utest.new_ones((Utest.shape[0], 1)), Utest), axis=1)
         if deterministic:

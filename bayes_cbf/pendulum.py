@@ -339,8 +339,8 @@ def learn_dynamics(
         mass=1,
         gravity=10,
         length=1,
-        max_train=200,
-        numSteps=1000,
+        max_train=300,
+        numSteps=2000,
         pendulum_dynamics_class=PendulumDynamicsModel):
     #from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
     #from bayes_cbf.affine_kernel import AffineScaleKernel
@@ -378,10 +378,16 @@ def learn_dynamics(
     # Plot the pendulum trajectory
     plot_results(torch.arange(U.shape[0]), omega_vec=X[:, 0],
                  theta_vec=X[:, 1], u_vec=U[:, 0])
-    fig = plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func, pend_env.f_func,
+    fig = plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func_orig, pend_env.f_func,
                                axtitle="f(x)[{i}]")
-    plt_savefig_with_data(fig, 'plots/f_learned_vs_f_true.pdf')
-    fig = plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.g_func, pend_env.g_func,
+    plt_savefig_with_data(fig, 'plots/f_orig_learned_vs_f_true.pdf')
+    fig = plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func_custom,
+                               pend_env.f_func,
+                               axtitle="f(x)[{i}]")
+    plt_savefig_with_data(fig, 'plots/f_custom_learned_vs_f_true.pdf')
+    fig = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
+                               dgp.g_func,
+                               pend_env.g_func,
                                axtitle="g(x)[{i}]")
     plt_savefig_with_data(fig, 'plots/g_learned_vs_g_true.pdf')
 
@@ -864,6 +870,6 @@ def run_pendulum_control_online_learning(numSteps=15000):
 
 if __name__ == '__main__':
     #run_pendulum_control_trival()
-    run_pendulum_control_cbf_clf()
-    #learn_dynamics()
+    #run_pendulum_control_cbf_clf()
+    learn_dynamics()
     #run_pendulum_control_online_learning()

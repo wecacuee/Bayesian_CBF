@@ -513,7 +513,7 @@ class ControlAffineRegressor:
         var_f = var_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
         return (mean_f, var_f) if return_cov else mean_f
 
-    f_func = f_func_custom
+    f_func = f_func_orig
 
     def f_func_gp(self, Xtest):
         return GaussianProcess(

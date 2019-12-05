@@ -2,6 +2,7 @@ import warnings
 from typing import Any
 from itertools import zip_longest
 from collections import namedtuple
+from functools import partial
 
 import logging
 LOG = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ from bayes_cbf.matrix_variate_multitask_model import HetergeneousMatrixVariateMe
 
 
 GaussianProcess = namedtuple('GaussianProcess', ["mean", "k"])
+GaussianProcessFunc = namedtuple('GaussianProcessFunc', ["mean_func", "k_func"])
 
 
 def torch_kron(A, B):
@@ -518,22 +520,38 @@ class ControlAffineRegressor:
             self.f_func_custom(Xtest),
             self.f_func_custom(Xtest, return_cov=True)[1])
 
-    def fu_func_gp(self, Xtest_in, Utest_in, Xtestp_in=None):
+    def fu_func_mean(self, Utest_in, Xtest_in):
         Xtest = (Xtest_in.unsqueeze(0)
                  if Xtest_in.ndim == 1
                  else Xtest_in)
         Utest = (Utest_in.unsqueeze(0)
                  if Utest_in.ndim == 1
                  else Utest_in)
-        mean_f, var_f, A =  self.custom_predict(Xtest, Utest, Xtestp_in=Xtestp_in)
-        var_f = var_f.reshape(-1, 1, 1) * A
+        mean_f, var_f, A =  self.custom_predict(Xtest, Utest)
         if Xtest_in.ndim == 1:
             mean_f = mean_f.squeeze(0)
-            var_f = var_f.squeeze(0)
-
         mean_f = mean_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
+        return mean_f
+
+    def fu_func_knl(self, Utest_in, Xtest_in, Xtestp_in):
+        Xtest = (Xtest_in.unsqueeze(0)
+                 if Xtest_in.ndim == 1
+                 else Xtest_in)
+        Utest = (Utest_in.unsqueeze(0)
+                 if Utest_in.ndim == 1
+                 else Utest_in)
+        mean_f, var_f, A = self.custom_predict(Xtest, Utest,
+                                               Xtestp_in=Xtestp_in)
+        var_f = var_f.reshape(-1, 1, 1) * A
+        if Xtest_in.ndim == 1:
+            var_f = var_f.squeeze(0)
         var_f = var_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
-        return GaussianProcess(mean_f, var_f)
+        return var_f
+
+
+    def fu_func_gp(self, Utest_in):
+        return GaussianProcessFunc(mean=partial(self.fu_func_mean, Utest_in),
+                                   knl=partial(self.fu_func_knl, Utest_in))
 
     def g_func(self, Xtest_in, return_cov=False):
         assert not return_cov, "Don't know what matrix covariance looks like"

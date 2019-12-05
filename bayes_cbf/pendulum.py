@@ -734,6 +734,7 @@ class ControlCBFCLFLearned(PendulumCBFCLFDirect):
         # These are used in the optimizer hence numpy
         self.x_goal = torch.tensor([theta_goal, omega_goal])
         self.x_quad_goal_cost = torch.tensor(quad_goal_cost)
+        self.axes = None
 
     def train(self):
         if not len(self.Xtrain):
@@ -744,19 +745,20 @@ class ControlCBFCLFLearned(PendulumCBFCLFDirect):
         XdotTrain = Xtrain[1:, :] - Xtrain[:-1, :]
         XdotMean = self.mean_dynamics_model.f_func(Xtrain) + (self.mean_dynamics_model.g_func(Xtrain) @ Utrain.T).T
         XdotError = XdotTrain - XdotMean[1:, :]
-        axs = plot_results(np.arange(Utrain.shape[0]),
+        self.axes = axs = plot_results(np.arange(Utrain.shape[0]),
                            omega_vec=to_numpy(Xtrain[:, 0]),
                            theta_vec=to_numpy(Xtrain[:, 1]),
-                           u_vec=to_numpy(Utrain[:, 0]))
+                           u_vec=to_numpy(Utrain[:, 0]),
+                           axs=self.axes)
         plt_savefig_with_data(
             axs[0,0].figure,
             'plots/pendulum_data_{}.pdf'.format(Xtrain.shape[0]))
         assert torch.all((Xtrain[:, 0] <= math.pi) & (-math.pi <= Xtrain[:, 0]))
         LOG.info("Training model with datasize {}".format(XdotTrain.shape[0]))
         if XdotTrain.shape[0] > self.max_train:
-            indices = torch.randint(XdotTrain.shape[0], self.max_train)
-            self.model.fit(Xtrain[indices, :], Utrain[indices, :],
-                           XdotTrain[indices, :])
+            indices = torch.randint(XdotTrain.shape[0], (self.max_train,))
+            self.model.fit(Xtrain[indices, :].clone(), Utrain[indices, :].clone(),
+                           XdotTrain[indices, :].clone())
         else:
             self.model.fit(Xtrain[:-1, :], Utrain[:-1, :], XdotTrain)
 
@@ -794,7 +796,8 @@ class ControlCBFCLFLearned(PendulumCBFCLFDirect):
 
     def quadtratic_contraints(self, i, x, u0):
         A, b, c = cbf2_quadratic_constraint(self.cbf2.h2_col,
-                                            self.model.fu_func_gp, x, u0,
+                                            self.model,
+                                            x, u0,
                                             self.max_unsafe_prob)
         return [list(map(to_numpy, (A, b, c)))]
 

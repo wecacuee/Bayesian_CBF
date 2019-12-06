@@ -22,7 +22,7 @@ class AffineGP:
     def knl(self, x, xp):
         affine, f = self.affine, self.f
         var = affine(x).T @ f.knl(x, xp) @ affine(x)
-        assert (var >= 0).any()
+        assert (var >= 0).all()
         return var
 
     def covar_f(self, x, xp):
@@ -48,6 +48,8 @@ class GradientGP:
         xp = xp.requires_grad_(True)
         grad_k = torch.autograd.grad(f.knl(x, xp), x, create_graph=True)[0]
         Hxx_k = t_jac(grad_k, xp)
+        eigenvalues, _ = torch.eig(Hxx_k)
+        assert (eigenvalues[:, 0] > 0).all()
         return Hxx_k # must be positive definite
 
     def covar_g(self, covar_fg_func, x, xp):
@@ -105,11 +107,11 @@ class QuadraticFormOfGP:
 
     def knl(self, x, xp):
         g, f, covar_gf = self.g, self.f, self.covar_gf
-        k_quad = (2 * covar_gf(x, xp).trace()
+        k_quad = (2 * covar_gf(x, xp).trace()**2
                 + g.mean(x).T @ covar_gf(x, xp) @ f.mean(xp) * 2
                 + g.mean(x).T @ f.knl(x, xp) @ f.mean(xp)
                 + f.mean(x).T @ g.knl(x, xp) @ f.mean(xp))
-        assert (k_quad >= 0).any()
+        assert (k_quad >= 0).all()
         return k_quad
 
     def covar_h(self, covar_hf, covar_hg, x, xp):
@@ -143,7 +145,7 @@ class AddGP:
     def knl(self, x, xp):
         f, g, covar_fg = self.f, self.g, self.covar_fg
         var = f.knl(x, xp) + g.knl(x, xp) + 2*covar_fg(x, xp)
-        assert (var >= 0).any()
+        assert (var >= 0).all()
         return var
 
     def covar_f(self, x, xp):
@@ -230,6 +232,7 @@ def cbc2_gp(h_func, fu_func, K_α=[1,1]):
                      knl=lambda x, xp: K_α[1] * K_α[1] * L1h.knl(x, xp)),
                  lambda x, xp: K_α[1] * L2h.covar_lie1(x, xp))
     return cbc2
+
 
 def get_affine_terms(func, x):
     x = x.requires_grad_(True)

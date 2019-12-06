@@ -67,55 +67,6 @@ class ControlRandom(Controller):
         ) * torch.abs(torch.rand(1)) + torch.rand(1)
 
 
-class Rel1PendulumModel(DynamicsModel):
-    def __init__(self, m, n, mass=1, gravity=10, length=1, deterministic=True,
-                 model_noise=0):
-        self.m = m
-        self.n = n
-        self.mass = mass
-        self.gravity = gravity
-        self.length = length
-        self.model_noise = model_noise
-
-    @property
-    def ctrl_size(self):
-        return self.m
-
-    @property
-    def state_size(self):
-        return self.n
-
-    def f_func(self, X):
-        m = self.m
-        n = self.n
-        mass = self.mass
-        gravity = self.gravity
-        length = self.length
-        X = torch.tensor(X)
-        theta_old, omega_old = X[..., 0:1], X[..., 1:2]
-        noise = torch.random.normal(scale=self.model_noise) if self.model_noise else 0
-        return noise + torch.cat(
-            [omega_old,
-             - (gravity/length)*torch.sin(theta_old)], axis=-1)
-
-    def g_func(self, x):
-        m = self.m
-        n = self.n
-        mass = self.mass
-        gravity = self.gravity
-        length = self.length
-        size = x.shape[0] if x.ndim == 2 else 1
-        noise = torch.random.normal(scale=self.model_noise) if self.model_noise else 0
-        if x.ndim == 2:
-            return noise + torch.repeat_interleave(
-                torch.tensor([[[0], [1/(mass*length)]]]), size, axis=0)
-        else:
-            return noise + torch.tensor(
-                [[0], [1/(mass*length)]])
-
-
-
-
 class MeanPendulumDynamicsModel(DynamicsModel):
     def __init__(self, m, n):
         self.m = m
@@ -354,11 +305,11 @@ def learn_dynamics(
     # Plot the pendulum trajectory
     plot_results(torch.arange(U.shape[0]), omega_vec=X[:, 0],
                  theta_vec=X[:, 1], u_vec=U[:, 0])
-    fig = plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func_orig,
+    fig = plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func,
                                pend_env.f_func,
                                axtitle="f(x)[{i}]")
     plt_savefig_with_data(fig, 'plots/f_orig_learned_vs_f_true.pdf')
-    axs = plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func_custom,
+    axs = plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func_mean,
                                pend_env.f_func,
                                axtitle="f(x)[{i}]")
     plt_savefig_with_data(axs.flatten()[0].figure,
@@ -789,8 +740,8 @@ class ControlCBFCLFLearned(Controller):
             self.model.fit(Xtrain[:-1, :], Utrain[:-1, :], XdotTrain)
 
         self.axes[0] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
-                                   self.model.f_func_orig,
-                                   self.model.f_func_orig,
+                                   self.model.f_func,
+                                   self.model.f_func,
                                    axtitle="f(x)[{i}]",
                                    axs=self.axes[0])
         plt_savefig_with_data(
@@ -856,11 +807,13 @@ class ControlCBFCLFLearned(Controller):
             print("ratio * var CBC2 - mean²CBC2: ",
                   ratio * (u0.T @ k_Q @ u0 + k_p.T @ u0 + k_r)
                   - ((mean_A.T @ u0 + mean_b)**2))
-            return [("CBC2", list(map(convert_out, (A, b, c)))),
-                    ("E[CBC2]", list(map(convert_out, (-mean_Q, -mean_p, -mean_r))))]
+            return [(r"$\frac{1-\delta}{\delta} V[CBC2] - E[CBC2]^2$",
+                     list(map(convert_out, (A, b, c)))),
+                    ("-E[CBC2]",
+                     list(map(convert_out, (torch.tensor([[0.]]), -mean_A, -mean_b))))]
 
     def _stochastic_cbf2_sqrt(self, i, x, u0, convert_out=to_numpy):
-        (mean_A, mean_b), (k_Q, k_p, k_r) = cbf2_quadratic_terms(self.cbf2.h2_col,
+        (mean_A, mean_b), (k_Q, k_p, k_r) = cbc2_quadratic_terms(self.cbf2.h2_col,
                                                                       self.model,
                                                                       x, u0)
         with torch.no_grad():
@@ -871,9 +824,9 @@ class ControlCBFCLFLearned(Controller):
             print("at theta, ω; u0: {},{}; {}".format(rad2deg(x[0]), x[1], u0))
             print("mean^2 CBC2: ", (mean_A.T @ u0 + mean_b))
             print("margin CBC2: ", margin)
-            return [("CBC2",
+            return [("-E[CBC2]",
                      list(map(convert_out,
-                              (torch.tensor([[0.]]), - mean_A, - mean_b + margin))))]
+                              (torch.tensor([[0.]]), - mean_A, - mean_b ))))]
 
     def quadratic_constraints(self, i, x, u0, convert_out=to_numpy):
         if self.model.ground_truth:
@@ -885,13 +838,16 @@ class ControlCBFCLFLearned(Controller):
 
 
     def plottables(self, i, x, u0):
-        print("true CBC2: ", (self.ground_truth_cbf2.A(x) @ u0 + self.ground_truth_cbf2.b(x)))
+        def true_cbc(xp, up):
+            val = ( self.ground_truth_cbf2.A(xp) @ up - self.ground_truth_cbf2.b(xp))
+            print("true CBC2: ", val)
+            return val
         return [
             NamedFunc(lambda _, up: up.T @ Q @ up + c.T @ up + const, name)
             for name, (Q, c, const) in self.quadratic_constraints(
                     i, x, u0, convert_out=lambda x: x)
         ] + [
-            NamedFunc(lambda _, u: self.ground_truth_cbf2.A(x) @ u - self.ground_truth_cbf2.b(x), "CBC2true")
+            NamedFunc(true_cbc, "CBC2true")
         ]
 
 
@@ -949,7 +905,7 @@ def run_pendulum_control_online_learning(numSteps=15000):
         controller_class=ControlCBFCLFLearned,
         numSteps=numSteps,
         theta0=5*math.pi/12,
-        tau=1e-3)
+        tau=1e-2)
 
 
 if __name__ == '__main__':

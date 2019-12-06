@@ -1,10 +1,12 @@
 """
 Home for functions/classes that haven't find a home of their own
 """
-import torch
-import inspect
 from functools import wraps, partial
 from itertools import zip_longest
+from abc import ABC, abstractmethod
+import inspect
+
+import torch
 
 t_hstack = partial(torch.cat, dim=-1)
 """
@@ -67,4 +69,44 @@ def torch_kron(A, B):
     A_shape = sum([[si, 1] for si in A.shape[1:]], [])
     kron_shape = [a*b for a, b in zip_longest(A.shape[1:], B.shape[1:], fillvalue=1)]
     return (A.reshape(b, *A_shape) * B.reshape(b, *B_shape)).reshape(b, *kron_shape)
+
+
+class DynamicsModel(ABC):
+    """
+    Represents mode of the form:
+
+    ẋ = f(x) + g(x)u
+    """
+    @property
+    @abstractmethod
+    def ctrl_size(self):
+        """
+        Dimension of ctrl
+        """
+
+    @property
+    @abstractmethod
+    def state_size(self):
+        """
+        Dimension of state
+        """
+
+    @abstractmethod
+    def f_func(self, X):
+        """
+        ẋ = f(x) + g(x)u
+
+        @param: X : d x self.state_size vector or self.state_size vector
+        @returns: f(X)
+        """
+
+    @abstractmethod
+    def g_func(self, X):
+        """
+        ẋ = f(x) + g(x)u
+
+        @param: X : d x self.state_size vector or self.state_size vector
+        @returns: g(X)
+        """
+
 

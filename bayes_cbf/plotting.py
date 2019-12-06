@@ -14,7 +14,8 @@ def plot_2D_f_func(f_func,
                    axes_gen = lambda FX: plt.subplots(1, FX.shape[-1])[1],
                    theta_range = slice(-np.pi, np.pi, np.pi/20),
                    omega_range = slice(-np.pi, np.pi,np.pi/20),
-                   axtitle="f(x)[{i}]"):
+                   axtitle="f(x)[{i}]",
+                   figtitle="Learned vs True"):
     # Plot true f(x)
     theta_omega_grid = np.mgrid[theta_range, omega_range]
     D, N, M = theta_omega_grid.shape
@@ -23,6 +24,7 @@ def plot_2D_f_func(f_func,
     ).reshape(N, M, D)
     axs = axes_gen(FX)
     for i in range(FX.shape[-1]):
+        axs[i].clear()
         ctf0 = axs[i].contourf(theta_omega_grid[0, ...], theta_omega_grid[1, ...],
                                FX[:, :, i].detach().cpu().numpy())
         plt.colorbar(ctf0, ax=axs[i])
@@ -30,9 +32,16 @@ def plot_2D_f_func(f_func,
         axs[i].set_ylabel(r"$\omega$")
         axs[i].set_xlabel(r"$\theta$")
 
+    fig = axs[0].figure
+    fig.suptitle(figtitle)
+    if hasattr(fig, "canvas") and hasattr(fig.canvas, "set_window_title"):
+        fig.canvas.set_window_title(figtitle)
+    fig.subplots_adjust(wspace=0.31)
+    return axs
+
 
 def plot_results(time_vec, omega_vec, theta_vec, u_vec,
-                 axs=None):
+                 axs=None, figtitle="Pendulum"):
     #plot thetha
     if axs is None:
         fig, axs = plt.subplots(2,2)
@@ -57,14 +66,20 @@ def plot_results(time_vec, omega_vec, theta_vec, u_vec,
     axs[1,1].legend()
 
     fig = axs[0, 0].figure
-    fig.suptitle("Pendulum")
+    fig.suptitle(figtitle)
+    if hasattr(fig, "canvas") and hasattr(fig.canvas, "set_window_title"):
+        fig.canvas.set_window_title(figtitle)
     fig.subplots_adjust(wspace=0.31)
     return axs
 
 
 def plot_learned_2D_func(Xtrain, learned_f_func, true_f_func,
-                         axtitle="f(x)[{i}]"):
-    fig, axs = plt.subplots(3,2)
+                         axtitle="f(x)[{i}]", figtitle="learned vs true",
+                         axs=None):
+    if axs is None:
+        fig, axs = plt.subplots(3,2)
+    else:
+        fig = axs.flatten()[0].figure
     theta_range = slice(Xtrain[:, 0].min(), Xtrain[:, 0].max(),
                         (Xtrain[:, 0].max() - Xtrain[:, 0].min()) / 20)
     omega_range = slice(Xtrain[:, 1].min(), Xtrain[:, 1].max(),
@@ -82,8 +97,11 @@ def plot_learned_2D_func(Xtrain, learned_f_func, true_f_func,
     ax.set_xlim(theta_range.start, theta_range.stop)
     ax.set_ylim(omega_range.start, omega_range.stop)
     ax.set_title("Training data")
+    fig.suptitle(figtitle)
+    if hasattr(fig, "canvas") and hasattr(fig.canvas, "set_window_title"):
+        fig.canvas.set_window_title(figtitle)
     fig.subplots_adjust(wspace=0.3,hspace=0.8)
-    return fig
+    return axs
 
 class LinePlotSerialization:
     @staticmethod

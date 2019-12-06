@@ -18,12 +18,13 @@ from gpytorch.likelihoods.noise_models import FixedGaussianNoise
 from gpytorch.means import ConstantMean
 from gpytorch.mlls import ExactMarginalLogLikelihood
 from gpytorch.models import ExactGP
+from gpytorch.priors import GammaPrior
 from gpytorch.utils.memoize import cached
 import gpytorch.settings as gpsettings
 
 from bayes_cbf.matrix_variate_multitask_kernel import MatrixVariateIndexKernel, HetergeneousMatrixVariateKernel
 from bayes_cbf.matrix_variate_multitask_model import HetergeneousMatrixVariateMean
-from bayes_cbf.misc import torch_kron
+from bayes_cbf.misc import torch_kron, DynamicsModel
 
 
 GaussianProcess = namedtuple('GaussianProcess', ["mean", "k"])
@@ -122,7 +123,7 @@ class ControlAffineExactGP(ExactGP):
         Xdot = F(X)U    if M = 1
         Y = F(X)ᵀ        if M = 0
     """
-    def __init__(self, x_dim, u_dim, likelihood, rank=1):
+    def __init__(self, x_dim, u_dim, likelihood, rank=1, gamma_length_scale_prior=None):
         super().__init__(None, None, likelihood)
         self.matshape = (1+u_dim, x_dim)
         self.decoder = CatEncoder(1, x_dim, 1+u_dim)
@@ -135,11 +136,15 @@ class ControlAffineExactGP(ExactGP):
             IndexKernel(num_tasks=self.matshape[1]),
             IndexKernel(num_tasks=self.matshape[0]),
         )
-        self.input_covar = ScaleKernel(RBFKernel())
+        prior_args = dict() if gamma_length_scale_prior is None else dict(
+            lengthscale_prior=GammaPrior(*gamma_length_scale_prior))
+        self.input_covar = ScaleKernel(
+            RBFKernel(**prior_args))
         self.covar_module = HetergeneousMatrixVariateKernel(
             self.task_covar,
             self.input_covar,
-            self.decoder)
+            self.decoder,
+        )
 
     def set_train_data(self, Xtrain, Utrain, XdotTrain):
         assert self.matshape == (1+Utrain.shape[-1], Xtrain.shape[-1])
@@ -180,7 +185,7 @@ def default_device():
     return 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
-class ControlAffineRegressor:
+class ControlAffineRegressor(DynamicsModel):
     """
     Scikit like wrapper around learning and predicting GaussianProcessRegressor
 
@@ -189,17 +194,29 @@ class ControlAffineRegressor:
                         .fit(Xtrain, Utrain, XdotTrain)
                         .predict(Xtest, return_cov=True)
     """
-    def __init__(self, x_dim, u_dim, device=None, default_device=default_device):
+    ground_truth = False
+    def __init__(self, x_dim, u_dim, device=None, default_device=default_device,
+                 gamma_length_scale_prior=None):
         self.device = device or default_device()
-
+        self.x_dim = x_dim
+        self.u_dim = u_dim
         # Initialize model and likelihood
         # Noise model for GPs
         self.likelihood = IdentityLikelihood()
         # Actual model
         self.model = ControlAffineExactGP(
-            x_dim, u_dim, self.likelihood
+            x_dim, u_dim, self.likelihood,
+            gamma_length_scale_prior=gamma_length_scale_prior
         ).to(device=self.device)
         self._cache = dict()
+
+    @property
+    def ctrl_size(self):
+        return self.u_dim
+
+    @property
+    def state_size(self):
+        return self.x_dim
 
     def _ensure_device_dtype(self, X):
         if isinstance(X, np.ndarray):

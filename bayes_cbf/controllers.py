@@ -101,12 +101,12 @@ def to_numpy(x):
     return x.detach().double().cpu().numpy() if isinstance(x, torch.Tensor) else x
 
 
-def controller_qcqp(u0, objective, quadratic_contraints):
+def controller_qcqp(u0, objective, quadratic_constraints):
     import cvxpy as cp
     import gurobipy
     u = cp.Variable(u0.shape)
     cp_obj = objective(u)
-    cp_qc = [qc(u) for qc in quadratic_contraints]
+    cp_qc = [qc(u) for qc in quadratic_constraints]
     prob = cp.Problem(cp.Minimize(cp_obj), cp_qc)
     prob.solve(solver=cp.GUROBI)
     return u.value
@@ -114,20 +114,26 @@ def controller_qcqp(u0, objective, quadratic_contraints):
 class InfeasibleOptimization(Exception):
     pass
 
-def controller_qcqp_gurobi(u0, quad_objective, quadratic_contraints):
+def controller_qcqp_gurobi(u0, quad_objective, quadratic_constraints,
+                           DisplayInterval=120,
+                           OutputFlag=0,
+                           **kwargs):
     import gurobipy as gp
     from gurobipy import GRB
     # Create a new model
     m = gp.Model("controller_qcqp_gurobi")
+    m.Params.DisplayInterval = DisplayInterval
+    m.Params.OutputFlag = OutputFlag
+    for k, v in kwargs.items():
+        m.setParam(k, v)
 
     # Create variables
     u = m.addMVar(shape=u0.shape, vtype=GRB.CONTINUOUS, name="u")
 
 
     m.setMObjective(*quad_objective, sense=GRB.MINIMIZE)
-    for i, qc in enumerate(quadratic_contraints):
-        Q, c, const = qc
-        m.addMQConstr(Q, c, "<", -const, xQ_L=u, xQ_R=u, xc=u, name="%d" % i)
+    for i, (name, (Q, c, const)) in enumerate(quadratic_constraints):
+        m.addMQConstr(Q, c, "<", -const, xQ_L=u, xQ_R=u, xc=u, name=name)
     m.optimize()
     if m.getAttr(GRB.Attr.Status) == GRB.OPTIMAL:
         return u.X

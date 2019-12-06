@@ -22,7 +22,7 @@ class AffineGP:
     def knl(self, x, xp):
         affine, f = self.affine, self.f
         var = affine(x).T @ f.knl(x, xp) @ affine(x)
-        assert (var >= 0).all()
+        assert (var >= -1e-5).all()
         return var
 
     def covar_f(self, x, xp):
@@ -49,7 +49,7 @@ class GradientGP:
         grad_k = torch.autograd.grad(f.knl(x, xp), x, create_graph=True)[0]
         Hxx_k = t_jac(grad_k, xp)
         eigenvalues, _ = torch.eig(Hxx_k)
-        assert (eigenvalues[:, 0] > 0).all()
+        assert (eigenvalues[:, 0] > -1e-5).all()
         return Hxx_k # must be positive definite
 
     def covar_g(self, covar_fg_func, x, xp):
@@ -111,7 +111,7 @@ class QuadraticFormOfGP:
                 + g.mean(x).T @ covar_gf(x, xp) @ f.mean(xp) * 2
                 + g.mean(x).T @ f.knl(x, xp) @ f.mean(xp)
                 + f.mean(x).T @ g.knl(x, xp) @ f.mean(xp))
-        assert (k_quad >= 0).all()
+        assert (k_quad >= -1e-5).all()
         return k_quad
 
     def covar_h(self, covar_hf, covar_hg, x, xp):
@@ -145,7 +145,7 @@ class AddGP:
     def knl(self, x, xp):
         f, g, covar_fg = self.f, self.g, self.covar_fg
         var = f.knl(x, xp) + g.knl(x, xp) + 2*covar_fg(x, xp)
-        assert (var >= 0).all()
+        assert (var >= -1e-5).all()
         return var
 
     def covar_f(self, x, xp):
@@ -263,10 +263,6 @@ def cbf2_quadratic_constraint(h_func, control_affine_model, x, u):
 
     assert mean(u) > 0, 'cbf2 should be at least satisfied in expectation'
     mean_A, mean_b = get_affine_terms(mean, u)
-    #mean_Q = mean_A.T @ mean_A
-    #mean_p = 2 * mean_A @ mean_b if mean_b.ndim else 2 * mean_A * mean_b
-    #mean_r = mean_b @ mean_b if mean_b.ndim else mean_b * mean_b
-    print("variance must be postitive: {}".format(k_func(u)))
     k_Q, k_p, k_r = get_quadratic_terms(k_func, u)
     #ratio = (1-δ) / δ
     return (mean_A, mean_b), (k_Q, k_p, k_r)

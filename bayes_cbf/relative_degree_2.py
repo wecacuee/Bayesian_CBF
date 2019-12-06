@@ -282,5 +282,4 @@ def cbc2_quadratic_terms(h_func, control_affine_model, x, u):
     mean_A, mean_b = get_affine_terms(mean, u)
     k_Q, k_p, k_r = get_quadratic_terms(k_func, u)
     #ratio = (1-δ) / δ
-    return (mean_A, mean_b), (k_Q, k_p, k_r)
-
+    return (mean_A, mean_b), (k_Q, k_p, k_r), mean(u), k_func(u)

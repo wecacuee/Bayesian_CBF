@@ -696,15 +696,14 @@ class ControlCBFCLFLearned(Controller):
         self.model = ControlAffineRegressor(
             x_dim, u_dim,
             gamma_length_scale_prior=gamma_length_scale_prior)
-        #self.model = PendulumDynamicsModel(n=x_dim, m=u_dim,
-        #                                   mass=1, length=1, gravity=10)
+        self.ground_truth_model = PendulumDynamicsModel(
+            n=x_dim, m=u_dim,
+            mass=1, length=1, gravity=10)
         self.mean_dynamics_model = mean_dynamics_model_class(m=u_dim, n=x_dim)
         self.ctrl_aff_constraints=[EnergyCLF(self),
                                    RadialCBF(self)]
         self.cbf2 = RadialCBFRelDegree2(self.model)
-        self.ground_truth_cbf2 = RadialCBFRelDegree2(
-            PendulumDynamicsModel(n=x_dim, m=u_dim,
-                                  mass=1, length=1, gravity=10))
+        self.ground_truth_cbf2 = RadialCBFRelDegree2(self.ground_truth_model)
         self._has_been_trained_once = False
         # These are used in the optimizer hence numpy
         self.x_goal = torch.tensor([theta_goal, omega_goal])
@@ -740,21 +739,21 @@ class ControlCBFCLFLearned(Controller):
             self.model.fit(Xtrain[:-1, :], Utrain[:-1, :], XdotTrain)
 
         self.axes[0] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
-                                   self.model.f_func,
+                                   self.ground_truth_model.f_func,
                                    self.model.f_func,
                                    axtitle="f(x)[{i}]",
                                    axs=self.axes[0])
         plt_savefig_with_data(
             self.axes[0].flatten()[0].figure,
-            'plots/online_f_learned_vs_f_true_{%d}.pdf' % Xtrain.shape[0])
+            'plots/online_f_learned_vs_f_true_%d.pdf' % Xtrain.shape[0])
         self.axes[1] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
-                                   self.model.g_func,
+                                   self.ground_truth_model.g_func,
                                    self.model.g_func,
                                    axtitle="g(x)[{i}]",
                                    axs=self.axes[1])
         plt_savefig_with_data(
             self.axes[1].flatten()[0].figure,
-            'plots/online_g_learned_vs_g_true_{%d}.pdf' % Xtrain.shape[0])
+            'plots/online_g_learned_vs_g_true_%d.pdf' % Xtrain.shape[0])
 
         self._has_been_trained_once = True
 
@@ -807,9 +806,9 @@ class ControlCBFCLFLearned(Controller):
             print("ratio * var CBC2 - mean²CBC2: ",
                   ratio * (u0.T @ k_Q @ u0 + k_p.T @ u0 + k_r)
                   - ((mean_A.T @ u0 + mean_b)**2))
-            return [(r"$\frac{1-\delta}{\delta} V[CBC2] - E[CBC2]^2$",
+            return [(r"$\frac{1-\delta}{\delta} V[CBC2] - E[CBC2]^2 \le 0$",
                      list(map(convert_out, (A, b, c)))),
-                    ("-E[CBC2]",
+                    ("$-E[CBC2] \le 0$",
                      list(map(convert_out, (torch.tensor([[0.]]), -mean_A, -mean_b))))]
 
     def _stochastic_cbf2_sqrt(self, i, x, u0, convert_out=to_numpy):
@@ -826,7 +825,7 @@ class ControlCBFCLFLearned(Controller):
             print("margin CBC2: ", margin)
             return [("-E[CBC2]",
                      list(map(convert_out,
-                              (torch.tensor([[0.]]), - mean_A, - mean_b ))))]
+                              (torch.tensor([[0.]]), - mean_A, - mean_b + margin))))]
 
     def quadratic_constraints(self, i, x, u0, convert_out=to_numpy):
         if self.model.ground_truth:
@@ -840,14 +839,14 @@ class ControlCBFCLFLearned(Controller):
     def plottables(self, i, x, u0):
         def true_cbc(xp, up):
             val = ( self.ground_truth_cbf2.A(xp) @ up - self.ground_truth_cbf2.b(xp))
-            print("true CBC2: ", val)
+            print("- true CBC2: ", val)
             return val
         return [
             NamedFunc(lambda _, up: up.T @ Q @ up + c.T @ up + const, name)
             for name, (Q, c, const) in self.quadratic_constraints(
                     i, x, u0, convert_out=lambda x: x)
         ] + [
-            NamedFunc(true_cbc, "CBC2true")
+            NamedFunc(true_cbc, "-CBC2true")
         ]
 
 

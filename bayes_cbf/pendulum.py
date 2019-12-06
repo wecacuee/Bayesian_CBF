@@ -29,7 +29,7 @@ from bayes_cbf.sampling import sample_generator_trajectory, controller_sine
 from bayes_cbf.controllers import cvxopt_solve_qp, control_QP_cbf_clf, controller_qcqp_gurobi
 from bayes_cbf.misc import (t_vstack, t_hstack, to_numpy, store_args,
                             DynamicsModel, variable_required_grad)
-from bayes_cbf.relative_degree_2 import cbf2_quadratic_constraint
+from bayes_cbf.relative_degree_2 import cbc2_quadratic_terms
 
 
 class Controller(ABC):
@@ -106,8 +106,13 @@ class Rel1PendulumModel(DynamicsModel):
         length = self.length
         size = x.shape[0] if x.ndim == 2 else 1
         noise = torch.random.normal(scale=self.model_noise) if self.model_noise else 0
-        return noise + torch.repeat_interleave(
-            torch.tensor([[[1/(mass*length), 0], [1/(mass*length), 0]]]), size, axis=0)
+        if x.ndim == 2:
+            return noise + torch.repeat_interleave(
+                torch.tensor([[[0], [1/(mass*length)]]]), size, axis=0)
+        else:
+            return noise + torch.tensor(
+                [[0], [1/(mass*length)]])
+
 
 
 
@@ -171,8 +176,12 @@ class PendulumDynamicsModel(DynamicsModel):
         length = self.length
         size = x.shape[0] if x.ndim == 2 else 1
         noise = torch.random.normal(scale=self.model_noise) if self.model_noise else 0
-        return noise + torch.repeat_interleave(
-            torch.tensor([[[0], [1/(mass*length)]]]), size, axis=0)
+        if x.ndim == 2:
+            return noise + torch.repeat_interleave(
+                torch.tensor([[[0], [1/(mass*length)]]]), size, axis=0)
+        else:
+            return noise + torch.tensor([[0], [1/(mass*length)]])
+
 
 
 def sampling_pendulum(dynamics_model, numSteps,
@@ -562,25 +571,46 @@ class RadialCBFRelDegree2(NamedAffineFunc):
         return torch.tensor([torch.sin(θ - θ_c), 0])
 
     def lie_f_h2_col(self, x):
-        return self.grad_h2_col(x) @ self.f_func(x)
+        (θ, ω) = x
+        θ_c = self.cbf_col_theta
+        direct = ω * torch.sin(θ-θ_c)
+        abstract = self.grad_h2_col(x) @ self.f_func(x)
+        assert torch.allclose(direct, abstract)
+        return direct
+
 
     def grad_lie_f_h2_col(self, x):
+        (θ, ω) = x
+        θ_c = self.cbf_col_theta
+        direct = torch.tensor([ω * torch.cos(θ-θ_c), torch.sin(θ-θ_c)])
         with variable_required_grad(x):
-            return torch.autograd.grad(self.lie_f_h2_col(x), x)[0]
+            abstract = torch.autograd.grad(self.lie_f_h2_col(x), x)[0]
+        assert torch.allclose(direct, abstract)
+        return direct
 
     def lie2_f_h_col(self, x):
         (θ, ω) = x
         m, l, g = self.mass, self.length, self.gravity
         Δ_c = self.cbf_col_delta
         θ_c = self.cbf_col_theta
-        return - ω**2 * torch.cos(θ - θ_c) - (g / l) * torch.sin(θ - θ_c) * torch.sin(θ)
+        direct =  ω**2 * torch.cos(θ - θ_c) - (g / l) * torch.sin(θ - θ_c) * torch.sin(θ)
+        abstract = self.grad_lie_f_h2_col(x) @ self.f_func(x)
+        assert torch.allclose(direct, abstract)
+        return direct
 
     def lie_g_lie_f_h_col(self, x):
         (θ, ω) = x
         m, l, g = self.mass, self.length, self.gravity
         Δ_c = self.cbf_col_delta
         θ_c = self.cbf_col_theta
-        return (1/(m*l)) * torch.sin(θ - θ_c)
+        direct = (1/(m*l)) * torch.sin(θ - θ_c)
+        abstract = self.grad_lie_f_h2_col(x) @ self.g_func(x)
+        assert torch.allclose(direct, abstract)
+        return direct
+
+    def lie2_fu_h_col(self, x, u):
+        grad_L1h = self.grad_lie_f_h2_col(x)
+        return grad_L1h @ (self.f_func(x) + self.g_func(x) @ u)
 
     def A(self, x):
         return torch.tensor([- self.lie_g_lie_f_h_col(x)])
@@ -809,7 +839,7 @@ class ControlCBFCLFLearned(Controller):
 
 
     def _stochastic_cbf2(self, i, x, u0, convert_out=to_numpy):
-        (mean_A, mean_b), (k_Q, k_p, k_r) = cbf2_quadratic_constraint(self.cbf2.h2_col,
+        (mean_A, mean_b), (k_Q, k_p, k_r) = cbc2_quadratic_terms(self.cbf2.h2_col,
                                                                       self.model,
                                                                       x, u0)
         with torch.no_grad():
@@ -830,7 +860,7 @@ class ControlCBFCLFLearned(Controller):
                     ("E[CBC2]", list(map(convert_out, (-mean_Q, -mean_p, -mean_r))))]
 
     def _stochastic_cbf2_sqrt(self, i, x, u0, convert_out=to_numpy):
-        (mean_A, mean_b), (k_Q, k_p, k_r) = cbf2_quadratic_constraint(self.cbf2.h2_col,
+        (mean_A, mean_b), (k_Q, k_p, k_r) = cbf2_quadratic_terms(self.cbf2.h2_col,
                                                                       self.model,
                                                                       x, u0)
         with torch.no_grad():

@@ -6,7 +6,8 @@ from bayes_cbf.pendulum import RadialCBFRelDegree2
 from bayes_cbf.control_affine_model import GaussianProcess
 from bayes_cbf.relative_degree_2 import (AffineGP, GradientGP,
                                          QuadraticFormOfGP, Lie1GP, Lie2GP,
-                                         get_quadratic_terms)
+                                         cbc2_gp, get_quadratic_terms,
+                                         cbc2_quadratic_terms)
 from bayes_cbf.misc import to_numpy
 from tests.test_control_affine_regression import test_pendulum_train_predict
 
@@ -39,7 +40,7 @@ def test_affine_gp(dynamic_models):
         learned_model.f_func_gp())
     assert to_numpy(l1h.mean(xtest)) == pytest.approx(
         to_numpy(true_cbf2.lie_f_h2_col(xtest)), rel=0.1)
-    l1h.knl(xtest, xtest.detach().clone())
+    l1h.knl(xtest, xtest)
     return l1h
 
 
@@ -50,7 +51,7 @@ def test_gradient_gp(dynamic_models):
     grad_l1h = GradientGP(l1h)
     xtest = get_close_xtest_sample(learned_model)
     assert to_numpy(grad_l1h.mean(xtest)) == pytest.approx(to_numpy(true_cbf2.grad_lie_f_h2_col(xtest)), abs=0.1, rel=0.1)
-    grad_l1h.knl(xtest, xtest.detach().clone())
+    grad_l1h.knl(xtest, xtest)
     return grad_l1h, l1h
 
 
@@ -66,8 +67,11 @@ def test_quadratic_form(dynamic_models):
                             covar_grad_l1h_fu)
     xtest = get_close_xtest_sample(learned_model)
     assert to_numpy(l2h.mean(xtest)) == pytest.approx(
-        to_numpy(true_cbf2.lie2_f_h_col(xtest)), abs=0.1, rel=0.1)
-    l2h.knl(xtest, xtest.detach().clone())
+        to_numpy(
+            true_cbf2.lie2_f_h_col(xtest)
+            + true_cbf2.lie_g_lie_f_h_col(xtest) * utest
+        ), abs=0.1, rel=0.1)
+    l2h.knl(xtest, xtest)
     return l2h
 
 
@@ -82,12 +86,30 @@ def test_lie2_gp(dynamic_models):
     fu_gp = learned_model.fu_func_gp(utest)
     L2h = Lie2GP(Lie1GP(cbf2.h2_col, f_gp), covar_fu_f, fu_gp)
     L2h.mean(xtest)
-    L2h.knl(xtest, xtest.detach().clone())
+    L2h.knl(xtest, xtest)
+    return L2h
 
 
 def test_cbf2_gp(dynamic_models):
     learned_model, true_model = dynamic_models
     true_cbf2 = RadialCBFRelDegree2(true_model)
+    learned_cbf2 = RadialCBFRelDegree2(learned_model)
+    utest = torch.rand(1) * 2 - 1
+    cbc2 = cbc2_gp(learned_cbf2.h2_col, learned_model, utest)
+    xtest = get_close_xtest_sample(learned_model)
+    assert to_numpy(cbc2.mean(xtest)) == pytest.approx(to_numpy(
+        - true_cbf2.A(xtest) @ utest + true_cbf2.b(xtest))[0], rel=0.1)
+    cbc2.knl(xtest, xtest)
+
+
+def test_cbc2_quadtratic_terms(dynamic_models):
+    learned_model, true_model = dynamic_models
+    true_cbf2 = RadialCBFRelDegree2(true_model)
+    learned_cbf2 = RadialCBFRelDegree2(learned_model)
+    utest = torch.rand(1) * 2 - 1
+    xtest = get_close_xtest_sample(learned_model)
+    (mean_A, mean_b), _ = cbc2_quadratic_terms(
+        learned_cbf2.h2_col, learned_model, xtest, utest)
 
 
 def test_quadratic_term():

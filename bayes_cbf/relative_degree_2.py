@@ -55,8 +55,8 @@ class GradientGP:
             with variable_required_grad(xp):
                 grad_k = torch.autograd.grad(f.knl(x, xp), x, create_graph=True)[0]
                 Hxx_k = t_jac(grad_k, xp)
-        eigenvalues, _ = torch.eig(Hxx_k)
-        assert (eigenvalues[:, 0] > -1e-3).all()
+        #eigenvalues, _ = torch.eig(Hxx_k)
+        #assert (eigenvalues[:, 0] > -1e-3).all()
         return Hxx_k # must be positive definite
 
     def covar_g(self, covar_fg_func, x, xp):
@@ -202,10 +202,11 @@ class Lie2GP:
     def __init__(self, lie1_gp, covar_fu_f, fu_gp):
         self.fu = fu_gp
         self._lie1_gp = lie1_gp
-        covar_Lie1_fu = partial(lie1_gp.covar_g, covar_fu_f)
+        self._covar_fu_f = covar_fu_f
+        self.covar_Lie1_fu = covar_Lie1_fu = partial(lie1_gp.covar_g, covar_fu_f)
         self._grad_lie1_gp = GradientGP(lie1_gp)
-        covar_grad_Lie1_fu = partial(self._grad_lie1_gp.covar_g,
-                                     covar_Lie1_fu)
+        self.covar_grad_Lie1_fu = covar_grad_Lie1_fu = partial(
+            self._grad_lie1_gp.covar_g, covar_Lie1_fu)
         self._quad_gp = QuadraticFormOfGP(self._grad_lie1_gp, fu_gp,
                                           covar_grad_Lie1_fu)
 
@@ -216,7 +217,7 @@ class Lie2GP:
         return self._quad_gp.knl(x, xp)
 
     def _covars(self):
-        covar_L1h_fu = self._lie1_gp.covar_fu
+        covar_L1h_fu = self.covar_Lie1_fu
         covar_grad_L1h_fu = partial(self._grad_lie1_gp.covar_g, covar_L1h_fu)
         covar_grad_L1h_L1h = partial(self._grad_lie1_gp.covar_g, self._lie1_gp.knl)
         covar_L2h_fu = partial(self._quad_gp.covar_h, covar_grad_L1h_fu, self.fu.knl)
@@ -262,7 +263,7 @@ def get_affine_terms(func, x):
 def get_quadratic_terms(func, x):
     with variable_required_grad(x):
         f_x = func(x)
-        linear = torch.autograd.grad(f_x, x, create_graph=True)[0]
+        linear_more = torch.autograd.grad(f_x, x, create_graph=True)[0]
         quad = t_jac(linear_more, x) / 2
     with torch.no_grad():
         linear = linear_more - 2 * quad @ x
@@ -270,15 +271,14 @@ def get_quadratic_terms(func, x):
     return quad, linear, const
 
 
-def cbf2_quadratic_constraint(h_func, control_affine_model, x, u):
+def cbc2_quadratic_terms(h_func, control_affine_model, x, u):
     """
     cbc2.mean(x) ≥ √(1-δ)/δ cbc2.k(x,x')
     """
     mean = lambda up: cbc2_gp(h_func, control_affine_model, up).mean(x)
-    k_func = lambda up: cbc2_gp(h_func, control_affine_model, up).knl(
-        x, x.detach().clone())
+    k_func = lambda up: cbc2_gp(h_func, control_affine_model, up).knl(x, x)
 
-    assert mean(u) > 0, 'cbf2 should be at least satisfied in expectation'
+    #assert mean(u) > 0, 'cbf2 should be at least satisfied in expectation'
     mean_A, mean_b = get_affine_terms(mean, u)
     k_Q, k_p, k_r = get_quadratic_terms(k_func, u)
     #ratio = (1-δ) / δ

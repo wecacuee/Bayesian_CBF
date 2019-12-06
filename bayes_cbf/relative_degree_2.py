@@ -21,7 +21,9 @@ class AffineGP:
 
     def knl(self, x, xp):
         affine, f = self.affine, self.f
-        return affine(x).T @ f.knl(x, xp) @ affine(x)
+        var = affine(x).T @ f.knl(x, xp) @ affine(x)
+        assert (var >= 0).any()
+        return var
 
     def covar_f(self, x, xp):
         affine, f = self.affine, self.f
@@ -46,7 +48,7 @@ class GradientGP:
         xp = xp.requires_grad_(True)
         grad_k = torch.autograd.grad(f.knl(x, xp), x, create_graph=True)[0]
         Hxx_k = t_jac(grad_k, xp)
-        return Hxx_k
+        return Hxx_k # must be positive definite
 
     def covar_g(self, covar_fg_func, x, xp):
         """
@@ -107,6 +109,7 @@ class QuadraticFormOfGP:
                 + g.mean(x).T @ covar_gf(x, xp) @ f.mean(xp) * 2
                 + g.mean(x).T @ f.knl(x, xp) @ f.mean(xp)
                 + f.mean(x).T @ g.knl(x, xp) @ f.mean(xp))
+        assert (k_quad >= 0).any()
         return k_quad
 
     def covar_h(self, covar_hf, covar_hg, x, xp):
@@ -139,7 +142,9 @@ class AddGP:
 
     def knl(self, x, xp):
         f, g, covar_fg = self.f, self.g, self.covar_fg
-        return f.knl(x, xp) + g.knl(x, xp) + 2*covar_fg(x, xp)
+        var = f.knl(x, xp) + g.knl(x, xp) + 2*covar_fg(x, xp)
+        assert (var >= 0).any()
+        return var
 
     def covar_f(self, x, xp):
         f, g, covar_fg = self.f, self.g, self.covar_fg
@@ -246,23 +251,20 @@ def get_quadratic_terms(func, x):
     return quad, linear, const
 
 
-def cbf2_quadratic_constraint(h_func, control_affine_model, x, u, δ):
+def cbf2_quadratic_constraint(h_func, control_affine_model, x, u):
     """
     cbc2.mean(x) ≥ √(1-δ)/δ cbc2.k(x,x')
-
     """
     mean = lambda up: cbc2_gp(h_func, control_affine_model.fu_func_gp(up)).mean(x)
     k_func = lambda up: cbc2_gp(h_func, control_affine_model.fu_func_gp(up)).knl(x,x)
 
     assert mean(u) > 0, 'cbf2 should be at least satisfied in expectation'
     mean_A, mean_b = get_affine_terms(mean, u)
-    mean_Q = mean_A.T @ mean_A
-    mean_p = 2 * mean_A @ mean_b if mean_b.ndim else 2 * mean_A * mean_b
-    mean_r = mean_b @ mean_b if mean_b.ndim else mean_b * mean_b
+    #mean_Q = mean_A.T @ mean_A
+    #mean_p = 2 * mean_A @ mean_b if mean_b.ndim else 2 * mean_A * mean_b
+    #mean_r = mean_b @ mean_b if mean_b.ndim else mean_b * mean_b
+    print("variance must be postitive: {}".format(k_func(u)))
     k_Q, k_p, k_r = get_quadratic_terms(k_func, u)
-    ratio = (1-δ) / δ
-    return ratio * k_Q - mean_Q, ratio * k_p - mean_p, ratio * k_r - mean_r
-
-
-
+    #ratio = (1-δ) / δ
+    return (mean_A, mean_b), (k_Q, k_p, k_r)
 

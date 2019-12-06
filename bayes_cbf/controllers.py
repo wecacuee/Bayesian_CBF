@@ -111,6 +111,9 @@ def controller_qcqp(u0, objective, quadratic_contraints):
     prob.solve(solver=cp.GUROBI)
     return u.value
 
+class InfeasibleOptimization(Exception):
+    pass
+
 def controller_qcqp_gurobi(u0, quad_objective, quadratic_contraints):
     import gurobipy as gp
     from gurobipy import GRB
@@ -126,4 +129,10 @@ def controller_qcqp_gurobi(u0, quad_objective, quadratic_contraints):
         Q, c, const = qc
         m.addMQConstr(Q, c, "<", -const, xQ_L=u, xQ_R=u, xc=u, name="%d" % i)
     m.optimize()
+    if m.getAttr(GRB.Attr.Status) == GRB.OPTIMAL:
+        return u.X
+    elif m.getAttr(GRB.Attr.Status) == GRB.INFEASIBLE:
+        raise InfeasibleOptimization("Optimal value not found. Problem is infeasible.")
+    elif m.getAttr(GRB.Attr.Status) == GRB.UNBOUNDED:
+        raise InfeasibleOptimization("Optimal value not found. Problem is unbounded.")
     return u.X

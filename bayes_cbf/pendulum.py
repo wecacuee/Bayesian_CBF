@@ -372,13 +372,14 @@ def learn_dynamics(
     #gp = GaussiatorchrocessRegressor(kernel=kernel_xu,
     #                              alpha=1e6).fit(Z_shuffled, Y_shuffled)
     dgp = ControlAffineRegressor(Xtrain.shape[-1], Utrain.shape[-1])
-    dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50, lr=0.01)
+    dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=200)
     #dgp.save()
 
     # Plot the pendulum trajectory
     plot_results(torch.arange(U.shape[0]), omega_vec=X[:, 0],
                  theta_vec=X[:, 1], u_vec=U[:, 0])
-    fig = plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func_orig, pend_env.f_func,
+    fig = plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func_orig,
+                               pend_env.f_func,
                                axtitle="f(x)[{i}]")
     plt_savefig_with_data(fig, 'plots/f_orig_learned_vs_f_true.pdf')
     fig = plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func_custom,
@@ -392,17 +393,17 @@ def learn_dynamics(
     plt_savefig_with_data(fig, 'plots/g_learned_vs_g_true.pdf')
 
     # within train set
-    FX_98, FXcov_98 = dgp.predict(X[98:99,:], return_cov=True)
-    dX_98 = FX_98[0, ...].T @ UH[98, :]
+    dX_98, _ = dgp.predict_flatten(X[98:99,:], U[98:99, :])
+    #dX_98 = FX_98[0, ...].T @ UH[98, :]
     #dXcov_98 = UH[98, :] @ FXcov_98 @ UH[98, :]
     if not torch.allclose(dX[98], dX_98, rtol=0.05, atol=0.05):
-        print("Train sample: expected:{}, got:{}, cov:{}".format(dX[98], dX_98, FXcov_98))
+        print("Test failed: Train sample: expected:{}, got:{}, cov:{}".format(dX[98], dX_98, FXcov_98))
 
     # out of train set
-    FXNp1, FXNp1cov = dgp.predict(X[N+1:N+2,:], return_cov=True)
-    dX_Np1 = FXNp1[0, ...].T @ UH[N+1, :]
+    dX_Np1, _ = dgp.predict_flatten(X[N+1:N+2,:], U[N+1:N+2,:])
+    #dX_Np1 = FXNp1[0, ...].T @ UH[N+1, :]
     if not torch.allclose(dX[N+1], dX_Np1, rtol=0.05, atol=0.05):
-        print("Test sample: expected:{}, got:{}, cov:{}".format( dX[N+1], dX_Np1, FXNp1cov))
+        print("Test failed: Test sample: expected:{}, got:{}, cov:{}".format( dX[N+1], dX_Np1, FXNp1cov))
 
     return dgp, dX, U
 
@@ -656,7 +657,7 @@ class ConstraintPlotter:
             shape = ((math.ceil(nplots / 2), 2) if nplots >= 2 else (nplots,))
             fig, axs = plt.subplots(*shape)
             fig.subplots_adjust(wspace=0.35, hspace=0.5)
-            self.axes = axs.flatten() if hasattr(axs, "flatten") else torch.tensor([axs])
+            self.axes = axs.flatten() if hasattr(axs, "flatten") else np.array([axs])
 
         if len(self.constraint_hists) < nfuncs:
             self.constraint_hists = self.constraint_hists + [
@@ -724,13 +725,14 @@ class ControlCBFCLFLearned(Controller):
                  u_dim=1,
                  gamma_sr=1,
                  delta_sr=10,
-                 train_every_n_steps=50,
+                 train_every_n_steps=200,
                  mean_dynamics_model_class=MeanPendulumDynamicsModel,
                  egreedy_scheme=[1, 0.01],
                  iterations=1000,
                  max_unsafe_prob=0.01,
                  dt=0.001,
                  max_train=250,
+                 constraint_plotter_class=ConstraintPlotter,
     ):
         self.Xtrain = []
         self.Utrain = []
@@ -744,6 +746,7 @@ class ControlCBFCLFLearned(Controller):
         self.x_goal = torch.tensor([theta_goal, omega_goal])
         self.x_quad_goal_cost = torch.tensor(quad_goal_cost)
         self.axes = None
+        self.constraint_plotter = constraint_plotter_class()
 
     def train(self):
         if not len(self.Xtrain):
@@ -767,7 +770,8 @@ class ControlCBFCLFLearned(Controller):
         if XdotTrain.shape[0] > self.max_train:
             indices = torch.randint(XdotTrain.shape[0], (self.max_train,))
             self.model.fit(Xtrain[indices, :], Utrain[indices, :],
-                           XdotTrain[indices, :])
+                           XdotTrain[indices, :],
+                           training_iter=200)
         else:
             self.model.fit(Xtrain[:-1, :], Utrain[:-1, :], XdotTrain)
 
@@ -778,7 +782,7 @@ class ControlCBFCLFLearned(Controller):
         T = self.iterations
         return math.exp( i * (ee - se) / T )
 
-    def quad_objective(self, i, x, u0):
+    def quad_objective(self, i, x, u0, convert_out=to_numpy):
         x_g = self.x_goal
         P = self.x_quad_goal_cost
         R = torch.eye(self.u_dim)
@@ -800,15 +804,27 @@ class ControlCBFCLFLearned(Controller):
         c = -2.0*(λ * R @ u0 + (1-λ) * Gx.T @ P @ (x_g - fx))
         # Constant term + (1-λ)(x_g-fx)ᵀ P (x_g-fx) + λ u₀ᵀRu₀
         const = (1-λ) * (x_g-fx).T @ P @ (x_g-fx) + λ * u0.T @ R @ u0
-        return list(map(to_numpy, (Q, c, const)))
+        return list(map(convert_out, (Q, c, const)))
 
 
-    def quadtratic_contraints(self, i, x, u0):
-        A, b, c = cbf2_quadratic_constraint(self.cbf2.h2_col,
-                                            self.model,
-                                            x, u0,
-                                            self.max_unsafe_prob)
-        return [list(map(to_numpy, (A, b, c)))]
+    def quadtratic_contraints(self, i, x, u0, convert_out=to_numpy):
+        (mean_A, mean_b), (k_Q, k_p, k_r) = cbf2_quadratic_constraint(self.cbf2.h2_col,
+                                                                      self.model,
+                                                                      x, u0)
+        with torch.no_grad():
+            δ = self.max_unsafe_prob
+            ratio = (1-δ)/δ
+            print("at x; u: {}; {}".format( x, u0))
+            print("mean CBC2: ", mean_A.T @ u0 + mean_b)
+            print("var CBC2: ", u0.T @ k_Q @ u0 + k_p.T @ u0 + k_r)
+            print("ratio * var CBC2: ", ratio * (u0.T @ k_Q @ u0 + k_p.T @ u0 + k_r))
+            mean_Q = mean_A.T @ mean_A
+            A = k_Q * ratio - mean_Q
+            mean_p = (2 * mean_A @ mean_b) if mean_b.ndim else (2 * mean_A * mean_b)
+            b = k_p * ratio - mean_p
+            mean_r = (mean_b @ mean_b) if mean_b.ndim else (mean_b * mean_b)
+            c = k_r * ratio - mean_r
+        return [list(map(convert_out, (A, b, c)))]
 
 
     def control(self, xi, i=None):
@@ -820,14 +836,16 @@ class ControlCBFCLFLearned(Controller):
         assert torch.all((xi[0] <= math.pi) & (-math.pi <= xi[0]))
 
         if self._has_been_trained_once:
-            u0 = torch.rand(self.u_dim, dtype=xi.dtype, device=xi.device)
+            u0 = torch.rand(self.u_dim, dtype=xi.dtype, device=xi.device) * 2 - 1
             u = controller_qcqp_gurobi(to_numpy(u0),
                                        self.quad_objective(i, xi, u0),
                                        self.quadtratic_contraints(i, xi, u0))
             u = torch.from_numpy(u).to(dtype=xi.dtype, device=xi.device)
-            self.constraint_plotter.plot_constraints(
-                [NamedFunc(lambda _, up: up.T @ Q @ up + c.T @ up + const, r"CBC2")
-                 for Q, c, const in self.quadtratic_contraints(i, xi, u0)],
+            self.constraint_plotter.plot_constraints([
+                    NamedFunc(lambda _, up: up.T @ Q @ up + c.T @ up + const, r"CBC2")
+                    for Q, c, const in self.quadtratic_contraints(
+                            i, xi, u0, convert_out=lambda x: x)
+                ],
                 xi, u)
         else:
             u = torch.rand(self.u_dim)
@@ -871,5 +889,5 @@ def run_pendulum_control_online_learning(numSteps=15000):
 if __name__ == '__main__':
     #run_pendulum_control_trival()
     #run_pendulum_control_cbf_clf()
-    learn_dynamics()
-    #run_pendulum_control_online_learning()
+    #learn_dynamics()
+    run_pendulum_control_online_learning()

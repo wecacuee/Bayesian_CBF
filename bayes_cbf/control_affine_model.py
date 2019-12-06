@@ -383,12 +383,20 @@ class ControlAffineRegressor:
         else:
             Utest = self._ensure_device_dtype(Utest_in)
             UHtest = torch.cat((Utest.new_full((Utest.shape[0], 1), UHfill), Utest), dim=-1)
-        MXUHtrain = self.model.train_inputs[0]
-        Mtrain, Xtrain, UHtrain = self.model.decoder.decode(MXUHtrain)
-        nsamples = Xtrain.size(0)
         k = self.model.covar_module.data_covar_module
         A = self.model.covar_module.task_covar_module.U.covar_matrix.evaluate()
         B = self.model.covar_module.task_covar_module.V.covar_matrix.evaluate()
+
+        fu_mean_test = self.model.mean_module(Xtest).reshape(
+            Xtest.shape[0], *self.model.matshape).transpose(-2, -1).bmm(
+                UHtest.unsqueeze(-1)).squeeze(-1)
+        if self.model.train_inputs is None:
+            # We do not have training data just return the mean and prior covariance
+            return fu_mean_test, k(Xtest, Xtest).evaluate(), A
+
+        MXUHtrain = self.model.train_inputs[0]
+        Mtrain, Xtrain, UHtrain = self.model.decoder.decode(MXUHtrain)
+        nsamples = Xtrain.size(0)
         Y = self.model.train_targets.reshape(nsamples, -1) - self.model.mean_module(Xtrain).reshape(nsamples, *self.model.matshape).transpose(-2,-1).bmm(UHtrain.unsqueeze(-1)).squeeze(-1)
         KXX = k(Xtrain, Xtrain).evaluate()
         uBu = UHtrain @ B @ UHtrain.T
@@ -401,9 +409,7 @@ class ControlAffineRegressor:
                      else kb_star)
         kb_star_starp = k(Xtest, Xtestp).evaluate() * (UHtest @ B @ UHtest.t())
         α = torch.cholesky_solve(Y, Kb_sqrt) # check the shape of Y
-        mean = self.model.mean_module(Xtest).reshape(
-            Xtest.shape[0], *self.model.matshape).transpose(-2, -1).bmm(
-                UHtest.unsqueeze(-1)).squeeze(-1) + kb_star.t() @ α
+        mean = fu_mean_test + kb_star.t() @ α
         v = torch.solve(kb_star, Kb_sqrt).solution
         vp = torch.solve(kb_star_p, Kb_sqrt).solution if Xtestp_in is not None else v
         scalar_var = kb_star_starp - v.t() @ vp
@@ -450,13 +456,22 @@ class ControlAffineRegressor:
         return (mean.to(device=Xtest_in.device, dtype=Xtest_in.dtype),
                 cov.to(device=Xtest_in.device, dtype=Xtest_in.dtype))
 
-    def f_func_orig(self, Xtest, return_cov=False):
+    def f_func_orig(self, Xtest_in, return_cov=False):
+        Xtest = (Xtest_in.unsqueeze(0)
+                 if Xtest_in.ndim == 1
+                 else Xtest_in)
         if return_cov:
             mean_Fx, cov_Fx = self.predict(Xtest, return_cov=return_cov)
             cov_fx = cov_Fx[:, :1, :1]
+            if Xtest_in.ndim == 1:
+                cov_fx = cov_fx.squeeze(0)
+            cov_fx = cov_fx.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
         else:
             mean_Fx = self.predict(Xtest, return_cov=return_cov)
         mean_fx = mean_Fx[:, 0, :]
+        if Xtest_in.ndim == 1:
+            mean_fx = mean_fx.squeeze(0)
+        mean_fx = mean_fx.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
         return (mean_fx, cov_fx) if return_cov else mean_fx
 
     def f_func_custom(self, Xtest_in, return_cov=False, Xtestp_in=None):

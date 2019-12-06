@@ -80,6 +80,8 @@ def plot_learned_2D_func(Xtrain, learned_f_func, true_f_func,
         fig, axs = plt.subplots(3,2)
     else:
         fig = axs.flatten()[0].figure
+        fig.clf()
+        axs = fig.subplots(3,2)
     theta_range = slice(Xtrain[:, 0].min(), Xtrain[:, 0].max(),
                         (Xtrain[:, 0].max() - Xtrain[:, 0].min()) / 20)
     omega_range = slice(Xtrain[:, 1].min(), Xtrain[:, 1].max(),

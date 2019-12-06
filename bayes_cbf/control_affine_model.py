@@ -317,10 +317,13 @@ class ControlAffineRegressor(DynamicsModel):
         return (mean, cov) if return_cov else mean
         #return mean, cov
 
-    def _perturbed_cholesky_compute(self, Kb,
+    def _perturbed_cholesky_compute(self, k, B, Xtrain, UHtrain,
                            cholesky_tries=10,
                            cholesky_perturb_init=1e-5,
                            cholesky_perturb_scale=10):
+        KXX = k(Xtrain, Xtrain).evaluate()
+        uBu = UHtrain @ B @ UHtrain.T
+        Kb = KXX * uBu
 
         # Kb can be singular because of repeated datasamples
         # Add diagonal jitter
@@ -342,16 +345,20 @@ class ControlAffineRegressor(DynamicsModel):
             raise
         return Kb_sqrt
 
-    def _perturbed_cholesky(self, Kb, cache_key="perturbed_cholesky" ):
+    def _perturbed_cholesky(self, k, B, Xtrain, UHtrain,
+                            cache_key="perturbed_cholesky" ):
         if cache_key not in self._cache:
-            self._cache[cache_key] = self._perturbed_cholesky_compute(Kb)
+            self._cache[cache_key] = self._perturbed_cholesky_compute(
+                k, B, Xtrain, UHtrain)
 
         return self._cache[cache_key]
 
     def clear_cache(self):
         self._cache = dict()
 
-    def custom_predict(self, Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None):
+    def custom_predict(self, Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None,
+                       Utestp_in=None, UHfillp=1,
+                       compute_cov=True):
         """
         Gpytorch is complicated. It uses terminology like fantasy something,
         something. Even simple exact prediction strategy uses Laczos. I do not
@@ -389,7 +396,7 @@ class ControlAffineRegressor(DynamicsModel):
            2. α := Lᵀ \ ( L \ Y )
            3. μ := kb*ᵀ α
            4. v := L \ kb*
-           5. k* := k(x*,x*) - vᵀV
+           5. k* := k(x*,x*) - vᵀv
            6. log p(y|X) := -0.5 yᵀ α - ∑ log Lᵢᵢ - 0.5 n log(2π)
         """
         Xtest = self._ensure_device_dtype(Xtest_in)
@@ -399,7 +406,15 @@ class ControlAffineRegressor(DynamicsModel):
             UHtest[:, 0] = 1
         else:
             Utest = self._ensure_device_dtype(Utest_in)
-            UHtest = torch.cat((Utest.new_full((Utest.shape[0], 1), UHfill), Utest), dim=-1)
+            UHtest = torch.cat((Utest.new_full((Utest.shape[0], 1), UHfill),
+            Utest), dim=-1)
+        if Utestp_in is None:
+            UHtestp = UHtest
+        else:
+            Utestp = self._ensure_device_dtype(Utestp_in)
+            UHtestp = torch.cat((Utest.new_full((Utestp.shape[0], 1), UHfillp),
+                                 Utestp), dim=-1)
+
         k = self.model.covar_module.data_covar_module
         A = self.model.covar_module.task_covar_module.U.covar_matrix.evaluate()
         B = self.model.covar_module.task_covar_module.V.covar_matrix.evaluate()
@@ -415,23 +430,28 @@ class ControlAffineRegressor(DynamicsModel):
         Mtrain, Xtrain, UHtrain = self.model.decoder.decode(MXUHtrain)
         nsamples = Xtrain.size(0)
         Y = self.model.train_targets.reshape(nsamples, -1) - self.model.mean_module(Xtrain).reshape(nsamples, *self.model.matshape).transpose(-2,-1).bmm(UHtrain.unsqueeze(-1)).squeeze(-1)
-        KXX = k(Xtrain, Xtrain).evaluate()
-        uBu = UHtrain @ B @ UHtrain.T
-        Kb = KXX * uBu
 
-        Kb_sqrt = self._perturbed_cholesky(Kb)
+        # 1. L := cholesky(K)
+        Kb_sqrt = self._perturbed_cholesky(k, B, Xtrain, UHtrain)
         kb_star = k(Xtrain, Xtest).evaluate() * (UHtrain @ B @ UHtest.t())
-        kb_star_p = (k(Xtrain, Xtestp).evaluate() * (UHtrain @ B @ UHtest.t())
+        # 2. α := Lᵀ \ ( L \ Y )
+        α = torch.cholesky_solve(Y, Kb_sqrt) # check the shape of Y
+        # 3. μ := kb*ᵀ α
+        mean = fu_mean_test + kb_star.t() @ α
+        if compute_cov:
+            kb_star_p = (k(Xtrain, Xtestp).evaluate() * (UHtrain @ B @ UHtestp.t())
                      if Xtestp_in is not None
                      else kb_star)
-        kb_star_starp = k(Xtest, Xtestp).evaluate() * (UHtest @ B @ UHtest.t())
-        α = torch.cholesky_solve(Y, Kb_sqrt) # check the shape of Y
-        mean = fu_mean_test + kb_star.t() @ α
-        v = torch.solve(kb_star, Kb_sqrt).solution
-        vp = torch.solve(kb_star_p, Kb_sqrt).solution if Xtestp_in is not None else v
-        scalar_var = kb_star_starp - v.t() @ vp
-        return mean, scalar_var, A
-
+            kb_star_starp = k(Xtest, Xtestp).evaluate() * (UHtest @ B @ UHtestp.t())
+            # 4. v := L \ kb*
+            v = torch.solve(kb_star, Kb_sqrt).solution
+            vp = torch.solve(kb_star_p, Kb_sqrt).solution if Xtestp_in is not None else v
+            # 5. k* := k(x*,x*) - vᵀv
+            scalar_var = kb_star_starp - v.t() @ vp
+            covar_mat = scalar_var.reshape(-1, 1, 1) * A
+        else:
+            covar_mat = 0 * A
+        return mean, covar_mat
 
     def predict_flatten(self, Xtest_in, Utest_in):
         """
@@ -473,7 +493,7 @@ class ControlAffineRegressor(DynamicsModel):
         return (mean.to(device=Xtest_in.device, dtype=Xtest_in.dtype),
                 cov.to(device=Xtest_in.device, dtype=Xtest_in.dtype))
 
-    def f_func_orig(self, Xtest_in, return_cov=False):
+    def f_func(self, Xtest_in, return_cov=False):
         Xtest = (Xtest_in.unsqueeze(0)
                  if Xtest_in.ndim == 1
                  else Xtest_in)
@@ -491,25 +511,29 @@ class ControlAffineRegressor(DynamicsModel):
         mean_fx = mean_fx.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
         return (mean_fx, cov_fx) if return_cov else mean_fx
 
-    def f_func_custom(self, Xtest_in, return_cov=False, Xtestp_in=None):
+    def f_func_mean(self, Xtest_in):
         Xtest = (Xtest_in.unsqueeze(0)
                  if Xtest_in.ndim == 1
                  else Xtest_in)
-        mean_f, var_f, A =  self.custom_predict(Xtest, Xtestp_in=Xtestp_in)
-        var_f = var_f.reshape(-1, 1, 1) * A
+        mean_f, _ =  self.custom_predict(Xtest, compute_cov=False)
         if Xtest_in.ndim == 1:
             mean_f = mean_f.squeeze(0)
+        return mean_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
+
+    def f_func_knl(self, Xtest_in, Xtestp_in):
+        Xtest = (Xtest_in.unsqueeze(0)
+                 if Xtest_in.ndim == 1
+                 else Xtest_in)
+        Xtestp = (Xtestp_in.unsqueeze(0)
+                 if Xtestp_in.ndim == 1
+                 else Xtestp_in)
+        _, var_f =  self.custom_predict(Xtest, Xtestp_in=Xtestp, compute_cov=True)
+        if Xtest_in.ndim == 1:
             var_f = var_f.squeeze(0)
-        mean_f = mean_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
-        var_f = var_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
-        return (mean_f, var_f) if return_cov else mean_f
+        return var_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
 
-    f_func = f_func_orig
-
-    def f_func_gp(self, Xtest):
-        return GaussianProcess(
-            self.f_func_custom(Xtest),
-            self.f_func_custom(Xtest, return_cov=True)[1])
+    def f_func_gp(self):
+        return GaussianProcessFunc(self.f_func_mean, self.f_func_knl)
 
     def fu_func_mean(self, Utest_in, Xtest_in):
         Xtest = (Xtest_in.unsqueeze(0)
@@ -518,7 +542,7 @@ class ControlAffineRegressor(DynamicsModel):
         Utest = (Utest_in.unsqueeze(0)
                  if Utest_in.ndim == 1
                  else Utest_in)
-        mean_f, var_f, A =  self.custom_predict(Xtest, Utest)
+        mean_f, _ =  self.custom_predict(Xtest, Utest, compute_cov=False)
         if Xtest_in.ndim == 1:
             mean_f = mean_f.squeeze(0)
         mean_f = mean_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
@@ -534,9 +558,9 @@ class ControlAffineRegressor(DynamicsModel):
         Xtestp = (Xtestp_in.unsqueeze(0)
                  if Xtestp_in.ndim == 1
                  else Xtestp_in)
-        mean_f, var_f, A = self.custom_predict(Xtest, Utest,
-                                               Xtestp_in=Xtestp)
-        var_f = var_f.reshape(-1, 1, 1) * A
+        _, var_f = self.custom_predict(Xtest, Utest,
+                                       Xtestp_in=Xtestp,
+                                       compute_cov=True)
         if Xtest_in.ndim == 1:
             var_f = var_f.squeeze(0)
         var_f = var_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
@@ -546,6 +570,26 @@ class ControlAffineRegressor(DynamicsModel):
     def fu_func_gp(self, Utest_in):
         return GaussianProcessFunc(mean=partial(self.fu_func_mean, Utest_in),
                                    knl=partial(self.fu_func_knl, Utest_in))
+
+    def covar_fu_f(self, Utest_in, Xtest_in, Xtestp_in):
+        Xtest = (Xtest_in.unsqueeze(0)
+                 if Xtest_in.ndim == 1
+                 else Xtest_in)
+        Utest = (Utest_in.unsqueeze(0)
+                 if Utest_in.ndim == 1
+                 else Utest_in)
+        Xtestp = (Xtestp_in.unsqueeze(0)
+                 if Xtestp_in.ndim == 1
+                 else Xtestp_in)
+        Utestp = torch.zeros_like(Utest)
+        mean_f, var_f = self.custom_predict(Xtest, Utest,
+                                            Xtestp_in=Xtestp,
+                                            Utestp_in=Utestp,
+                                            compute_cov=True)
+        if Xtest_in.ndim == 1:
+            var_f = var_f.squeeze(0)
+        var_f = var_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
+        return var_f
 
     def g_func(self, Xtest_in, return_cov=False):
         assert not return_cov, "Don't know what matrix covariance looks like"
@@ -563,8 +607,9 @@ class ControlAffineRegressor(DynamicsModel):
         Utest = (Utest_in.unsqueeze(0)
                  if Utest_in.ndim == 1
                  else Utest_in)
-        mean_gu, var_gu, A = self.custom_predict(Xtest, Utest, UHfill=0,
-                                                 Xtestp_in=Xtestp_in)
+        mean_gu, var_gu = self.custom_predict(Xtest, Utest, UHfill=0,
+                                              Xtestp_in=Xtestp_in,
+                                              compute_cov=True)
         if Xtest_in.ndim == 1 and Utest_in.ndim == 1:
             mean_gu = mean_gu.squeeze(0)
             var_gu = var_gu.squeeze(0)

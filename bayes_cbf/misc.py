@@ -4,6 +4,7 @@ Home for functions/classes that haven't find a home of their own
 from functools import wraps, partial
 from itertools import zip_longest
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 import inspect
 
 import torch
@@ -110,3 +111,11 @@ class DynamicsModel(ABC):
         """
 
 
+@contextmanager
+def variable_required_grad(x):
+    old_x_requires_grad = x.requires_grad
+    try:
+        x.requires_grad_(True)
+        yield x
+    finally:
+        x.requires_grad_(old_x_requires_grad)

@@ -27,7 +27,8 @@ CALOG.setLevel(logging.WARNING)
 from bayes_cbf.plotting import plot_results, plot_learned_2D_func, plt_savefig_with_data
 from bayes_cbf.sampling import sample_generator_trajectory, controller_sine
 from bayes_cbf.controllers import cvxopt_solve_qp, control_QP_cbf_clf, controller_qcqp_gurobi
-from bayes_cbf.misc import t_vstack, t_hstack, to_numpy, store_args, DynamicsModel
+from bayes_cbf.misc import (t_vstack, t_hstack, to_numpy, store_args,
+                            DynamicsModel, variable_required_grad)
 from bayes_cbf.relative_degree_2 import cbf2_quadratic_constraint
 
 
@@ -562,6 +563,10 @@ class RadialCBFRelDegree2(NamedAffineFunc):
 
     def lie_f_h2_col(self, x):
         return self.grad_h2_col(x) @ self.f_func(x)
+
+    def grad_lie_f_h2_col(self, x):
+        with variable_required_grad(x):
+            return torch.autograd.grad(self.lie_f_h2_col(x), x)[0]
 
     def lie2_f_h_col(self, x):
         (θ, ω) = x

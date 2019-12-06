@@ -138,7 +138,7 @@ def test_GP_train_predict(n=2, m=3,
                     XdotTest[i, :], FXTexpected[i, :, :].T @ UHtest[i, :])
 
         # check predicting train values
-        XdotTrain_mean, XdotTrain_cov, A = dgp.custom_predict(Xtrain[:-1], Utrain[:-1])
+        XdotTrain_mean = dgp.fu_func_mean(Utrain[:-1], Xtrain[:-1])
         assert XdotTrain_mean.detach().cpu().numpy() == pytest.approx(
             XdotTrain[:-1].detach().cpu().numpy(), rel=rel_tol, abs=abs_tol)
 
@@ -153,10 +153,10 @@ def test_GP_train_predict(n=2, m=3,
             #abs=XdotGot_cov.flatten().max())
 
         # check predicting test values
-        Xdot_mean, Xdot_cov, A = dgp.custom_predict(Xtest, Utest)
+        Xdot_mean = dgp.fu_func_mean(Utest, Xtest)
         assert Xdot_mean.detach().cpu().numpy() == pytest.approx(
             XdotTest.detach().cpu().numpy(), rel=rel_tol, abs=abs_tol)
-        return dgp
+        return dgp, dynamics_model
 
 
 def relpath(path,

@@ -7,59 +7,88 @@ from bayes_cbf.control_affine_model import GaussianProcess
 from bayes_cbf.relative_degree_2 import (AffineGP, GradientGP,
                                          QuadraticFormOfGP, Lie1GP, Lie2GP,
                                          get_quadratic_terms)
+from bayes_cbf.misc import to_numpy
 from tests.test_control_affine_regression import test_pendulum_train_predict
 
 import pytest
 
-_global_dgp = None
+_global_cache = None
 @pytest.fixture
-def dgp():
-    global _global_dgp
-    if _global_dgp is None:
-        _global_dgp = test_pendulum_train_predict()
-    return _global_dgp
+def dynamic_models():
+    global _global_cache
+    if _global_cache is None:
+        _global_cache = test_pendulum_train_predict()
+    return _global_cache
 
 
-def test_affine_gp(dgp):
-    xtest = torch.rand(2)
-    utest = torch.rand(1)
-    Xtest = xtest.unsqueeze(0)
-    cbf2 = RadialCBFRelDegree2(dgp)
+def get_close_xtest_sample(learned_model):
+    MXUHtrain = learned_model.model.train_inputs[0]
+    train_size = MXUHtrain.shape[0]
+    xtrain = MXUHtrain[torch.randint(train_size, ()), 1:3].cpu()
+    xtest = xtrain + 1e-3 * torch.rand_like(xtrain)
+    return xtest
+
+
+def test_affine_gp(dynamic_models):
+    learned_model, true_model = dynamic_models
+    true_cbf2 = RadialCBFRelDegree2(true_model)
+    learned_cbf2 = RadialCBFRelDegree2(learned_model)
+    xtest = get_close_xtest_sample(learned_model)
     l1h = AffineGP(
-        cbf2.grad_h2_col,
-        dgp.fu_func_gp(utest))
-    l1h.mean(xtest)
-    l1h.knl(xtest, xtest)
+        learned_cbf2.grad_h2_col,
+        learned_model.f_func_gp())
+    assert to_numpy(l1h.mean(xtest)) == pytest.approx(
+        to_numpy(true_cbf2.lie_f_h2_col(xtest)), rel=0.1)
+    l1h.knl(xtest, xtest.detach().clone())
     return l1h
 
-def test_gradient_gp(dgp):
-    l1h = test_affine_gp(dgp)
+
+def test_gradient_gp(dynamic_models):
+    learned_model, true_model = dynamic_models
+    l1h = test_affine_gp(dynamic_models)
+    true_cbf2 = RadialCBFRelDegree2(true_model)
     grad_l1h = GradientGP(l1h)
-    xtest = torch.rand(2)
-    grad_l1h.mean(xtest)
-    grad_l1h.knl(xtest, xtest)
+    xtest = get_close_xtest_sample(learned_model)
+    assert to_numpy(grad_l1h.mean(xtest)) == pytest.approx(to_numpy(true_cbf2.grad_lie_f_h2_col(xtest)), abs=0.1, rel=0.1)
+    grad_l1h.knl(xtest, xtest.detach().clone())
     return grad_l1h, l1h
 
-def test_quadratic_form(dgp):
-    grad_l1h, l1h = test_gradient_gp(dgp)
+
+def test_quadratic_form(dynamic_models):
+    learned_model, true_model = dynamic_models
+    true_cbf2 = RadialCBFRelDegree2(true_model)
+    grad_l1h, l1h = test_gradient_gp(dynamic_models)
     utest = torch.rand(1)
-    covar_grad_l1h_fu = partial(grad_l1h.covar_g, l1h.covar_f)
-    l2h = QuadraticFormOfGP(grad_l1h, dgp.fu_func_gp(utest), covar_grad_l1h_fu)
-    xtest = torch.rand(2)
-    l2h.mean(xtest)
-    l2h.knl(xtest, xtest)
+    covar_fu_f = partial(learned_model.covar_fu_f, utest)
+    covar_Lie1_fu = partial(l1h.covar_g, covar_fu_f)
+    covar_grad_l1h_fu = partial(grad_l1h.covar_g, covar_Lie1_fu)
+    l2h = QuadraticFormOfGP(grad_l1h, learned_model.fu_func_gp(utest),
+                            covar_grad_l1h_fu)
+    xtest = get_close_xtest_sample(learned_model)
+    assert to_numpy(l2h.mean(xtest)) == pytest.approx(
+        to_numpy(true_cbf2.lie2_f_h_col(xtest)), abs=0.1, rel=0.1)
+    l2h.knl(xtest, xtest.detach().clone())
     return l2h
 
-def test_lie2_gp(dgp):
-    xtest = torch.rand(2)
-    Xtest = xtest.unsqueeze(0)
+
+def test_lie2_gp(dynamic_models):
+    learned_model, true_model = dynamic_models
+    true_cbf2 = RadialCBFRelDegree2(true_model)
+    xtest = get_close_xtest_sample(learned_model)
     utest = torch.rand(1)
-    Utest = utest.unsqueeze(0)
-    cbf2 = RadialCBFRelDegree2(dgp)
-    fu_func = dgp.fu_func_gp(utest)
-    L2h = Lie2GP(Lie1GP(cbf2.h2_col, fu_func), fu_func)
+    cbf2 = RadialCBFRelDegree2(dynamic_models)
+    f_gp = learned_model.f_func_gp()
+    covar_fu_f = partial(learned_model.covar_fu_f, utest)
+    fu_gp = learned_model.fu_func_gp(utest)
+    L2h = Lie2GP(Lie1GP(cbf2.h2_col, f_gp), covar_fu_f, fu_gp)
     L2h.mean(xtest)
-    L2h.knl(xtest, xtest)
+    L2h.knl(xtest, xtest.detach().clone())
+
+
+def test_cbf2_gp(dynamic_models):
+    learned_model, true_model = dynamic_models
+    true_cbf2 = RadialCBFRelDegree2(true_model)
+
 
 def test_quadratic_term():
     Q = torch.eye(2)

@@ -29,7 +29,7 @@ from bayes_cbf.sampling import sample_generator_trajectory, controller_sine
 from bayes_cbf.controllers import cvxopt_solve_qp, control_QP_cbf_clf, controller_qcqp_gurobi
 from bayes_cbf.misc import (t_vstack, t_hstack, to_numpy, store_args,
                             DynamicsModel, variable_required_grad)
-from bayes_cbf.relative_degree_2 import cbc2_quadratic_terms
+from bayes_cbf.relative_degree_2 import cbc2_quadratic_terms, cbc2_gp
 
 
 class Controller(ABC):
@@ -139,7 +139,7 @@ def sampling_pendulum(dynamics_model, numSteps,
                       controller=None,
                       x0=None,
                       dt=0.01,
-                      plot_every_n_steps=100,
+                      plot_every_n_steps=20,
                       axs=None):
     assert controller is not None, 'Surprise !! Changed interface to make controller a required argument'
     m, g, l = (dynamics_model.mass, dynamics_model.gravity,
@@ -299,22 +299,24 @@ def learn_dynamics(
     #gp = GaussiatorchrocessRegressor(kernel=kernel_xu,
     #                              alpha=1e6).fit(Z_shuffled, Y_shuffled)
     dgp = ControlAffineRegressor(Xtrain.shape[-1], Utrain.shape[-1])
-    dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=200)
+    dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50)
     #dgp.save()
 
     # Plot the pendulum trajectory
+    Xtrain_numpy = Xtrain.detach().cpu().numpy()
     plot_results(torch.arange(U.shape[0]), omega_vec=X[:, 0],
                  theta_vec=X[:, 1], u_vec=U[:, 0])
-    fig = plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func,
+    axs = plot_learned_2D_func(Xtrain_numpy, dgp.f_func,
                                pend_env.f_func,
                                axtitle="f(x)[{i}]")
-    plt_savefig_with_data(fig, 'plots/f_orig_learned_vs_f_true.pdf')
-    axs = plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func_mean,
+    plt_savefig_with_data(axs.flatten()[0].figure,
+                          'plots/f_orig_learned_vs_f_true.pdf')
+    axs = plot_learned_2D_func(Xtrain_numpy, dgp.f_func_mean,
                                pend_env.f_func,
                                axtitle="f(x)[{i}]")
     plt_savefig_with_data(axs.flatten()[0].figure,
                           'plots/f_custom_learned_vs_f_true.pdf')
-    axs = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
+    axs = plot_learned_2D_func(Xtrain_numpy,
                                dgp.g_func,
                                pend_env.g_func,
                                axtitle="g(x)[{i}]")
@@ -326,14 +328,35 @@ def learn_dynamics(
     #dX_98 = FX_98[0, ...].T @ UH[98, :]
     #dXcov_98 = UH[98, :] @ FXcov_98 @ UH[98, :]
     if not torch.allclose(dX[98], dX_98, rtol=0.05, atol=0.05):
-        print("Test failed: Train sample: expected:{}, got:{}, cov:{}".format(dX[98], dX_98, FXcov_98))
+        print("Test failed: Train sample: expected:{}, got:{}, cov".format(dX[98], dX_98))
 
     # out of train set
     dX_Np1, _ = dgp.predict_flatten(X[N+1:N+2,:], U[N+1:N+2,:])
     #dX_Np1 = FXNp1[0, ...].T @ UH[N+1, :]
     if not torch.allclose(dX[N+1], dX_Np1, rtol=0.05, atol=0.05):
-        print("Test failed: Test sample: expected:{}, got:{}, cov:{}".format( dX[N+1], dX_Np1, FXNp1cov))
+        print("Test failed: Test sample: expected:{}, got:{}, cov".format( dX[N+1], dX_Np1))
 
+    true_h_func = RadialCBFRelDegree2(pend_env)
+    learned_h_func = RadialCBFRelDegree2(dgp)
+    def learned_cbc2(X):
+        l_cbc2 = torch.zeros(X.shape[0], 2)
+        for i in range(X.shape[0]):
+            cbc2 = cbc2_gp( learned_h_func.h2_col, dgp, U[N+1, :])
+            l_cbc2[i, 0] = cbc2.mean(X[i, :])
+        return l_cbc2
+    #true_cbc2 = - true_h_func.A(X[N+1, :]) @ U[N+1,:] + true_h_func.b(X[N+1, :])
+    def true_cbc2(X):
+        t_cbc2 = torch.zeros(X.shape[0], 2)
+        for i in range(X.shape[0]):
+            t_cbc2[i, 0] = - true_h_func.A(X[i, :]) @ U[N+1,:] + true_h_func.b(X[i, :])
+        return t_cbc2
+    axs = plot_learned_2D_func(Xtrain_numpy,
+                               learned_cbc2,
+                               true_cbc2,
+                               axtitle="cbc2[{i}]"
+    )
+    plt_savefig_with_data(axs.flatten()[0].figure,
+                          'plots/cbc_learned_vs_cbc_true.pdf')
     return dgp, dX, U
 
 
@@ -526,7 +549,7 @@ class RadialCBFRelDegree2(NamedAffineFunc):
         θ_c = self.cbf_col_theta
         direct = ω * torch.sin(θ-θ_c)
         abstract = self.grad_h2_col(x) @ self.f_func(x)
-        assert torch.allclose(direct, abstract)
+        assert torch.allclose(direct, abstract, atol=1e-4)
         return direct
 
 
@@ -536,7 +559,7 @@ class RadialCBFRelDegree2(NamedAffineFunc):
         direct = torch.tensor([ω * torch.cos(θ-θ_c), torch.sin(θ-θ_c)])
         with variable_required_grad(x):
             abstract = torch.autograd.grad(self.lie_f_h2_col(x), x)[0]
-        assert torch.allclose(direct, abstract)
+        assert torch.allclose(direct, abstract, atol=1e-4)
         return direct
 
     def lie2_f_h_col(self, x):
@@ -546,7 +569,7 @@ class RadialCBFRelDegree2(NamedAffineFunc):
         θ_c = self.cbf_col_theta
         direct =  ω**2 * torch.cos(θ - θ_c) - (g / l) * torch.sin(θ - θ_c) * torch.sin(θ)
         abstract = self.grad_lie_f_h2_col(x) @ self.f_func(x)
-        assert torch.allclose(direct, abstract)
+        assert torch.allclose(direct, abstract, atol=1e-4)
         return direct
 
     def lie_g_lie_f_h_col(self, x):
@@ -556,7 +579,7 @@ class RadialCBFRelDegree2(NamedAffineFunc):
         θ_c = self.cbf_col_theta
         direct = (1/(m*l)) * torch.sin(θ - θ_c)
         abstract = self.grad_lie_f_h2_col(x) @ self.g_func(x)
-        assert torch.allclose(direct, abstract)
+        assert torch.allclose(direct, abstract, atol=1e-4)
         return direct
 
     def lie2_fu_h_col(self, x, u):
@@ -693,12 +716,13 @@ class ControlCBFCLFLearned(Controller):
     ):
         self.Xtrain = []
         self.Utrain = []
-        self.model = ControlAffineRegressor(
-            x_dim, u_dim,
-            gamma_length_scale_prior=gamma_length_scale_prior)
         self.ground_truth_model = PendulumDynamicsModel(
             n=x_dim, m=u_dim,
             mass=1, length=1, gravity=10)
+        self.model = ControlAffineRegressor(
+            x_dim, u_dim,
+            gamma_length_scale_prior=gamma_length_scale_prior)
+        #self.model = self.ground_truth_model
         self.mean_dynamics_model = mean_dynamics_model_class(m=u_dim, n=x_dim)
         self.ctrl_aff_constraints=[EnergyCLF(self),
                                    RadialCBF(self)]
@@ -739,16 +763,16 @@ class ControlCBFCLFLearned(Controller):
             self.model.fit(Xtrain[:-1, :], Utrain[:-1, :], XdotTrain)
 
         self.axes[0] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
-                                   self.ground_truth_model.f_func,
                                    self.model.f_func,
+                                   self.ground_truth_model.f_func,
                                    axtitle="f(x)[{i}]",
                                    axs=self.axes[0])
         plt_savefig_with_data(
             self.axes[0].flatten()[0].figure,
             'plots/online_f_learned_vs_f_true_%d.pdf' % Xtrain.shape[0])
         self.axes[1] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
-                                   self.ground_truth_model.g_func,
                                    self.model.g_func,
+                                   self.ground_truth_model.g_func,
                                    axtitle="g(x)[{i}]",
                                    axs=self.axes[1])
         plt_savefig_with_data(
@@ -789,9 +813,8 @@ class ControlCBFCLFLearned(Controller):
 
 
     def _stochastic_cbf2(self, i, x, u0, convert_out=to_numpy):
-        (mean_A, mean_b), (k_Q, k_p, k_r) = cbc2_quadratic_terms(self.cbf2.h2_col,
-                                                                      self.model,
-                                                                      x, u0)
+        (mean_A, mean_b), (k_Q, k_p, k_r), mean, var = cbc2_quadratic_terms(
+            self.cbf2.h2_col, self.model, x, u0)
         with torch.no_grad():
             δ = self.max_unsafe_prob
             ratio = (1-δ)/δ
@@ -808,13 +831,12 @@ class ControlCBFCLFLearned(Controller):
                   - ((mean_A.T @ u0 + mean_b)**2))
             return [(r"$\frac{1-\delta}{\delta} V[CBC2] - E[CBC2]^2 \le 0$",
                      list(map(convert_out, (A, b, c)))),
-                    ("$-E[CBC2] \le 0$",
-                     list(map(convert_out, (torch.tensor([[0.]]), -mean_A, -mean_b))))]
+                    #("$-E[CBC2] \le 0$", list(map(convert_out, (torch.tensor([[0.]]), -mean_A, -mean_b))))
+            ]
 
     def _stochastic_cbf2_sqrt(self, i, x, u0, convert_out=to_numpy):
-        (mean_A, mean_b), (k_Q, k_p, k_r) = cbc2_quadratic_terms(self.cbf2.h2_col,
-                                                                      self.model,
-                                                                      x, u0)
+        (mean_A, mean_b), (k_Q, k_p, k_r), mean, var = cbc2_quadratic_terms(
+            self.cbf2.h2_col, self.model, x, u0)
         with torch.no_grad():
             δ = self.max_unsafe_prob
             ratio = (1-δ)/δ
@@ -850,6 +872,11 @@ class ControlCBFCLFLearned(Controller):
         ]
 
 
+    def random_control(self, x, min_=-20, max_=20):
+        return (torch.rand(self.u_dim, dtype=x.dtype, device=x.device)
+                * (max_ - min_) + min_)
+
+
     def control(self, xi, i=None):
         if not self.model.ground_truth and len(self.Xtrain) % self.train_every_n_steps == 0 :
             # train every n steps
@@ -859,7 +886,7 @@ class ControlCBFCLFLearned(Controller):
         assert torch.all((xi[0] <= math.pi) & (-math.pi <= xi[0]))
 
         if self.model.ground_truth or self._has_been_trained_once:
-            u0 = torch.rand(self.u_dim, dtype=xi.dtype, device=xi.device) * 2 - 1
+            u0 = self.random_control(xi)
             u = controller_qcqp_gurobi(to_numpy(u0),
                                        self.quad_objective(i, xi, u0),
                                        self.quadratic_constraints(i, xi, u0),
@@ -869,7 +896,7 @@ class ControlCBFCLFLearned(Controller):
                 self.plottables(i, xi, u0),
                 xi, u)
         else:
-            u = torch.rand(self.u_dim)
+            u = self.random_control(xi, min_=-5., max_=5.)
         # record the xi, ui pair
         self.Xtrain.append(xi.detach())
         self.Utrain.append(u.detach())
@@ -910,5 +937,5 @@ def run_pendulum_control_online_learning(numSteps=15000):
 if __name__ == '__main__':
     #run_pendulum_control_trival()
     #run_pendulum_control_cbf_clf()
-    #learn_dynamics()
-    run_pendulum_control_online_learning()
+    learn_dynamics()
+    #run_pendulum_control_online_learning()

@@ -33,34 +33,46 @@ class RandomDynamicsModel:
     def state_size(self):
         return self.n
 
-    def f_func(self, x):
+    def f_func(self, X_in):
         A = self.A
         n = self.n
         m = self.m
+        if X_in.ndim == 1:
+            X = X_in.unsqueeze(0)
+        else:
+            X = X_in
         deterministic = self.deterministic
-        assert x.shape[-1] == n
+        assert X.shape[-1] == n
         cov = torch.eye(n) * self.diag_cov
-        return (A @ x if deterministic
-                else torch.distributions.MultivariateNormal(A @ x, cov).sample())
+        mean = A.expand(X.shape[0], *A.shape).bmm(X.unsqueeze(-1)).squeeze(-1)
+        fx = (mean if deterministic
+              else torch.distributions.MultivariateNormal(mean, cov).sample())
+        return fx.squeeze(0) if X_in.ndim == 1 else fx
 
-    def g_func(self, x):
+    def g_func(self, X_in):
         """
         Returns n x m matrix
         """
         B = self.B
         n = self.n
         m = self.m
+        if X_in.ndim == 1:
+            X = X_in.unsqueeze(0)
+        else:
+            X = X_in
         deterministic = self.deterministic
-        assert x.shape[-1] == n
+        assert X.shape[-1] == n
         cov_A = torch.eye(n) * self.diag_cov
         cov_B = torch.eye(m) * 2 * self.diag_cov
         cov = torch_kron(cov_A.unsqueeze(0), cov_B.unsqueeze(0)).squeeze(0)
-        return (
-            B @ x if deterministic
+        mean = B.reshape(1, -1, self.n).expand(X.shape[0], -1, -1).bmm(X.unsqueeze(-1)).reshape(-1, self.n, self.m)
+        gx = (
+            mean if deterministic
             else torch.distributions.MultivariateNormal(
-                    (B @ x).flatten(), cov
+                    mean.flatten(), self.diag_cov
             ).sample().reshape((n, m))
         )
+        return gx.squeeze(0) if X_in.ndim == 1 else gx
 
 
 def test_GP_train_predict(n=2, m=3,
@@ -68,6 +80,7 @@ def test_GP_train_predict(n=2, m=3,
                           deterministic=False,
                           rel_tol=0.10,
                           abs_tol=0.10,
+                          perturb_scale=0.1,
                           sample_generator=sample_generator_trajectory,
                           dynamics_model_class=RandomDynamicsModel,
                           training_iter=200):
@@ -107,7 +120,7 @@ def test_GP_train_predict(n=2, m=3,
     dgp = ControlAffineRegressor(Xtrain.shape[-1], Utrain.shape[-1])
     # Test prior
     _ = dgp.predict(Xtest, return_cov=False)
-    dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=training_iter, lr=0.01)
+    dgp._fit_with_warnings(Xtrain, Utrain, XdotTrain, training_iter=training_iter, lr=0.01)
     with torch.no_grad():
         if X.shape[-1] == 2 and U.shape[-1] == 1:
             plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func,
@@ -125,7 +138,8 @@ def test_GP_train_predict(n=2, m=3,
         XdotGot_train_mean, XdotGot_train_cov = dgp.predict_flatten(
             Xtrain[:-1], Utrain[:-1])
         assert XdotGot_train_mean.detach().cpu().numpy() == pytest.approx(
-            XdotTrain[:-1].detach().cpu().numpy(), rel=rel_tol, abs=abs_tol)
+            XdotTrain[:-1].detach().cpu().numpy(), rel=rel_tol, abs=abs_tol), """
+            Train data check using original flatten predict """
 
         UHtest = torch.cat((Utest.new_ones((Utest.shape[0], 1)), Utest), dim=1)
         if deterministic:
@@ -140,7 +154,23 @@ def test_GP_train_predict(n=2, m=3,
         # check predicting train values
         XdotTrain_mean = dgp.fu_func_mean(Utrain[:-1], Xtrain[:-1])
         assert XdotTrain_mean.detach().cpu().numpy() == pytest.approx(
-            XdotTrain[:-1].detach().cpu().numpy(), rel=rel_tol, abs=abs_tol)
+            XdotTrain[:-1].detach().cpu().numpy(), rel=rel_tol, abs=abs_tol), """
+            Train data check using custom flatten predict """
+
+        # Check predicting perturbed train values
+        Xptrain = Xtrain[:-1] * (1 + torch.rand(Xtrain.shape[0]-1, 1) * perturb_scale)
+        Uptrain = Utrain[:-1] * (1 + torch.rand(Xtrain.shape[0]-1, 1) * perturb_scale)
+        XdotGot_ptrain_mean, XdotGot_ptrain_cov = dgp.predict_flatten(Xptrain, Uptrain)
+        Xdot_ptrain = dynamics_model.f_func(Xptrain) + dynamics_model.g_func(Xptrain).bmm(Uptrain.unsqueeze(-1)).squeeze(-1)
+
+        assert XdotGot_ptrain_mean.detach().cpu().numpy() == pytest.approx(
+            Xdot_ptrain.detach().cpu().numpy(), rel=rel_tol, abs=abs_tol), """
+            Perturbed Train data check using original flatten predict """
+
+        XdotGot_ptrain_mean_custom = dgp.fu_func_mean(Uptrain, Xptrain)
+        assert XdotGot_ptrain_mean_custom.detach().cpu().numpy() == pytest.approx(
+            Xdot_ptrain.detach().cpu().numpy(), rel=rel_tol, abs=abs_tol), """
+            Perturbed Train data check using custom flatten predict """
 
         # check predicting test values
         # FXTmean, FXTcov = dgp.predict(Xtest)

@@ -77,6 +77,12 @@ class CatEncoder:
                   for s,e in zip(idxs[:-1], idxs[1:])]
         return arrays
 
+    def state_dict(self):
+        return dict(sizes=self.sizes)
+
+    def load_state_dict(self, state_dict):
+        self.sizes = state_dict['sizes']
+
 
 class IdentityLikelihood(_GaussianLikelihoodBase):
     """
@@ -169,16 +175,22 @@ class ControlAffineExactGP(ExactGP):
         return MultivariateNormal(mean_x, covar_x)
 
     def state_dict(self):
-        return dict(matshape=self.matshape,
-                    decoder=self.decoder,
-                    mean_module=self.mean_module,
-                    task_covar=self.task_covar,
-                    input_covar=self.input_covar,
-                    covar_module=self.covar_module)
+        sd = dict(matshape=self.matshape,
+                  decoder=self.decoder.state_dict(),
+                  mean_module=self.mean_module.state_dict(),
+                  task_covar=self.task_covar.state_dict(),
+                  input_covar=self.input_covar.state_dict(),
+                  covar_module=self.covar_module.state_dict())
+        if self.train_inputs:
+            sd['train_inputs'] = sd
+        return sd
 
     def load_state_dict(self, state_dict):
+        self.matshape = state_dict.pop('matshape')
+        self.train_inputs = state_dict.pop('train_inputs')
         for k, v in state_dict.items():
-            setattr(self, k, v)
+            getattr(self, k).load_state_dict(v)
+        return self
 
 
 def default_device():
@@ -358,7 +370,8 @@ class ControlAffineRegressor(DynamicsModel):
 
     def custom_predict(self, Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None,
                        Utestp_in=None, UHfillp=1,
-                       compute_cov=True):
+                       compute_cov=True,
+                       grad_gp=False):
         """
         Gpytorch is complicated. It uses terminology like fantasy something,
         something. Even simple exact prediction strategy uses Laczos. I do not
@@ -415,7 +428,11 @@ class ControlAffineRegressor(DynamicsModel):
             UHtestp = torch.cat((Utest.new_full((Utestp.shape[0], 1), UHfillp),
                                  Utestp), dim=-1)
 
-        k = self.model.covar_module.data_covar_module
+        if not grad_gp:
+            k_ss = k_xx = k_xs = k_sx = self.model.covar_module.data_covar_module
+        else:
+            k_xx = self.model.covar_module.data_covar_module
+            grad_k = torch.autograd.grad(k, Xtest)[0]
         A = self.model.covar_module.task_covar_module.U.covar_matrix.evaluate()
         B = self.model.covar_module.task_covar_module.V.covar_matrix.evaluate()
 
@@ -424,7 +441,7 @@ class ControlAffineRegressor(DynamicsModel):
                 UHtest.unsqueeze(-1)).squeeze(-1)
         if self.model.train_inputs is None:
             # We do not have training data just return the mean and prior covariance
-            return fu_mean_test, k(Xtest, Xtest).evaluate(), A
+            return fu_mean_test, k_ss(Xtest, Xtest).evaluate(), A
 
         MXUHtrain = self.model.train_inputs[0]
         Mtrain, Xtrain, UHtrain = self.model.decoder.decode(MXUHtrain)
@@ -432,17 +449,17 @@ class ControlAffineRegressor(DynamicsModel):
         Y = self.model.train_targets.reshape(nsamples, -1) - self.model.mean_module(Xtrain).reshape(nsamples, *self.model.matshape).transpose(-2,-1).bmm(UHtrain.unsqueeze(-1)).squeeze(-1)
 
         # 1. L := cholesky(K)
-        Kb_sqrt = self._perturbed_cholesky(k, B, Xtrain, UHtrain)
-        kb_star = k(Xtrain, Xtest).evaluate() * (UHtrain @ B @ UHtest.t())
+        Kb_sqrt = self._perturbed_cholesky(k_xx, B, Xtrain, UHtrain)
+        kb_star = k_xs(Xtrain, Xtest).evaluate() * (UHtrain @ B @ UHtest.t())
         # 2. α := Lᵀ \ ( L \ Y )
         α = torch.cholesky_solve(Y, Kb_sqrt) # check the shape of Y
-        # 3. μ := kb*ᵀ α
+        # 3. μ := μ(x) + kb*ᵀ α
         mean = fu_mean_test + kb_star.t() @ α
         if compute_cov:
-            kb_star_p = (k(Xtrain, Xtestp).evaluate() * (UHtrain @ B @ UHtestp.t())
+            kb_star_p = (k_xs(Xtrain, Xtestp).evaluate() * (UHtrain @ B @ UHtestp.t())
                      if Xtestp_in is not None
                      else kb_star)
-            kb_star_starp = k(Xtest, Xtestp).evaluate() * (UHtest @ B @ UHtestp.t())
+            kb_star_starp = k_ss(Xtest, Xtestp).evaluate() * (UHtest @ B @ UHtestp.t())
             # 4. v := L \ kb*
             v = torch.solve(kb_star, Kb_sqrt).solution
             vp = torch.solve(kb_star_p, Kb_sqrt).solution if Xtestp_in is not None else v

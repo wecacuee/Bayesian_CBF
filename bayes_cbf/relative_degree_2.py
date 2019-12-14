@@ -280,6 +280,10 @@ def cbc2_quadratic_terms(h_func, control_affine_model, x, u):
 
     #assert mean(u) > 0, 'cbf2 should be at least satisfied in expectation'
     mean_A, mean_b = get_affine_terms(mean, u)
+    assert not torch.isnan(mean_A).any()
+    assert not torch.isnan(mean_b).any()
     k_Q, k_p, k_r = get_quadratic_terms(k_func, u)
-    #ratio = (1-δ) / δ
+    assert not torch.isnan(k_Q).any()
+    assert not torch.isnan(k_p).any()
+    assert not torch.isnan(k_r).any()
     return (mean_A, mean_b), (k_Q, k_p, k_r), mean(u), k_func(u)

@@ -1,14 +1,15 @@
 from functools import partial
+import os.path as osp
 
 import torch
 
-from bayes_cbf.pendulum import RadialCBFRelDegree2
+from bayes_cbf.pendulum import RadialCBFRelDegree2, PendulumDynamicsModel, ControlAffineRegressor
 from bayes_cbf.control_affine_model import GaussianProcess
 from bayes_cbf.relative_degree_2 import (AffineGP, GradientGP,
                                          QuadraticFormOfGP, Lie1GP, Lie2GP,
                                          cbc2_gp, get_quadratic_terms,
                                          cbc2_quadratic_terms)
-from bayes_cbf.misc import to_numpy
+from bayes_cbf.misc import to_numpy, variable_required_grad
 from tests.test_control_affine_regression import test_pendulum_train_predict
 
 import pytest
@@ -17,7 +18,8 @@ import pytest
 def get_test_sample_close_to_train(learned_model, dist=0.1):
     MXUHtrain = learned_model.model.train_inputs[0]
     train_size = MXUHtrain.shape[0]
-    xtrain_utrain = MXUHtrain[torch.randint(train_size, ()), 1:].cpu()
+    idx = torch.randint(train_size-1, ())
+    xtrain_utrain = MXUHtrain[idx, 1:].cpu()
     xtest = xtrain_utrain[:2]
     xtest = xtest + dist * torch.norm(xtest) * torch.rand_like(xtest)
     utest = xtrain_utrain[3:]
@@ -25,12 +27,22 @@ def get_test_sample_close_to_train(learned_model, dist=0.1):
     return xtest, utest
 
 
+def rel2abs(f, basedir=osp.dirname(__file__) or "."):
+    return osp.join(basedir, f)
+
+
 _global_cache = None
 @pytest.fixture
-def dynamic_models():
+def dynamic_models(learned_model_path='data/pendulum_learned_model.torch'):
     global _global_cache
     if _global_cache is None:
-        learned_model, true_model = test_pendulum_train_predict()
+        if not osp.exists(rel2abs(learned_model_path)):
+            learned_model, true_model = test_pendulum_train_predict()
+            torch.save(learned_model.state_dict(), rel2abs(learned_model_path))
+        else:
+            true_model = PendulumDynamicsModel(n=2, m=1)
+            learned_model = ControlAffineRegressor(2, 1).load_state_dict(
+                torch.load(rel2abs(learned_model_path)))
         xtest, utest = get_test_sample_close_to_train(learned_model)
         _global_cache = learned_model, true_model, xtest, utest
     return _global_cache
@@ -48,6 +60,49 @@ def test_affine_gp(dynamic_models, skip_test=False):
             to_numpy(true_cbf2.lie_f_h2_col(xtest)), rel=0.1)
     l1h.knl(xtest, xtest)
     return l1h
+
+
+class SimpleGP:
+    def __init__(self, m, lengthscale):
+        self.m = m
+        self.lengthscale = lengthscale
+    def mean(self, x):
+        m = self.m
+        return m @ x
+
+    def grad_mean(self, x):
+        m = self.m
+        return m
+
+    def knl(self, x, xp):
+        lengthscale = self.lengthscale
+        diff = (x - xp) / lengthscale
+        return (diff.T @ diff).div_(-2.0).exp_()
+
+    def knl_grad(self, x, xp):
+        lengthscale = self.lengthscale
+        diff = (x - xp) / lengthscale
+        return -diff * (diff.T @ diff).div_(-2.0).exp_() / lengthscale
+
+    def knl_hessian(self, x, xp):
+        lengthscale = self.lengthscale
+        diff = (x - xp) / lengthscale**2
+        H_xx_k_1 =  (diff.unsqueeze(-1) @ diff.unsqueeze(0)) * self.knl(x, xp)
+        H_xx_k_2 = torch.eye(x.shape[0]) / lengthscale**2 * self.knl(x, xp)
+        return - H_xx_k_1 + H_xx_k_2
+
+
+def test_gradient_simple():
+    m = torch.rand(2)
+    lengthscale = torch.rand(2)
+    simp_gp = SimpleGP(m, lengthscale)
+    grad_simp_gp = GradientGP(simp_gp)
+    xtest = torch.rand(2)
+    assert to_numpy(simp_gp.grad_mean(xtest)) == pytest.approx(
+        to_numpy(grad_simp_gp.mean(xtest)))
+    xtestp = torch.rand(2)
+    assert to_numpy(simp_gp.knl_hessian(xtest, xtestp)) == pytest.approx(
+        to_numpy(grad_simp_gp.knl(xtest, xtestp)))
 
 
 #@pytest.mark.skip(reason="Does not succeed in theta")

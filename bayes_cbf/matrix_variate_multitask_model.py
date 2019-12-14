@@ -65,3 +65,14 @@ class HetergeneousMatrixVariateMean(MultitaskMean):
             output = torch.cat([output, Fmean]) if output is not None else Fmean
         return output
 
+    def state_dict(self):
+        return dict(
+            matshape=self.matshape,
+            decoder=self.decoder.state_dict()
+        )
+
+    def load_state_dict(self, state_dict):
+        self.matshape = state_dict.pop('matshape')
+        self.decoder.load_state_dict(state_dict['decoder'])
+
+

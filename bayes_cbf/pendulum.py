@@ -134,7 +134,6 @@ class PendulumDynamicsModel(DynamicsModel):
             return noise + torch.tensor([[0], [1/(mass*length)]])
 
 
-
 def sampling_pendulum(dynamics_model, numSteps,
                       controller=None,
                       x0=None,
@@ -266,7 +265,7 @@ def learn_dynamics(
         mass=1,
         gravity=10,
         length=1,
-        max_train=300,
+        max_train=200,
         numSteps=2000,
         pendulum_dynamics_class=PendulumDynamicsModel):
     #from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
@@ -327,13 +326,13 @@ def learn_dynamics(
     dX_98, _ = dgp.predict_flatten(X[98:99,:], U[98:99, :])
     #dX_98 = FX_98[0, ...].T @ UH[98, :]
     #dXcov_98 = UH[98, :] @ FXcov_98 @ UH[98, :]
-    if not torch.allclose(dX[98], dX_98, rtol=0.05, atol=0.05):
+    if not torch.allclose(dX[98], dX_98, rtol=0.4, atol=0.1):
         print("Test failed: Train sample: expected:{}, got:{}, cov".format(dX[98], dX_98))
 
     # out of train set
     dX_Np1, _ = dgp.predict_flatten(X[N+1:N+2,:], U[N+1:N+2,:])
     #dX_Np1 = FXNp1[0, ...].T @ UH[N+1, :]
-    if not torch.allclose(dX[N+1], dX_Np1, rtol=0.05, atol=0.05):
+    if not torch.allclose(dX[N+1], dX_Np1, rtol=0.4, atol=0.1):
         print("Test failed: Test sample: expected:{}, got:{}, cov".format( dX[N+1], dX_Np1))
 
     true_h_func = RadialCBFRelDegree2(pend_env)
@@ -709,7 +708,7 @@ class ControlCBFCLFLearned(Controller):
                  iterations=1000,
                  max_unsafe_prob=0.01,
                  dt=0.001,
-                 max_train=250,
+                 max_train=200,
                  #gamma_length_scale_prior=[1/deg2rad(0.1), 1],
                  gamma_length_scale_prior=None,
                  constraint_plotter_class=ConstraintPlotter,
@@ -758,7 +757,7 @@ class ControlCBFCLFLearned(Controller):
             indices = torch.randint(XdotTrain.shape[0], (self.max_train,))
             self.model.fit(Xtrain[indices, :], Utrain[indices, :],
                            XdotTrain[indices, :],
-                           training_iter=200)
+                           training_iter=100)
         else:
             self.model.fit(Xtrain[:-1, :], Utrain[:-1, :], XdotTrain)
 
@@ -847,7 +846,7 @@ class ControlCBFCLFLearned(Controller):
             print("margin CBC2: ", margin)
             return [("-E[CBC2]",
                      list(map(convert_out,
-                              (torch.tensor([[0.]]), - mean_A, - mean_b + margin))))]
+                              (torch.tensor([[0.]]), - mean_A, - mean_b))))]
 
     def quadratic_constraints(self, i, x, u0, convert_out=to_numpy):
         if self.model.ground_truth:
@@ -937,5 +936,5 @@ def run_pendulum_control_online_learning(numSteps=15000):
 if __name__ == '__main__':
     #run_pendulum_control_trival()
     #run_pendulum_control_cbf_clf()
-    learn_dynamics()
-    #run_pendulum_control_online_learning()
+    #learn_dynamics()
+    run_pendulum_control_online_learning()

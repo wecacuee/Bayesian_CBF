@@ -216,7 +216,7 @@ Simplest scenario with random samples generated without a trajectory model and
 no randomness.
 """
 
-@pytest.mark.skip(reason="Not succeding right now. Fix later.")
+#@pytest.mark.skip(reason="Not succeding right now. Fix later.")
 def test_GP_train_predict_independent():
     """
     Level 2: Simplest scenario with random samples generated without a trajectory model
@@ -234,9 +234,9 @@ Level 4: Pendulum model
 """
 
 if __name__ == '__main__':
-    test_GP_train_predict_detrministic()
-    test_GP_train_predict_independent()
-    test_GP_train_predict()
+    #test_GP_train_predict_detrministic()
+    #test_GP_train_predict_independent()
+    #test_GP_train_predict()
     #test_control_affine_gp()
     test_pendulum_train_predict()
 

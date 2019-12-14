@@ -182,7 +182,7 @@ class ControlAffineExactGP(ExactGP):
                   input_covar=self.input_covar.state_dict(),
                   covar_module=self.covar_module.state_dict())
         if self.train_inputs:
-            sd['train_inputs'] = sd
+            sd['train_inputs'] = self.train_inputs
         return sd
 
     def load_state_dict(self, state_dict):

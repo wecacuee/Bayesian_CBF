@@ -41,7 +41,8 @@ def dynamic_models(learned_model_path='data/pendulum_learned_model.torch'):
             torch.save(learned_model.state_dict(), rel2abs(learned_model_path))
         else:
             true_model = PendulumDynamicsModel(n=2, m=1)
-            learned_model = ControlAffineRegressor(2, 1).load_state_dict(
+            learned_model = ControlAffineRegressor(2, 1)
+            learned_model.load_state_dict(
                 torch.load(rel2abs(learned_model_path)))
         xtest, utest = get_test_sample_close_to_train(learned_model)
         _global_cache = learned_model, true_model, xtest, utest
@@ -190,5 +191,6 @@ def test_quadratic_term():
 
 if __name__ == '__main__':
     models = test_pendulum_train_predict()
-    test_cbf2_gp(models)
-    test_cbc2_quadtratic_terms(models)
+    xtest, utest = get_test_sample_close_to_train(models)
+    test_cbf2_gp((*models, xtest, utest))
+    test_cbc2_quadtratic_terms((*models, xtest, utest))

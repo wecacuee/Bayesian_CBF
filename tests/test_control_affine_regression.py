@@ -69,8 +69,8 @@ class RandomDynamicsModel:
         gx = (
             mean if deterministic
             else torch.distributions.MultivariateNormal(
-                    mean.flatten(), self.diag_cov
-            ).sample().reshape((n, m))
+                    mean.flatten(), torch.eye(mean.flatten().shape[0]) * self.diag_cov
+            ).sample().reshape(-1, n, m)
         )
         return gx.squeeze(0) if X_in.ndim == 1 else gx
 
@@ -79,7 +79,7 @@ def test_GP_train_predict(n=2, m=3,
                           D = 20,
                           deterministic=False,
                           rel_tol=0.10,
-                          abs_tol=0.10,
+                          abs_tol=0.40,
                           perturb_scale=0.1,
                           sample_generator=sample_generator_trajectory,
                           dynamics_model_class=RandomDynamicsModel,
@@ -236,7 +236,7 @@ Level 4: Pendulum model
 if __name__ == '__main__':
     test_GP_train_predict_detrministic()
     test_GP_train_predict_independent()
-    #test_GP_train_predict()
+    test_GP_train_predict()
     #test_control_affine_gp()
-    #test_pendulum_train_predict()
+    test_pendulum_train_predict()
 

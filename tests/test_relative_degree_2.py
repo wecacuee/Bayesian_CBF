@@ -112,7 +112,7 @@ def test_gradient_gp(dynamic_models, skip_test=False, dist=1e-4):
     true_cbf2 = RadialCBFRelDegree2(true_model)
     grad_l1h = GradientGP(l1h)
     if not skip_test:
-        assert to_numpy(grad_l1h.mean(xtest)) == pytest.approx(to_numpy(true_cbf2.grad_lie_f_h2_col(xtest)), abs=0.1, rel=0.1)
+        assert to_numpy(grad_l1h.mean(xtest)) == pytest.approx(to_numpy(true_cbf2.grad_lie_f_h2_col(xtest)), abs=0.1, rel=0.4)
     grad_l1h.knl(xtest, xtest)
     return grad_l1h, l1h
 
@@ -133,7 +133,7 @@ def test_quadratic_form(dynamic_models, skip_test=False, dist=1e-4):
             to_numpy(
                 true_cbf2.lie2_f_h_col(xtest)
                 + true_cbf2.lie_g_lie_f_h_col(xtest) * utest
-            ), abs=0.1, rel=0.1)
+            ), abs=0.1, rel=0.4)
     l2h.knl(xtest, xtest)
     return l2h
 
@@ -151,7 +151,7 @@ def test_lie2_gp(dynamic_models):
         to_numpy(
             true_cbf2.lie2_f_h_col(xtest)
             + true_cbf2.lie_g_lie_f_h_col(xtest) * utest
-        ), abs=0.1, rel=0.1)
+        ), abs=0.1, rel=0.4)
     L2h.knl(xtest, xtest)
     return L2h
 

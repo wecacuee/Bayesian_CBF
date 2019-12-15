@@ -5,3 +5,5 @@
 .eggs
 .ipynb_checkpoints
 bayes_cbf.egg-info/
+plots/*.pdf
+plots/*.npz

@@ -115,7 +115,7 @@ class QuadraticFormOfGP:
         g, f, covar_gf = self.g, self.f, self.covar_gf
         k_quad = (2 * covar_gf(x, xp).trace()**2
                 + g.mean(x).T @ covar_gf(x, xp) @ f.mean(xp) * 2
-                + g.mean(x).T @ f.knl(x, xp) @ f.mean(xp)
+                + g.mean(x).T @ f.knl(x, xp) @ g.mean(xp)
                 + f.mean(x).T @ g.knl(x, xp) @ f.mean(xp))
         assert (k_quad >= -1e-3).all()
         return k_quad

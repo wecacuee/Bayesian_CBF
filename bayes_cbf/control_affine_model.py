@@ -514,15 +514,12 @@ class ControlAffineRegressor(DynamicsModel):
         Xtest = (Xtest_in.unsqueeze(0)
                  if Xtest_in.ndim == 1
                  else Xtest_in)
+        Utest = Xtest.new_zeros((Xtest.shape[0], self.u_dim))
+        mean_fx, cov_fx = self.predict_flatten(Xtest, Utest)
         if return_cov:
-            mean_Fx, cov_Fx = self.predict(Xtest, return_cov=return_cov)
-            cov_fx = cov_Fx[:, :1, :1]
             if Xtest_in.ndim == 1:
                 cov_fx = cov_fx.squeeze(0)
             cov_fx = cov_fx.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
-        else:
-            mean_Fx = self.predict(Xtest, return_cov=return_cov)
-        mean_fx = mean_Fx[:, 0, :]
         if Xtest_in.ndim == 1:
             mean_fx = mean_fx.squeeze(0)
         mean_fx = mean_fx.to(dtype=Xtest_in.dtype, device=Xtest_in.device)

@@ -45,7 +45,8 @@ class Controller(ABC):
 class ControlTrivial(Controller):
     needs_ground_truth = True
     @store_args
-    def __init__(self, m=1, mass=None, length=None, gravity=None, dt=None):
+    def __init__(self, m=1, mass=None, length=None, gravity=None, dt=None,
+                 true_model=None):
         pass
 
     def control(self, xi, i=None):
@@ -241,14 +242,16 @@ def run_pendulum_experiment(#parameters
         controller_class=ControlTrivial,
         pendulum_dynamics_class=PendulumDynamicsModel,
         plotfile='plots/run_pendulum_experiment{suffix}.pdf'):
+    pendulum_model = pendulum_dynamics_class(m=1, n=2, mass=mass, gravity=gravity,
+                                             length=length)
     if controller_class.needs_ground_truth:
         controller = controller_class(mass=mass, gravity=gravity,
-                                      length=length, dt=tau).control
+                                      length=length, dt=tau,
+                                      true_model=pendulum_model).control
     else:
-        controller = controller_class(dt=tau).control
+        controller = controller_class(dt=tau, true_model=pendulum_model).control
     damge_perc,time_vec,theta_vec,omega_vec,u_vec = sampling_pendulum(
-        pendulum_dynamics_class(m=1, n=2, mass=mass, gravity=gravity,
-                              length=length),
+        pendulum_model,
         numSteps, x0=torch.tensor([theta0,omega0]), controller=controller, dt=tau)
     plot_results(time_vec, omega_vec, theta_vec, u_vec)
 
@@ -658,6 +661,7 @@ class PendulumCBFCLFDirect(Controller):
     def __init__(self, mass=None, length=None, gravity=None, dt=None,
                  constraint_plotter_class=ConstraintPlotter,
                  pendulum_dynamics_class=PendulumDynamicsModel,
+                 true_model=None,
     ):
         self.set_model_params(mass=mass, length=length, gravity=gravity)
         self.constraint_plotter = constraint_plotter_class()
@@ -712,12 +716,10 @@ class ControlCBFCLFLearned(Controller):
                  #gamma_length_scale_prior=[1/deg2rad(0.1), 1],
                  gamma_length_scale_prior=None,
                  constraint_plotter_class=ConstraintPlotter,
+                 true_model=None
     ):
         self.Xtrain = []
         self.Utrain = []
-        self.ground_truth_model = PendulumDynamicsModel(
-            n=x_dim, m=u_dim,
-            mass=1, length=1, gravity=10)
         self.model = ControlAffineRegressor(
             x_dim, u_dim,
             gamma_length_scale_prior=gamma_length_scale_prior)
@@ -726,7 +728,7 @@ class ControlCBFCLFLearned(Controller):
         self.ctrl_aff_constraints=[EnergyCLF(self),
                                    RadialCBF(self)]
         self.cbf2 = RadialCBFRelDegree2(self.model)
-        self.ground_truth_cbf2 = RadialCBFRelDegree2(self.ground_truth_model)
+        self.ground_truth_cbf2 = RadialCBFRelDegree2(true_model)
         self._has_been_trained_once = False
         # These are used in the optimizer hence numpy
         self.x_goal = torch.tensor([theta_goal, omega_goal])
@@ -734,15 +736,61 @@ class ControlCBFCLFLearned(Controller):
         self.axes = [None, None]
         self.constraint_plotter = constraint_plotter_class()
 
+    def debug_train(self, Xtrain, Utrain, XdotError):
+        XdotErrorGot_train_mean, _ = self.model.predict_flatten(Xtrain[:-1], Utrain[:-1])
+        assert torch.allclose(XdotErrorGot_train_mean, XdotError, rtol=0.4, atol=0.1), """
+            Train data check using original flatten predict """
+        print("hat f(x; u)[0] \in [{}, {}]".format(XdotErrorGot_train_mean[:, 0].min(),
+                                                   XdotErrorGot_train_mean[:, 0].max()))
+        print("hat f(x; u)[1] \in [{}, {}]".format(XdotErrorGot_train_mean[:, 1].min(),
+                                                   XdotErrorGot_train_mean[:, 1].max()))
+        print("f(x; u)[0] \in [{}, {}]".format(XdotError[:, 0].min(),
+                                               XdotError[:, 0].max()))
+        print("f(x; u)[1] \in [{}, {}]".format(XdotError[:, 1].min(),
+                                               XdotError[:, 1].max()))
+
+        fx = self.model.f_func(Xtrain[:-1])
+        print("hat f(x)[0] \in [{}, {}]".format(fx[:, 0].min(),
+                                                fx[:, 0].max()))
+        print("hat f(x)[1] \in [{}, {}]".format(fx[:, 1].min(),
+                                                fx[:, 1].max()))
+        fxtrue = self.true_model.f_func(Xtrain[:-1])
+        print("f(x)[0] \in [{}, {}]".format(fxtrue[:, 0].min(),
+                                            fxtrue[:, 0].max()))
+        print("f(x)[1] \in [{}, {}]".format(fxtrue[:, 1].min(),
+                                            fxtrue[:, 1].max()))
+
+        gxu = self.model.gu_func(Xtrain[:-1], Utrain[:-1])
+        print("hat g(x; u)[0] \in [{}, {}]".format(gxu[:, 0].min(),
+                                                gxu[:, 0].max()))
+        print("hat g(x; u)[1] \in [{}, {}]".format(gxu[:, 1].min(),
+                                                gxu[:, 1].max()))
+        gxutrue = self.true_model.g_func(Xtrain[:-1]).bmm(Utrain[:-1].unsqueeze(-1)).squeeze(-1)
+        print("g(x; u)[0] \in [{}, {}]".format(gxutrue[:, 0].min(),
+                                               gxutrue[:, 0].max()))
+        print("g(x; u)[1] \in [{}, {}]".format(gxutrue[:, 1].min(),
+                                               gxutrue[:, 1].max()))
+
+        fxu = fx + gxu
+        print("hat f(x; u)[0] \in [{}, {}]".format(fxu[:, 0].min(),
+                                                   fxu[:, 0].max()))
+        print("hat f(x; u)[1] \in [{}, {}]".format(fxu[:, 1].min(),
+                                                   fxu[:, 1].max()))
+        fxutrue = fxtrue + gxutrue
+        print("f(x; u)[0] \in [{}, {}]".format(fxutrue[:, 0].min(),
+                                               fxutrue[:, 0].max()))
+        print("f(x; u)[1] \in [{}, {}]".format(fxutrue[:, 1].min(),
+                                               fxutrue[:, 1].max()))
+
     def train(self):
         if not len(self.Xtrain):
             return
         assert len(self.Xtrain) == len(self.Utrain), "Call train when Xtrain and Utrain are balanced"
         Xtrain = torch.cat(self.Xtrain).reshape(-1, self.x_dim)
         Utrain = torch.cat(self.Utrain).reshape(-1, self.u_dim)
-        XdotTrain = Xtrain[1:, :] - Xtrain[:-1, :]
+        XdotTrain = (Xtrain[1:, :] - Xtrain[:-1, :]) / self.dt
         XdotMean = self.mean_dynamics_model.f_func(Xtrain) + (self.mean_dynamics_model.g_func(Xtrain) @ Utrain.T).T
-        XdotError = XdotTrain - XdotMean[1:, :]
+        XdotError = XdotTrain - XdotMean[:-1, :]
         #self.axes = axs = plot_results(np.arange(Utrain.shape[0]),
         #                   omega_vec=to_numpy(Xtrain[:, 0]),
         #                   theta_vec=to_numpy(Xtrain[:, 1]),
@@ -755,15 +803,15 @@ class ControlCBFCLFLearned(Controller):
         LOG.info("Training model with datasize {}".format(XdotTrain.shape[0]))
         if XdotTrain.shape[0] > self.max_train:
             indices = torch.randint(XdotTrain.shape[0], (self.max_train,))
-            self.model.fit(Xtrain[indices, :], Utrain[indices, :],
-                           XdotTrain[indices, :],
-                           training_iter=100)
+            train_data = Xtrain[indices, :], Utrain[indices, :], XdotError[indices, :],
         else:
-            self.model.fit(Xtrain[:-1, :], Utrain[:-1, :], XdotTrain)
+            train_data = Xtrain[:-1, :], Utrain[:-1, :], XdotError
+
+        self.model.fit(*train_data, training_iter=100)
 
         self.axes[0] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
                                    self.model.f_func,
-                                   self.ground_truth_model.f_func,
+                                   self.true_model.f_func,
                                    axtitle="f(x)[{i}]",
                                    axs=self.axes[0])
         plt_savefig_with_data(
@@ -771,7 +819,7 @@ class ControlCBFCLFLearned(Controller):
             'plots/online_f_learned_vs_f_true_%d.pdf' % Xtrain.shape[0])
         self.axes[1] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
                                    self.model.g_func,
-                                   self.ground_truth_model.g_func,
+                                   self.true_model.g_func,
                                    axtitle="g(x)[{i}]",
                                    axs=self.axes[1])
         plt_savefig_with_data(
@@ -846,7 +894,7 @@ class ControlCBFCLFLearned(Controller):
             print("margin CBC2: ", margin)
             return [("-E[CBC2]",
                      list(map(convert_out,
-                              (torch.tensor([[0.]]), - mean_A, - mean_b))))]
+                              (torch.tensor([[0.]]), - mean_A, - mean_b + margin))))]
 
     def quadratic_constraints(self, i, x, u0, convert_out=to_numpy):
         if self.model.ground_truth:

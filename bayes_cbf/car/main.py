@@ -55,9 +55,11 @@ if __name__=='__main__':
     HGDM.updateModel()
     theta = torch.atan2(HGDM.state.pose.orientation[0, 1, 0],
                         HGDM.state.pose.orientation[0, 0, 0])
-    myViewer.setCarPose(HGDM.state.pose.position[0, 0].item(),
-                        HGDM.state.pose.position[0, 1].item(),
-                        theta.item())
+    car_pose = (HGDM.state.pose.position[0, 0].item(),
+                HGDM.state.pose.position[0, 1].item(),
+                theta.item())
+    print(car_pose)
+    myViewer.setCarPose(*car_pose)
     myViewer.show()
     if k > 200:
       steer = -0.1

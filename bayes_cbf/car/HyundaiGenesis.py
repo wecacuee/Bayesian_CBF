@@ -31,6 +31,22 @@ class AckermannParameters(object):
 class AckermannInput(object):
   __slots__ = ['acceleration','steering_angle'] # m/s^2, rad
 
+  def inc_control(self, dU):
+    self.acceleration += dU[:, 0]
+    self.steering_angle = torch.atan2(
+      torch.sin(self.steering_angle) + dU[:, 2],
+      torch.cos(self.steering_angle) + dU[:, 1])
+
+  def set_control(self, U):
+    self.acceleration = U[:, 0]
+    self.steering_angle = torch.atan2(U[:, 2], U[:, 1])
+
+  def control(self):
+    sta = self.steering_angle.unsqueeze(-1)
+    return torch.cat([
+      self.acceleration.unsqueeze(-1), torch.cos(sta), torch.sin(sta)
+    ], dim=-1)
+
 
 class HyundaiGenesisParameters(AckermannParameters):
   def __init__(self):
@@ -41,8 +57,9 @@ class HyundaiGenesisParameters(AckermannParameters):
     self.Iz = 5520.1 # kg*m2 (vehicle inertia)
     self.C_alpha_f = 7.6419e4*2  # N/rad	(front axle cornering stiffness) # 200k
     self.C_alpha_r = 13.4851e4*2	# N/rad	(rear axle cornering stiffness)	 # 250k
-    self.acceleration_time_constant = 0.4 # s
-    self.steering_angle_time_constant  = 0.1 # s
+    self.acceleration_time_constant = atc = 0.4 # s
+    self.steering_angle_time_constant  = sac = 0.1 # s
+    self.control_time_constant = torch.tensor([[atc, math.cos(sac), math.sin(sac)]])
 
 
 def rotmat_to_z(R):
@@ -63,13 +80,12 @@ class StateAsArray:
     ori = rotmat_to_z(state.pose.orientation)
     v = state.twist.linear[:, :2]
     w = state.twist.angular[:, 2:3]
-    iacc = inp.acceleration
-    i_st_angle = inp.steering_angle
-    return torch.cat((pos, ori.unsqueeze(-1), v, w, iacc, i_st_angle), dim=-1)
+    U = inp.control()
+    return torch.cat((pos, ori.unsqueeze(-1), v, w, U), dim=-1)
 
   def deserialize(self, X):
-    (pos, ori, v, w, iacc, i_st_angle) = (
-      X[:, :2], X[:, 2], X[:, 3:5], X[:, 5], X[:, 6], X[:, 7])
+    (pos, ori, v, w, U) = (
+      X[:, :2], X[:, 2], X[:, 3:5], X[:, 5], X[:, 6:9])
 
     state = StateSE3()
     state.pose = PoseSE3()
@@ -83,8 +99,7 @@ class StateAsArray:
     state.twist.angular[:, 2] = w
 
     inp = AckermannInput()
-    inp.acceleration = iacc
-    inp.steering_angle = i_st_angle
+    inp.set_control(U)
     return state, inp
 
 
@@ -108,8 +123,8 @@ class HyundaiGenesisDynamicsModel(object):
     self.state.twist.angular = torch.tensor([[0.0,0.0,0.0]])
 
     self.input = AckermannInput()
-    self.input.acceleration = torch.tensor([[0.0]])
-    self.input.steering_angle = torch.tensor([[0.0]])
+    self.input.acceleration = torch.tensor([0.0])
+    self.input.steering_angle = torch.tensor([0.0])
 
     self.dt = 0.01 # vehicle model update period (s) and frequency (Hz)
     self.hz = int(1.0/self.dt)
@@ -119,45 +134,66 @@ class HyundaiGenesisDynamicsModel(object):
 
   @property
   def ctrl_size(self):
-    return 2
+    return 3
 
   @property
   def state_size(self):
-    return 6
+    return 9
 
   def setInput(self, acc, steer):
     self.desired_acceleration = acc
     self.desired_steering_angle = steer
 
-  def fu_func(self, X, U):
+  def _fg_func(self, X):
+    assert X.shape[-1] == self.state_size
     state, inp = StateAsArray().deserialize(X)
-    da, ds = self.controlDelay(self.dt, inp, U[:, 0], U[:, 1])
-    inp.acceleration += da
-    inp.steering_angle += ds
-
-    a, s = inp.acceleration, inp.steering_angle
     m, Iz, lf, lr = self.param.mass, self.param.Iz, self.param.lf, self.param.lr
-    vx, vy, w = (state.twist.linear[:, 0], state.twist.linear[:, 1], state.twist.angular[:, 2])
+    vx, vy, w = (state.twist.linear[:, 0], state.twist.linear[:, 1],
+                 state.twist.angular[:, 2])
 
     # Compute tire slip angle and lateral force at front and rear tire (linear model)
     Fyf, Fyr = self.tireLateralForce(state, inp)
-    dX = torch.zeros_like(X)
-    dX[:, :2] = dpos = state.pose.orientation.bmm(state.twist.linear.unsqueeze(-1)).squeeze(-1)[:, :2]
-    dX[:, 2]  = dori = state.twist.angular[:, 2]
-    dX[:, 3]  = dvx  = (a - 1.0/m*Fyf*torch.sin(s) + w*vy)
-    dX[:, 4]  = dvy  = (1.0/m*(Fyf*torch.cos(s) + Fyr) - w*vx)
-    dX[:, 5]  = dw   = 1.0/Iz*(lf*Fyf*torch.cos(s) - lr*Fyr)
-    dX[:, 6]  = da
-    dX[:, 7]  = ds
-    return dX
+    fX = torch.zeros_like(X)
+    gX = X.new_zeros(X.shape[0], X.shape[-1], self.ctrl_size)
+    fX[:, :2] = dpos = state.pose.orientation.bmm(
+      state.twist.linear.unsqueeze(-1)).squeeze(-1)[:, :2]
+    fX[:, 2]  = dori = state.twist.angular[:, 2]
 
+    #dX[:, 3]  = dvx  = (a - 1.0/m*Fyf*sins + w*vy)
+    #dX[:, 4]  = dvy  = (1.0/m*(Fyf*coss + Fyr) - w*vx)
+    #dX[:, 5]  = dw   = 1.0/Iz*(lf*Fyf*coss - lr*Fyr)
+
+    gX[:, 3, :], fX[:, 3] = torch.tensor([1, 0, - 1.0/m*Fyf]), w*vy
+    gX[:, 4, :], fX[:, 4] = torch.tensor([0, 1.0/m*Fyf, 0]), 1.0/m*Fyr - w*vx
+    gX[:, 5, :], fX[:, 5] = torch.tensor([0, 1.0/Iz*lf*Fyf, 0]), - 1.0/Iz*lr*Fyr
+    gX[:, 6:9, :] = torch.eye(self.ctrl_size)
+    return fX, gX
+
+  def fu_func(self, X, U):
+    assert U.shape[-1] == self.ctrl_size
+    _, inp = StateAsArray().deserialize(X)
+    dU = self.controlDelay(self.dt, inp, U)
+    inp.inc_control(dU)
+
+    Ut = inp.control()
+    fX, gX = self._fg_func(X)
+    return fX + gX.bmm(Ut.unsqueeze(-1)).squeeze(-1)
+
+  def f_func(self, X):
+    return self._fg_func(X)[0]
+
+  def g_func(self, X):
+    return self._fg_func(X)[1]
 
   def updateModel(self, disc_steps = 10):
-    deltaT = self.dt/disc_steps
-    U = torch.tensor([[self.desired_acceleration, self.desired_steering_angle]])
-    da, ds = self.controlDelay(self.dt, self.input, U[:, 0], U[:, 1])
-    self.input.acceleration += da
-    self.input.steering_angle += ds
+    deltaT = self.dt / disc_steps
+    U = torch.tensor([[
+      self.desired_acceleration,
+      math.cos(self.desired_steering_angle),
+      math.sin(self.desired_steering_angle)]])
+    #U = torch.tensor([[self.desired_acceleration, self.desired_steering_angle]])
+    dU = self.controlDelay(self.dt, self.input, U)
+    self.input.inc_control(dU)
     for i in range(disc_steps):
       R = self.state.pose.orientation
       linear_twist = self.state.twist.linear
@@ -182,7 +218,7 @@ class HyundaiGenesisDynamicsModel(object):
     return self.param.C_alpha_f * alpha_f, self.param.C_alpha_r * alpha_r
 
 
-  def controlDelay(self, dt, inp, acc, steer):
+  def controlDelay(self, dt, inp, dctrl):
     ''' Simulate first order control delay in acceleration/steering '''
     # e_<n> = self.<n> - self.<n>_des
     # d/dt e_<n> = - kp * e_<n>
@@ -190,13 +226,18 @@ class HyundaiGenesisDynamicsModel(object):
     # kp = alpha = discretization time/(time constant + discretization time)
     #ad = self.desired_acceleration
     #sd = self.desired_steering_angle
-    ad = acc
-    sd = steer
+    ad = dctrl[:, 0]
+    sd = torch.atan2(dctrl[:, 2], dctrl[:, 1])
     atc = self.param.acceleration_time_constant
     stc = self.param.steering_angle_time_constant
+    ctc = self.param.control_time_constant
     da = dt/(dt + atc) * (ad - inp.acceleration)
     ds = dt/(dt + stc) * (sd - inp.steering_angle)
-    return da, ds
+    #du = dt/(dt + ctc) * (dctrl  - inp.control())
+    inp = AckermannInput()
+    inp.acceleration = da
+    inp.steering_angle = ds
+    return inp.control()
 
 
 if __name__=='__main__':

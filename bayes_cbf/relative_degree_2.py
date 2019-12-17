@@ -49,15 +49,21 @@ class GradientGP:
         with variable_required_grad(x):
             return torch.autograd.grad(f.mean(x), x)[0]
 
-    def knl(self, x, xp):
+    def knl(self, x, xp, eigeps=1e-2):
         f = self.f
         with variable_required_grad(x):
             with variable_required_grad(xp):
                 grad_k = torch.autograd.grad(f.knl(x, xp), x, create_graph=True)[0]
                 Hxx_k = t_jac(grad_k, xp)
-        #eigenvalues, _ = torch.eig(Hxx_k)
-        #assert (eigenvalues[:, 0] > -1e-3).all()
-        return Hxx_k # must be positive definite
+        eigenvalues, eigenvectors = torch.eig(Hxx_k, eigenvectors=False)
+        assert (eigenvalues[:, 0] > -eigeps).all(),  " Hessian must be positive definite"
+        small_neg_eig = ((eigenvalues[:, 0] > -eigeps) & (eigenvalues[:, 0] < 0))
+        if small_neg_eig.any():
+            eigenvalues, eigenvectors = torch.eig(Hxx_k, eigenvectors=True)
+            evalz = eigenvalues[:, 0]
+            evalz[small_neg_eig] = 0
+            Hxx_k = eigenvectors.T @ torch.diag(evalz) @ eigenvectors
+        return Hxx_k
 
     def covar_g(self, covar_fg_func, x, xp):
         """

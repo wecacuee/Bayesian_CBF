@@ -286,7 +286,17 @@ class ControlAffineRegressor(DynamicsModel):
             for p in model.parameters(recurse=True):
                 assert not torch.isnan(p).any()
             # Calc loss and backprop gradients
-            loss = -mll(output, XdotTrain.reshape(-1))
+            loss = None
+            for i in range(10):
+                try:
+                    loss = -mll(output, XdotTrain.reshape(-1)
+                                + 1e-6 * torch.rand_like(XdotTrain.reshape(-1)))
+                except RuntimeError as e:
+                    if i != 9 and "cholesky_cpu: " in e.args[0]:
+                        warnings.warn("Got Runtime error" + str(e))
+                    else:
+                        raise e
+
             assert not torch.isnan(loss).any()
             loss.backward()
             for p in model.parameters(recurse=True):
@@ -432,7 +442,14 @@ class ControlAffineRegressor(DynamicsModel):
             k_ss = k_xx = k_xs = k_sx = self.model.covar_module.data_covar_module
         else:
             k_xx = self.model.covar_module.data_covar_module
-            grad_k = torch.autograd.grad(k, Xtest)[0]
+            def grad_ksx(xs, xx):
+                return torch.autograd.grad(k_xx(xs, xx), xs)[0]
+            def grad_kxs(xx, xs):
+                return torch.autograd.grad(k_xx(xx, xs), xs)[0]
+            k_sx = grad_ksx
+            k_xs = grad_kxs
+            def Hessian_kxx(xs, xsp):
+                return t_jac(grad_ksx(xs, xsp), xs)
         A = self.model.covar_module.task_covar_module.U.covar_matrix.evaluate()
         B = self.model.covar_module.task_covar_module.V.covar_matrix.evaluate()
 
@@ -446,7 +463,14 @@ class ControlAffineRegressor(DynamicsModel):
         MXUHtrain = self.model.train_inputs[0]
         Mtrain, Xtrain, UHtrain = self.model.decoder.decode(MXUHtrain)
         nsamples = Xtrain.size(0)
-        Y = self.model.train_targets.reshape(nsamples, -1) - self.model.mean_module(Xtrain).reshape(nsamples, *self.model.matshape).transpose(-2,-1).bmm(UHtrain.unsqueeze(-1)).squeeze(-1)
+        Y = (
+            self.model.train_targets.reshape(nsamples, -1)
+             - self.model.mean_module(Xtrain).reshape(nsamples,
+                                                      *self.model.matshape)
+             .transpose(-2,-1)
+             .bmm(UHtrain.unsqueeze(-1))
+             .squeeze(-1)
+        )
 
         # 1. L := cholesky(K)
         Kb_sqrt = self._perturbed_cholesky(k_xx, B, Xtrain, UHtrain)

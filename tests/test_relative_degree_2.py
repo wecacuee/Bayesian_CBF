@@ -90,7 +90,7 @@ class SimpleGP:
         diff = (x - xp) / lengthscale**2
         H_xx_k_1 =  (diff.unsqueeze(-1) @ diff.unsqueeze(0)) * self.knl(x, xp)
         H_xx_k_2 = torch.eye(x.shape[0]) / lengthscale**2 * self.knl(x, xp)
-        return - H_xx_k_1 + H_xx_k_2
+        return H_xx_k_2 - H_xx_k_1
 
 
 def test_gradient_simple():
@@ -190,7 +190,8 @@ def test_quadratic_term():
 
 
 if __name__ == '__main__':
-    models = test_pendulum_train_predict()
-    xtest, utest = get_test_sample_close_to_train(models)
-    test_cbf2_gp((*models, xtest, utest))
-    test_cbc2_quadtratic_terms((*models, xtest, utest))
+    test_gradient_simple()
+    # models = test_pendulum_train_predict()
+    # xtest, utest = get_test_sample_close_to_train(models)
+    # test_cbf2_gp((*models, xtest, utest))
+    # test_cbc2_quadtratic_terms((*models, xtest, utest))

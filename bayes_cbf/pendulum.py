@@ -888,7 +888,9 @@ class ControlCBFCLFLearned(Controller):
             δ = self.max_unsafe_prob
             ratio = (1-δ)/δ
             scaled_var = ratio * (u0.T @ k_Q @ u0 + k_p.T @ u0 + k_r)
+            assert scaled_var > 0
             margin = torch.sqrt(scaled_var)
+            assert not torch.isnan(scaled_var).any()
             print("at theta, ω; u0: {},{}; {}".format(rad2deg(x[0]), x[1], u0))
             print("mean^2 CBC2: ", (mean_A.T @ u0 + mean_b))
             print("margin CBC2: ", margin)
@@ -969,7 +971,7 @@ Run pendulum with a safe CLF-CBF controller.
 """
 
 
-def run_pendulum_control_online_learning(numSteps=15000):
+def run_pendulum_control_online_learning(numSteps=2000):
     """
     Run save pendulum control while learning the parameters online
     """
@@ -978,7 +980,7 @@ def run_pendulum_control_online_learning(numSteps=15000):
         controller_class=ControlCBFCLFLearned,
         numSteps=numSteps,
         theta0=5*math.pi/12,
-        tau=1e-2)
+        tau=5e-3)
 
 
 if __name__ == '__main__':

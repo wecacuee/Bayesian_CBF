@@ -24,13 +24,14 @@ def to_numpy(x):
     return x.detach().cpu().double().numpy()
 
 
-def t_jac(f_x, x):
+def t_jac(f_x, x, retain_graph=True):
     if f_x.ndim:
         return torch.cat(
             [torch.autograd.grad(f_x[i], x, retain_graph=True)[0].unsqueeze(0)
-            for i in range(f_x.shape[0])], dim=0)
+             for i in range(f_x.shape[0])], dim=0)
+        #return torch.autograd.grad(list(f_x), x, retain_graph=retain_graph)[0]
     else:
-        return torch.autograd.grad(f_x, x, retain_graph=True)[0]
+        return torch.autograd.grad(f_x, x, retain_graph=retain_graph)[0]
 
 
 def store_args(method):
@@ -119,3 +120,12 @@ def variable_required_grad(x):
         yield x
     finally:
         x.requires_grad_(old_x_requires_grad)
+
+def t_hessian(f, x, xp):
+    if xp is x:
+        xp = xp.detach().clone()
+    with variable_required_grad(x):
+        with variable_required_grad(xp):
+            grad_k = torch.autograd.grad(f(x, xp), x, create_graph=True)[0]
+            Hxx_k = t_jac(grad_k, xp)
+    return Hxx_k

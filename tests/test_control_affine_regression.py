@@ -76,14 +76,14 @@ class RandomDynamicsModel:
 
 
 def test_GP_train_predict(n=2, m=3,
-                          D = 20,
+                          D = 50,
                           deterministic=False,
                           rel_tol=0.10,
-                          abs_tol=0.40,
+                          abs_tol=0.80,
                           perturb_scale=0.1,
                           sample_generator=sample_generator_trajectory,
                           dynamics_model_class=RandomDynamicsModel,
-                          training_iter=200):
+                          training_iter=100):
     chosen_seed = torch.randint(100000, (1,))
     #chosen_seed = 52648
     print("Random seed: {}".format(chosen_seed))
@@ -227,7 +227,7 @@ def test_GP_train_predict_independent():
 test_pendulum_train_predict = partial(
     test_GP_train_predict,
     n=2, m=1,
-    training_iter=200,
+    training_iter=100,
     dynamics_model_class=PendulumDynamicsModel)
 """
 Level 4: Pendulum model

@@ -286,16 +286,10 @@ class ControlAffineRegressor(DynamicsModel):
             for p in model.parameters(recurse=True):
                 assert not torch.isnan(p).any()
             # Calc loss and backprop gradients
-            loss = None
-            for i in range(10):
-                try:
-                    loss = -mll(output, XdotTrain.reshape(-1)
-                                + 1e-6 * torch.rand_like(XdotTrain.reshape(-1)))
-                except RuntimeError as e:
-                    if i != 9 and "cholesky_cpu: " in e.args[0]:
-                        warnings.warn("Got Runtime error" + str(e))
-                    else:
-                        raise e
+            loss = -mll(
+                output,
+                XdotTrain.reshape(-1) * (
+                    1 + 1e-6  * torch.rand_like(XdotTrain.reshape(-1))))
 
             assert not torch.isnan(loss).any()
             loss.backward()
@@ -353,7 +347,7 @@ class ControlAffineRegressor(DynamicsModel):
         cholesky_perturb_factor = cholesky_perturb_init
         for _ in range(cholesky_tries):
             try:
-                Kbp = Kb + cholesky_perturb_factor * Kb.diag() * (
+                Kbp = Kb + cholesky_perturb_factor * (
                     torch.eye(Kb.shape[0], dtype=Kb.dtype, device=Kb.device) *
                     torch.rand(Kb.shape[0], dtype=Kb.dtype, device=Kb.device)
                     )
@@ -443,13 +437,14 @@ class ControlAffineRegressor(DynamicsModel):
         else:
             k_xx = self.model.covar_module.data_covar_module
             def grad_ksx(xs, xx):
-                return torch.autograd.grad(k_xx(xs, xx), xs)[0]
+                return torch.autograd.grad(list(k_xx(xs, xx)), xs)[0]
             def grad_kxs(xx, xs):
-                return torch.autograd.grad(k_xx(xx, xs), xs)[0]
+                return torch.autograd.grad(list(k_xx(xx, xs)), xs)[0]
             k_sx = grad_ksx
             k_xs = grad_kxs
             def Hessian_kxx(xs, xsp):
                 return t_jac(grad_ksx(xs, xsp), xs)
+            k_xx = Hessian_kxx
         A = self.model.covar_module.task_covar_module.U.covar_matrix.evaluate()
         B = self.model.covar_module.task_covar_module.V.covar_matrix.evaluate()
 
@@ -548,6 +543,18 @@ class ControlAffineRegressor(DynamicsModel):
             mean_fx = mean_fx.squeeze(0)
         mean_fx = mean_fx.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
         return (mean_fx, cov_fx) if return_cov else mean_fx
+
+    def jac_fu_mean(self, Utest_in, Xtest_in):
+        pass
+
+    def grad_fu_knl(self, Utest_in, Xtest_in):
+        pass
+
+    def hessian_fu_knl(self, Utest_in, Xtest_in):
+        pass
+
+    def A_mat(self, Utest_in, Xtest_in):
+        return self.model.covar_module.task_covar_module.U.covar_matrix.evaluate()
 
     def f_func_mean(self, Xtest_in):
         Xtest = (Xtest_in.unsqueeze(0)

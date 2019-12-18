@@ -144,7 +144,10 @@ class HyundaiGenesisDynamicsModel(object):
     self.desired_acceleration = acc
     self.desired_steering_angle = steer
 
-  def _fg_func(self, X):
+  def _fg_func(self, X_in):
+    if X_in.ndim == 1:
+      X = X_in.unsqueeze(0)
+
     assert X.shape[-1] == self.state_size
     state, inp = StateAsArray().deserialize(X)
     m, Iz, lf, lr = self.param.mass, self.param.Iz, self.param.lf, self.param.lr
@@ -167,6 +170,9 @@ class HyundaiGenesisDynamicsModel(object):
     gX[:, 4, :], fX[:, 4] = torch.tensor([0, 1.0/m*Fyf, 0]), 1.0/m*Fyr - w*vx
     gX[:, 5, :], fX[:, 5] = torch.tensor([0, 1.0/Iz*lf*Fyf, 0]), - 1.0/Iz*lr*Fyr
     gX[:, 6:9, :] = torch.eye(self.ctrl_size)
+    if X_in.ndim == 1:
+      fX = fX.squeeze(0)
+      gX = gX.squeeze(0)
     return fX, gX
 
   def fu_func(self, X, U):

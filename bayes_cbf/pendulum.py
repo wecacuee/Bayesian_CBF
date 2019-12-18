@@ -740,46 +740,46 @@ class ControlCBFCLFLearned(Controller):
         XdotErrorGot_train_mean, _ = self.model.predict_flatten(Xtrain[:-1], Utrain[:-1])
         assert torch.allclose(XdotErrorGot_train_mean, XdotError, rtol=0.4, atol=0.1), """
             Train data check using original flatten predict """
-        print("hat f(x; u)[0] \in [{}, {}]".format(XdotErrorGot_train_mean[:, 0].min(),
+        print("hat f(x; u)[0] ∈ [{}, {}]".format(XdotErrorGot_train_mean[:, 0].min(),
                                                    XdotErrorGot_train_mean[:, 0].max()))
-        print("hat f(x; u)[1] \in [{}, {}]".format(XdotErrorGot_train_mean[:, 1].min(),
+        print("hat f(x; u)[1] ∈ [{}, {}]".format(XdotErrorGot_train_mean[:, 1].min(),
                                                    XdotErrorGot_train_mean[:, 1].max()))
-        print("f(x; u)[0] \in [{}, {}]".format(XdotError[:, 0].min(),
+        print("f(x; u)[0] ∈ [{}, {}]".format(XdotError[:, 0].min(),
                                                XdotError[:, 0].max()))
-        print("f(x; u)[1] \in [{}, {}]".format(XdotError[:, 1].min(),
+        print("f(x; u)[1] ∈ [{}, {}]".format(XdotError[:, 1].min(),
                                                XdotError[:, 1].max()))
 
         fx = self.model.f_func(Xtrain[:-1])
-        print("hat f(x)[0] \in [{}, {}]".format(fx[:, 0].min(),
+        print("hat f(x)[0] ∈ [{}, {}]".format(fx[:, 0].min(),
                                                 fx[:, 0].max()))
-        print("hat f(x)[1] \in [{}, {}]".format(fx[:, 1].min(),
+        print("hat f(x)[1] ∈ [{}, {}]".format(fx[:, 1].min(),
                                                 fx[:, 1].max()))
         fxtrue = self.true_model.f_func(Xtrain[:-1])
-        print("f(x)[0] \in [{}, {}]".format(fxtrue[:, 0].min(),
+        print("f(x)[0] ∈ [{}, {}]".format(fxtrue[:, 0].min(),
                                             fxtrue[:, 0].max()))
-        print("f(x)[1] \in [{}, {}]".format(fxtrue[:, 1].min(),
+        print("f(x)[1] ∈ [{}, {}]".format(fxtrue[:, 1].min(),
                                             fxtrue[:, 1].max()))
 
         gxu = self.model.gu_func(Xtrain[:-1], Utrain[:-1])
-        print("hat g(x; u)[0] \in [{}, {}]".format(gxu[:, 0].min(),
+        print("hat g(x; u)[0] ∈ [{}, {}]".format(gxu[:, 0].min(),
                                                 gxu[:, 0].max()))
-        print("hat g(x; u)[1] \in [{}, {}]".format(gxu[:, 1].min(),
+        print("hat g(x; u)[1] ∈ [{}, {}]".format(gxu[:, 1].min(),
                                                 gxu[:, 1].max()))
         gxutrue = self.true_model.g_func(Xtrain[:-1]).bmm(Utrain[:-1].unsqueeze(-1)).squeeze(-1)
-        print("g(x; u)[0] \in [{}, {}]".format(gxutrue[:, 0].min(),
+        print("g(x; u)[0] ∈ [{}, {}]".format(gxutrue[:, 0].min(),
                                                gxutrue[:, 0].max()))
-        print("g(x; u)[1] \in [{}, {}]".format(gxutrue[:, 1].min(),
+        print("g(x; u)[1] ∈ [{}, {}]".format(gxutrue[:, 1].min(),
                                                gxutrue[:, 1].max()))
 
         fxu = fx + gxu
-        print("hat f(x; u)[0] \in [{}, {}]".format(fxu[:, 0].min(),
+        print("hat f(x; u)[0] ∈ [{}, {}]".format(fxu[:, 0].min(),
                                                    fxu[:, 0].max()))
-        print("hat f(x; u)[1] \in [{}, {}]".format(fxu[:, 1].min(),
+        print("hat f(x; u)[1] ∈ [{}, {}]".format(fxu[:, 1].min(),
                                                    fxu[:, 1].max()))
         fxutrue = fxtrue + gxutrue
-        print("f(x; u)[0] \in [{}, {}]".format(fxutrue[:, 0].min(),
+        print("f(x; u)[0] ∈ [{}, {}]".format(fxutrue[:, 0].min(),
                                                fxutrue[:, 0].max()))
-        print("f(x; u)[1] \in [{}, {}]".format(fxutrue[:, 1].min(),
+        print("f(x; u)[1] ∈ [{}, {}]".format(fxutrue[:, 1].min(),
                                                fxutrue[:, 1].max()))
 
     def train(self):

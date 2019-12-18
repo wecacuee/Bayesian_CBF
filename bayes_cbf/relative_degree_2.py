@@ -5,7 +5,9 @@ from collections import namedtuple
 from functools import partial
 
 from bayes_cbf.control_affine_model import GaussianProcess, GaussianProcessFunc
-from bayes_cbf.misc import t_jac, variable_required_grad
+from bayes_cbf.misc import t_jac, variable_required_grad, t_hessian
+
+EPS = 1e-5
 
 class AffineGP:
     """
@@ -22,7 +24,7 @@ class AffineGP:
     def knl(self, x, xp):
         affine, f = self.affine, self.f
         var = affine(x).T @ f.knl(x, xp) @ affine(x)
-        assert (var >= -1e-3).all()
+        assert (var >= -EPS).all()
         return var
 
     def covar_f(self, x, xp):
@@ -49,20 +51,18 @@ class GradientGP:
         with variable_required_grad(x):
             return torch.autograd.grad(f.mean(x), x)[0]
 
-    def knl(self, x, xp, eigeps=1e-2):
+    def knl(self, x, xp, eigeps=EPS):
         f = self.f
-        with variable_required_grad(x):
-            with variable_required_grad(xp):
-                grad_k = torch.autograd.grad(f.knl(x, xp), x, create_graph=True)[0]
-                Hxx_k = t_jac(grad_k, xp)
-        eigenvalues, eigenvectors = torch.eig(Hxx_k, eigenvectors=False)
-        assert (eigenvalues[:, 0] > -eigeps).all(),  " Hessian must be positive definite"
-        small_neg_eig = ((eigenvalues[:, 0] > -eigeps) & (eigenvalues[:, 0] < 0))
-        if small_neg_eig.any():
-            eigenvalues, eigenvectors = torch.eig(Hxx_k, eigenvectors=True)
-            evalz = eigenvalues[:, 0]
-            evalz[small_neg_eig] = 0
-            Hxx_k = eigenvectors.T @ torch.diag(evalz) @ eigenvectors
+        Hxx_k = t_hessian(f.knl, x, xp)
+        if torch.allclose(x, xp):
+            eigenvalues, eigenvectors = torch.eig(Hxx_k, eigenvectors=False)
+            assert (eigenvalues[:, 0] > -eigeps).all(),  " Hessian must be positive definite"
+            small_neg_eig = ((eigenvalues[:, 0] > -eigeps) & (eigenvalues[:, 0] < 0))
+            if small_neg_eig.any():
+                eigenvalues, eigenvectors = torch.eig(Hxx_k, eigenvectors=True)
+                evalz = eigenvalues[:, 0]
+                evalz[small_neg_eig] = 0
+                Hxx_k = eigenvectors.T @ torch.diag(evalz) @ eigenvectors
         return Hxx_k
 
     def covar_g(self, covar_fg_func, x, xp):
@@ -123,7 +123,7 @@ class QuadraticFormOfGP:
                 + g.mean(x).T @ covar_gf(x, xp) @ f.mean(xp) * 2
                 + g.mean(x).T @ f.knl(x, xp) @ g.mean(xp)
                 + f.mean(x).T @ g.knl(x, xp) @ f.mean(xp))
-        assert (k_quad >= -1e-3).all()
+        assert (k_quad >= -EPS).all()
         return k_quad
 
     def covar_h(self, covar_hf, covar_hg, x, xp):
@@ -157,7 +157,7 @@ class AddGP:
     def knl(self, x, xp):
         f, g, covar_fg = self.f, self.g, self.covar_fg
         var = f.knl(x, xp) + g.knl(x, xp) + 2*covar_fg(x, xp)
-        assert (var >= -1e-3).all()
+        assert (var >= -EPS).all()
         return var
 
     def covar_f(self, x, xp):
@@ -190,6 +190,62 @@ class Lie1GP:
 
     def knl(self, x, xp):
         return self._affine.knl(x, xp)
+
+    def covar_f(self, x, xp):
+        return self._affine.covar_f(x, xp)
+
+    def covar_g(self, cov_fg, x, xp):
+        """
+        Return cov(∇hᵀf, g) for any g such that cov(f, g) is given
+        """
+        return self._affine.covar_g(cov_fg, x, xp)
+
+
+class GradLie1GPExplicit:
+    """
+    ∇ L_f h(x) = ∇ ( ∇ h(x)ᵀ f(x; u) )
+
+    E[ L_f h(x) ] = ∇ ( ∇h(x)ᵀ E[f(x; u)] )
+    Var[ L_f h(x) ] = ∇h(x)ᵀ [k(x, x') A ] ∇h(x)
+    """
+    def __init__(self, h, f_gp):
+        self.grad_h = grad_operator(h)
+        self.f = f_gp
+
+    def _Hxx_h(self, x):
+        with variable_required_grad(x):
+            return t_jac(self.grad_h(x), x)
+
+    def _Jac_f_mean(self, x):
+        # TODO: to commpute
+        return
+
+    def _Hxx_f_knl(self, x, xp):
+        # TODO: to compute
+        return
+
+    def mean(self, x):
+        """
+        E[ L_f h(x) ] = ∇h(x)ᵀ E[f(x; u)]
+        """
+        return self._Hxx_h(x) @ self.f.mean(x) + self._Jac_f_mean(x) @ self.grad_h(x)
+
+    def knl(self, x, xp):
+        """
+        Var[ L_f h(x) ] = ∇h(x)ᵀ E[f(x; u)] ∇h(x)
+        """
+        grad_f_knl = self._grad_f_knl(x, xp)
+        Hxx_f_knl = self._Hxx_f_knl(x, xp)
+        grad_hx = self.grad_h
+        Hxx_h = self._Hxx_h
+        A = self.f.A_mat(x, xp)
+        knl = self.f.knl(x, xp)
+        return (
+            Hxx_f_knl @ grad_hx(x).T @ A @ grad_hx(xp)
+            + grad_hx(x) @ A @ Hxx_h(xp) @ grad_f_knl
+            + grad_f_knl @ grad_hx(x).T @ A @ Hxx_h(xp)
+            + knl * Hxx_h(x).T @ A @ Hxx_h(x)
+        )
 
     def covar_f(self, x, xp):
         return self._affine.covar_f(x, xp)

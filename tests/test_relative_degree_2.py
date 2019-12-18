@@ -3,7 +3,8 @@ import os.path as osp
 
 import torch
 
-from bayes_cbf.pendulum import RadialCBFRelDegree2, PendulumDynamicsModel, ControlAffineRegressor
+from bayes_cbf.pendulum import (RadialCBFRelDegree2, PendulumDynamicsModel,
+                                ControlAffineRegressor)
 from bayes_cbf.control_affine_model import GaussianProcess
 from bayes_cbf.relative_degree_2 import (AffineGP, GradientGP,
                                          QuadraticFormOfGP, Lie1GP, Lie2GP,
@@ -36,7 +37,7 @@ _global_cache = None
 def dynamic_models(learned_model_path='data/pendulum_learned_model.torch'):
     global _global_cache
     if _global_cache is None:
-        if not osp.exists(rel2abs(learned_model_path)):
+        if True or not osp.exists(rel2abs(learned_model_path)):
             learned_model, true_model = test_pendulum_train_predict()
             torch.save(learned_model.state_dict(), rel2abs(learned_model_path))
         else:
@@ -101,9 +102,26 @@ def test_gradient_simple():
     xtest = torch.rand(2)
     assert to_numpy(simp_gp.grad_mean(xtest)) == pytest.approx(
         to_numpy(grad_simp_gp.mean(xtest)))
+    assert to_numpy(simp_gp.knl_hessian(xtest, xtest)) == pytest.approx(
+        to_numpy(grad_simp_gp.knl(xtest, xtest)))
     xtestp = torch.rand(2)
     assert to_numpy(simp_gp.knl_hessian(xtest, xtestp)) == pytest.approx(
-        to_numpy(grad_simp_gp.knl(xtest, xtestp)))
+        to_numpy(grad_simp_gp.knl(xtest, xtestp)), rel=1e-3, abs=1e-5)
+
+
+def test_gradient_f_gp(dynamic_models, skip_test=False, dist=1e-4):
+    learned_model, true_model, xtest, utest = dynamic_models
+    grad_f = GradientGP(AffineGP(
+        lambda x: torch.tensor([1., 0.]),
+        learned_model.f_func_gp()))
+    def xdot_func(x):
+        return true_model.f_func(x)[0] + (true_model.g_func(x) @ utest)[0]
+    with variable_required_grad(xtest):
+        true_grad_f = torch.autograd.grad(xdot_func(xtest), xtest)[0]
+    if not skip_test:
+        assert to_numpy(grad_f.mean(xtest)) == pytest.approx(to_numpy(true_grad_f), abs=0.1, rel=0.4)
+    grad_f.knl(xtest, xtest)
+    return grad_f
 
 
 #@pytest.mark.skip(reason="Does not succeed in theta")
@@ -190,8 +208,15 @@ def test_quadratic_term():
 
 
 if __name__ == '__main__':
+    test_quadratic_term()
     test_gradient_simple()
-    # models = test_pendulum_train_predict()
-    # xtest, utest = get_test_sample_close_to_train(models)
-    # test_cbf2_gp((*models, xtest, utest))
-    # test_cbc2_quadtratic_terms((*models, xtest, utest))
+    learned_model, dynamic_model = test_pendulum_train_predict()
+    xtest, utest = get_test_sample_close_to_train(learned_model)
+    fixture = (learned_model, dynamic_model, xtest, utest)
+    test_affine_gp(fixture)
+    test_gradient_f_gp(fixture)
+    test_gradient_gp(fixture)
+    test_quadratic_form(fixture)
+    test_lie2_gp(fixture)
+    test_cbf2_gp(fixture)
+    test_cbc2_quadtratic_terms(fixture)

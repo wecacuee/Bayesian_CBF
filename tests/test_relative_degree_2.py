@@ -107,7 +107,7 @@ def test_gradient_simple():
     m = torch.rand(2)
     lengthscale = torch.rand(2)
     simp_gp = SimpleGP(m, lengthscale)
-    grad_simp_gp = GradientGP(simp_gp)
+    grad_simp_gp = GradientGP(simp_gp, analytical_hessian=True)
     xtest = torch.rand(2)
     assert to_numpy(simp_gp.grad_mean(xtest)) == pytest.approx(
         to_numpy(grad_simp_gp.mean(xtest)))
@@ -175,12 +175,12 @@ def test_quadratic_form(dynamic_models, skip_test=False, dist=1e-4):
 def test_lie2_gp(dynamic_models):
     learned_model, true_model, xtest, utest = dynamic_models
     true_cbf2 = RadialCBFRelDegree2(true_model)
-    cbf2 = RadialCBFRelDegree2(dynamic_models)
+    cbf2 = RadialCBFRelDegree2(learned_model)
 
     f_gp = learned_model.f_func_gp()
     covar_fu_f = partial(learned_model.covar_fu_f, utest)
     fu_gp = learned_model.fu_func_gp(utest)
-    L2h = Lie2GP(Lie1GP(cbf2.h2_col, f_gp), covar_fu_f, fu_gp)
+    L2h = Lie2GP(Lie1GP(cbf2.grad_h2_col, f_gp), covar_fu_f, fu_gp, learned_model)
     assert to_numpy(L2h.mean(xtest)) == pytest.approx(
         to_numpy(
             true_cbf2.lie2_f_h_col(xtest)
@@ -194,9 +194,10 @@ def test_cbf2_gp(dynamic_models):
     learned_model, true_model, xtest, utest = dynamic_models
     true_cbf2 = RadialCBFRelDegree2(true_model)
     learned_cbf2 = RadialCBFRelDegree2(learned_model)
-    cbc2 = cbc2_gp(learned_cbf2.h2_col, learned_model, utest)
+    cbc2 = cbc2_gp(learned_cbf2.h2_col,
+                   learned_cbf2.grad_h2_col, learned_model, utest)
     assert to_numpy(cbc2.mean(xtest)) == pytest.approx(to_numpy(
-        - true_cbf2.A(xtest) @ utest + true_cbf2.b(xtest))[0], rel=0.1, abs=0.1)
+        - true_cbf2.A(xtest) @ utest + true_cbf2.b(xtest)), rel=0.1, abs=0.1)
     cbc2.knl(xtest, xtest)
 
 
@@ -205,9 +206,9 @@ def test_cbc2_quadtratic_terms(dynamic_models):
     true_cbf2 = RadialCBFRelDegree2(true_model)
     learned_cbf2 = RadialCBFRelDegree2(learned_model)
     (mean_A, mean_b), knl_terms, mean, knl = cbc2_quadratic_terms(
-        learned_cbf2.h2_col, learned_model, xtest, utest)
+        learned_cbf2.h2_col, learned_cbf2.grad_h2_col, learned_model, xtest, utest)
     assert to_numpy(mean_A @ utest + mean_b) == pytest.approx(to_numpy(
-        - true_cbf2.A(xtest) @ utest + true_cbf2.b(xtest))[0], rel=0.1)
+        - true_cbf2.A(xtest) @ utest + true_cbf2.b(xtest)), rel=0.1)
 
 
 def test_quadratic_term():
@@ -230,7 +231,7 @@ if __name__ == '__main__':
     fixture = (learned_model, dynamic_model, xtest, utest)
     test_affine_gp(fixture)
     test_gradient_gp(fixture)
-    test_gradient_f_gp(fixture)
+    #test_gradient_f_gp(fixture)
     test_quadratic_form(fixture)
     test_lie2_gp(fixture)
     test_cbf2_gp(fixture)

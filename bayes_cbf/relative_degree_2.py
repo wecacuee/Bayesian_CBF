@@ -6,6 +6,8 @@ from functools import partial
 
 from bayes_cbf.control_affine_model import GaussianProcess, GaussianProcessFunc
 from bayes_cbf.misc import t_jac, variable_required_grad, t_hessian
+from importlib import import_module
+tgradcheck = import_module("torch.autograd.gradcheck") # global variable conflicts with module name
 
 EPS = 2e-3
 
@@ -51,9 +53,10 @@ class GradientGP:
     """
     return ∇f, Hₓₓ k_f, ∇ covar_fg
     """
-    def __init__(self, f, grad_check=True):
+    def __init__(self, f, grad_check=False, analytical_hessian=False):
         self.f = f
         self.grad_check = grad_check
+        self.analytical_hessian = analytical_hessian
 
     @property
     def dtype(self):
@@ -79,15 +82,32 @@ class GradientGP:
         if xp is x:
             xp = xp.detach().clone()
 
+        grad_k_func = lambda xs, xt: torch.autograd.grad(f.knl(xs, xt), xs, create_graph=True)[0]
         if self.grad_check:
             old_dtype = self.dtype
             self.to(torch.float64)
             f_knl_func = lambda xt: f.knl(xt, xp.double())
             with variable_required_grad(x):
                 torch.autograd.gradcheck(f_knl_func, x.double())
+
+            with variable_required_grad(x):
+                with variable_required_grad(xp):
+                    torch.autograd.gradcheck(
+                        lambda xp: grad_k_func(x.double(), xp)[0], xp.double())
             self.to(dtype=old_dtype)
 
-        Hxx_k = t_hessian(f.knl, x, xp)
+        analytical = self.analytical_hessian
+        if analytical:
+            Hxx_k = t_hessian(f.knl, x, xp)
+        else:
+            with variable_required_grad(x):
+                with variable_required_grad(xp):
+                    old_dtype = self.dtype
+                    self.to(torch.float64)
+                    Hxx_k = tgradcheck.get_numerical_jacobian(
+                        partial(grad_k_func, x.double()), xp.double())
+                    self.to(dtype=old_dtype)
+                    Hxx_k = Hxx_k.to(old_dtype)
         if torch.allclose(x, xp):
             eigenvalues, eigenvectors = torch.eig(Hxx_k, eigenvectors=False)
             assert (eigenvalues[:, 0] > -eigeps).all(),  " Hessian must be positive definite"
@@ -214,10 +234,10 @@ class Lie1GP:
     """
     L_f h(x) = ∇ h(x)ᵀ f(x; u)
     """
-    def __init__(self, h, f_gp):
-        self.h = h
+    def __init__(self, grad_h, f_gp):
+        self.grad_h = grad_h
         self.f_gp = f_gp
-        self._affine = AffineGP(grad_operator(h), f_gp)
+        self._affine = AffineGP(grad_h, f_gp)
 
     @property
     def dtype(self):
@@ -249,9 +269,10 @@ class GradLie1GPExplicit:
     E[ L_f h(x) ] = ∇ ( ∇h(x)ᵀ E[f(x; u)] )
     Var[ L_f h(x) ] = ∇h(x)ᵀ [k(x, x') A ] ∇h(x)
     """
-    def __init__(self, h, f_gp):
+    def __init__(self, h, regressor):
         self.grad_h = grad_operator(h)
-        self.f = f_gp
+        self.regressor = regressor
+        self.f = regressor.f_func_gp()
 
     def _Hxx_h(self, x):
         with variable_required_grad(x):
@@ -259,11 +280,17 @@ class GradLie1GPExplicit:
 
     def _Jac_f_mean(self, x):
         # TODO: to commpute
-        return
+        return self.regressor.custom_predict(x, grad_gp=True, commpute_cov=False)
 
     def _Hxx_f_knl(self, x, xp):
         # TODO: to compute
-        return
+        _, scalar_var = self.regressor.custom_predict(x, Xtestp_in=xp, grad_gp=True,
+                                                      commpute_cov=True, scalar_var_only=True)
+        return scalar_var
+
+    def _grad_f_knl(self, x, xp):
+        with variable_required_grad(x):
+            return torch.autograd.grad(self.f.knl(x, xp), x)[0]
 
     def mean(self, x):
         """
@@ -279,7 +306,7 @@ class GradLie1GPExplicit:
         Hxx_f_knl = self._Hxx_f_knl(x, xp)
         grad_hx = self.grad_h
         Hxx_h = self._Hxx_h
-        A = self.f.A_mat(x, xp)
+        A = self.regressor.A_mat()
         knl = self.f.knl(x, xp)
         return (
             Hxx_f_knl @ grad_hx(x).T @ A @ grad_hx(xp)
@@ -302,11 +329,12 @@ class Lie2GP:
     """
     L_f² h(x) = ∇[L_f h(x)]ᵀ f(x; u)
     """
-    def __init__(self, lie1_gp, covar_fu_f, fu_gp):
+    def __init__(self, lie1_gp, covar_fu_f, fu_gp, caregressor):
         self.fu = fu_gp
         self._lie1_gp = lie1_gp
         self._covar_fu_f = covar_fu_f
         self.covar_Lie1_fu = covar_Lie1_fu = partial(lie1_gp.covar_g, covar_fu_f)
+        #self._grad_lie1_gp = GradLie1GPExplicit(lie1_gp.affine, caregressor)
         self._grad_lie1_gp = GradientGP(lie1_gp)
         self.covar_grad_Lie1_fu = covar_grad_Lie1_fu = partial(
             self._grad_lie1_gp.covar_g, covar_Lie1_fu)
@@ -336,16 +364,16 @@ class Lie2GP:
         return covar_L2h_L1h(x, xp)
 
 
-def cbc2_gp(h_func, learned_model, u, K_α=[1,1]):
+def cbc2_gp(h_func, grad_h_func, learned_model, u, K_α=[1,1]):
     """
     L_f² h(x) + K_α [     h(x) ] ≥ 0
                     [ L_f h(x) ]
     """
     f_gp = learned_model.f_func_gp()
-    L1h = Lie1GP(h_func, f_gp)
+    L1h = Lie1GP(grad_h_func, f_gp)
     covar_fu_f = partial(learned_model.covar_fu_f, u)
     fu_func = learned_model.fu_func_gp(u)
-    L2h = Lie2GP(L1h, covar_fu_f, fu_func)
+    L2h = Lie2GP(L1h, covar_fu_f, fu_func, learned_model)
     cbc2 = AddGP(L2h,
                  GaussianProcessFunc(
                      mean=lambda x: K_α[1] * L1h.mean(x) + K_α[0] * h_func(x),
@@ -374,12 +402,12 @@ def get_quadratic_terms(func, x):
     return quad, linear, const
 
 
-def cbc2_quadratic_terms(h_func, control_affine_model, x, u):
+def cbc2_quadratic_terms(h_func, grad_h_func, control_affine_model, x, u):
     """
     cbc2.mean(x) ≥ √(1-δ)/δ cbc2.k(x,x')
     """
-    mean = lambda up: cbc2_gp(h_func, control_affine_model, up).mean(x)
-    k_func = lambda up: cbc2_gp(h_func, control_affine_model, up).knl(x, x)
+    mean = lambda up: cbc2_gp(h_func, grad_h_func, control_affine_model, up).mean(x)
+    k_func = lambda up: cbc2_gp(h_func, grad_h_func, control_affine_model, up).knl(x, x)
 
     #assert mean(u) > 0, 'cbf2 should be at least satisfied in expectation'
     mean_A, mean_b = get_affine_terms(mean, u)

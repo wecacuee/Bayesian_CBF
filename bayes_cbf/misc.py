@@ -24,12 +24,11 @@ def to_numpy(x):
     return x.detach().cpu().double().numpy()
 
 
-def t_jac(f_x, x, retain_graph=True):
+def t_jac(f_x, x, retain_graph=False):
     if f_x.ndim:
         return torch.cat(
             [torch.autograd.grad(f_x[i], x, retain_graph=True)[0].unsqueeze(0)
              for i in range(f_x.shape[0])], dim=0)
-        #return torch.autograd.grad(list(f_x), x, retain_graph=retain_graph)[0]
     else:
         return torch.autograd.grad(f_x, x, retain_graph=retain_graph)[0]
 
@@ -125,10 +124,5 @@ def t_hessian(f, x, xp, grad_check=True):
     with variable_required_grad(x):
         with variable_required_grad(xp):
             grad_k_func = lambda xs, xt: torch.autograd.grad(f(xs, xt), xs, create_graph=True)[0]
-            if grad_check:
-                old_dtype = f.__self__.dtype
-                f.__self__.to(dtype=torch.float64)
-                torch.autograd.gradcheck(partial(grad_k_func, x.double()), xp.double())
-                f.__self__.to(dtype=old_dtype)
             Hxx_k = t_jac(grad_k_func(x, xp), xp)
     return Hxx_k

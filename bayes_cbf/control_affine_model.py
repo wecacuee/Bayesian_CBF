@@ -407,7 +407,8 @@ class ControlAffineRegressor(DynamicsModel):
                        Utestp_in=None, UHfillp=1,
                        compute_cov=True,
                        grad_gp=False,
-                       grad_check=True):
+                       grad_check=False,
+                       scalar_var_only=False):
         """
         Gpytorch is complicated. It uses terminology like fantasy something,
         something. Even simple exact prediction strategy uses Laczos. I do not
@@ -491,6 +492,8 @@ class ControlAffineRegressor(DynamicsModel):
             k_sx = grad_ksx
             k_xs = grad_kxs
             def Hessian_kxx(xs, xsp):
+                if xs is xsp:
+                    xsp = xsp.detach().clone()
                 return t_hessian(k_xx, xs, xsp)
             k_ss = Hessian_kxx
         A = self.model.covar_module.task_covar_module.U.covar_matrix.evaluate()
@@ -602,7 +605,7 @@ class ControlAffineRegressor(DynamicsModel):
                 self.model.float()
                 self.to(dtype=old_dtype)
 
-            covar_mat = scalar_var.reshape(-1, 1, 1) * A
+            covar_mat = torch_kron(scalar_var.unsqueeze(0), A.unsqueeze(0))
             if grad_check:
                 old_dtype = self.dtype
                 self.double_()
@@ -611,9 +614,9 @@ class ControlAffineRegressor(DynamicsModel):
                     torch.autograd.gradcheck(covar_mat_func, Xtest.double())
                 self.model.float()
                 self.to(dtype=old_dtype)
-        else:
+        else: # if not compute_cov
             covar_mat = 0 * A
-        return mean, covar_mat
+        return mean, (scalar_var if scalar_var_only else covar_mat)
 
     @property
     def dtype(self):
@@ -658,13 +661,13 @@ class ControlAffineRegressor(DynamicsModel):
             Xtest = torch.from_numpy(Xtest_in)
         else:
             Xtest = Xtest_in
-        Xtest = Xtest.float().to(device=device)
+        Xtest = Xtest.to(device=device, dtype=self.dtype)
 
         if isinstance(Utest_in, np.ndarray):
             Utest = torch.from_numpy(Utest_in)
         else:
             Utest = Utest_in
-        Utest = Utest.float().to(device=device)
+        Utest = Utest.to(device=device, dtype=self.dtype)
 
         # Switch back to eval mode
         if self.model is None or self.likelihood is None:
@@ -721,7 +724,7 @@ class ControlAffineRegressor(DynamicsModel):
             mean_f = mean_f.squeeze(0)
         return mean_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
 
-    def f_func_knl(self, Xtest_in, Xtestp_in, grad_check=True):
+    def f_func_knl(self, Xtest_in, Xtestp_in, grad_check=False):
         Xtest = (Xtest_in.unsqueeze(0)
                  if Xtest_in.ndim == 1
                  else Xtest_in)

@@ -122,8 +122,6 @@ def variable_required_grad(x):
         x.requires_grad_(old_x_requires_grad)
 
 def t_hessian(f, x, xp):
-    if xp is x:
-        xp = xp.detach().clone()
     with variable_required_grad(x):
         with variable_required_grad(xp):
             grad_k = torch.autograd.grad(f(x, xp), x, create_graph=True)[0]

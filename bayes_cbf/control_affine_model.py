@@ -24,11 +24,34 @@ import gpytorch.settings as gpsettings
 
 from bayes_cbf.matrix_variate_multitask_kernel import MatrixVariateIndexKernel, HetergeneousMatrixVariateKernel
 from bayes_cbf.matrix_variate_multitask_model import HetergeneousMatrixVariateMean
-from bayes_cbf.misc import torch_kron, DynamicsModel
+from bayes_cbf.misc import (torch_kron, DynamicsModel, t_jac, variable_required_grad,
+                            t_hessian)
 
 
 GaussianProcess = namedtuple('GaussianProcess', ["mean", "k"])
 GaussianProcessFunc = namedtuple('GaussianProcessFunc', ["mean", "knl"])
+
+
+class DifferentiableGaussianProcess(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, regressor, compute_cov, Utest, Xtest):
+        ctx.save_for_backward(regressor, return_cov, Utest, Xtest)
+        mean, cov = regressor.custom_predict(Xtest, Utest, compute_cov=compute_cov)
+        return mean, cov # 2 inputs to backward
+
+    @staticmethod
+    def backward(ctx, grad_mean, grad_cov):
+        assert not ctx.needs_input_grad[0]
+        assert not ctx.needs_input_grad[1]
+        assert not ctx.needs_input_grad[2]
+        regressor, compute_cov, Utest, Xtest = ctx.saved_tensors
+
+        grad_Xtest = None
+        if ctx.needs_input_grad[2]:
+            mean, cov = self.regressor.custom_predict( Xtest, Utest,
+                grad_gp=True, compute_cov=compute_cov)
+            grad_Xtest = grad_mean @ mean + grad_cov @ cov
+        return None, None, None, grad_Xtest # 4 inputs to foward
 
 
 class Namespace:
@@ -233,7 +256,7 @@ class ControlAffineRegressor(DynamicsModel):
     def _ensure_device_dtype(self, X):
         if isinstance(X, np.ndarray):
             X = torch.from_numpy(X)
-        X = X.float().to(device=self.device)
+        X = X.to(device=self.device, dtype=next(self.model.parameters())[0].dtype)
         return X
 
     def fit(self, *args, max_cg_iterations=2000, **kwargs):
@@ -337,7 +360,7 @@ class ControlAffineRegressor(DynamicsModel):
                            cholesky_tries=10,
                            cholesky_perturb_init=1e-5,
                            cholesky_perturb_scale=10):
-        KXX = k(Xtrain, Xtrain).evaluate()
+        KXX = k(Xtrain, Xtrain)
         uBu = UHtrain @ B @ UHtrain.T
         Kb = KXX * uBu
 
@@ -375,7 +398,8 @@ class ControlAffineRegressor(DynamicsModel):
     def custom_predict(self, Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None,
                        Utestp_in=None, UHfillp=1,
                        compute_cov=True,
-                       grad_gp=False):
+                       grad_gp=False,
+                       grad_check=False):
         """
         Gpytorch is complicated. It uses terminology like fantasy something,
         something. Even simple exact prediction strategy uses Laczos. I do not
@@ -432,32 +456,73 @@ class ControlAffineRegressor(DynamicsModel):
             UHtestp = torch.cat((Utest.new_full((Utestp.shape[0], 1), UHfillp),
                                  Utestp), dim=-1)
 
+        k_xx = lambda x, xp: self.model.covar_module.data_covar_module(x, xp).evaluate()
         if not grad_gp:
-            k_ss = k_xx = k_xs = k_sx = self.model.covar_module.data_covar_module
+            k_ss = k_xs = k_sx = k_xx
+            mean_s = self.model.mean_module
         else:
-            k_xx = self.model.covar_module.data_covar_module
+            def grad_mean_s(xs):
+                with variable_required_grad(xs):
+                    # allow_unused=True because the mean_module can be ConstantMean
+                    mean_xs = self.model.mean_module(xs)
+                    grad_mean_xs = torch.autograd.grad(list(mean_xs.flatten()), xs,
+                                              allow_unused=True)[0]
+                if grad_mean_xs is None:
+                    return xs.new_zeros(xs.shape[0], *self.model.matshape, xs.shape[-1])
+                else:
+                    return grad_mean_xs.reshape(xs.shape[0], *self.model.matshape, xs.shape[-1])
+
+            mean_s = grad_mean_s
+
             def grad_ksx(xs, xx):
-                return torch.autograd.grad(list(k_xx(xs, xx)), xs)[0]
+                with variable_required_grad(xs):
+                    return torch.autograd.grad(list(k_xx(xs, xx)), xs)[0]
             def grad_kxs(xx, xs):
-                return torch.autograd.grad(list(k_xx(xx, xs)), xs)[0]
+                with variable_required_grad(xs):
+                    return torch.autograd.grad(list(k_xx(xx, xs)), xs)[0]
             k_sx = grad_ksx
             k_xs = grad_kxs
             def Hessian_kxx(xs, xsp):
-                return t_jac(grad_ksx(xs, xsp), xs)
-            k_xx = Hessian_kxx
+                return t_hessian(k_xx, xs, xsp)
+            k_ss = Hessian_kxx
         A = self.model.covar_module.task_covar_module.U.covar_matrix.evaluate()
         B = self.model.covar_module.task_covar_module.V.covar_matrix.evaluate()
 
-        fu_mean_test = self.model.mean_module(Xtest).reshape(
-            Xtest.shape[0], *self.model.matshape).transpose(-2, -1).bmm(
-                UHtest.unsqueeze(-1)).squeeze(-1)
+        # Output of mean_s(Xtest) is (B, (1+m)n)
+        # Make it (B, (1+m), n, 1) then transpose
+        # (B, n, 1, (1+m)) and multiply with UHtest (B, (1+m)) to get
+        # (B, n, 1)
+        fX_mean_test = mean_s(Xtest)
+        fu_mean_test = (
+            fX_mean_test
+            .reshape(Xtest.shape[0], *self.model.matshape, -1) # (B, 1+m, n, n or 1)
+            .permute(0, 2, 3, 1) # (B, n, n or 1, 1+m)
+            .reshape(Xtest.shape[0], -1, self.model.matshape[0]) # (B, n(n or 1), 1+m)
+            .bmm(UHtest.unsqueeze(-1)) # (B, n(n or 1), 1)
+            .squeeze(-1) # (B, n(n or 1))
+        )
+
         if self.model.train_inputs is None:
             # We do not have training data just return the mean and prior covariance
-            return fu_mean_test, k_ss(Xtest, Xtest).evaluate(), A
+            if fX_mean_test.ndim == 4:
+                fu_mean_test = fu_mean_test.reshape(Xtest.shape[0], *self.model.matshape, -1)
+            else:
+                fu_mean_test = fu_mean_test.reshape(Xtest.shape[0], *self.model.matshape)
+            return fu_mean_test, k_ss(Xtest, Xtest) * A
 
         MXUHtrain = self.model.train_inputs[0]
         Mtrain, Xtrain, UHtrain = self.model.decoder.decode(MXUHtrain)
         nsamples = Xtrain.size(0)
+
+        if grad_check and not grad_gp:
+            with variable_required_grad(Xtest):
+                old_dtype = self.dtype
+                self.double_()
+                torch.autograd.gradcheck(
+                    lambda X: self.model.covar_module.data_covar_module(
+                            Xtrain.double(), X).evaluate(),
+                    Xtest.double())
+                self.to(dtype=old_dtype)
         Y = (
             self.model.train_targets.reshape(nsamples, -1)
              - self.model.mean_module(Xtrain).reshape(nsamples,
@@ -469,25 +534,106 @@ class ControlAffineRegressor(DynamicsModel):
 
         # 1. L := cholesky(K)
         Kb_sqrt = self._perturbed_cholesky(k_xx, B, Xtrain, UHtrain)
-        kb_star = k_xs(Xtrain, Xtest).evaluate() * (UHtrain @ B @ UHtest.t())
+        kb_star = k_xs(Xtrain, Xtest) * (UHtrain @ B @ UHtest.t())
+        if grad_check:
+            old_dtype = self.dtype
+            self.double_()
+            kb_star_func = lambda X: k_xs(Xtrain.double(), X) * (UHtrain.double() @ B.double() @ UHtest.double().t())
+            with variable_required_grad(Xtest):
+                torch.autograd.gradcheck(kb_star_func, Xtest.double())
+            self.to(dtype=old_dtype)
         # 2. α := Lᵀ \ ( L \ Y )
         α = torch.cholesky_solve(Y, Kb_sqrt) # check the shape of Y
         # 3. μ := μ(x) + kb*ᵀ α
         mean = fu_mean_test + kb_star.t() @ α
+
         if compute_cov:
-            kb_star_p = (k_xs(Xtrain, Xtestp).evaluate() * (UHtrain @ B @ UHtestp.t())
+            kb_star_p = (k_xs(Xtrain, Xtestp) * (UHtrain @ B @ UHtestp.t())
                      if Xtestp_in is not None
                      else kb_star)
-            kb_star_starp = k_ss(Xtest, Xtestp).evaluate() * (UHtest @ B @ UHtestp.t())
+            kb_star_starp = k_ss(Xtest, Xtestp) * (UHtest @ B @ UHtestp.t())
+            if grad_check:
+                old_dtype = self.dtype
+                self.double_()
+                kb_star_starp_func = lambda X: k_ss(X, Xtestp) * (UHtest @ B @ UHtestp.t())
+                with variable_required_grad(Xtest):
+                    torch.autograd.gradcheck(kb_star_starp_func, Xtest.double())
+                self.to(dtype=old_dtype)
+
             # 4. v := L \ kb*
             v = torch.solve(kb_star, Kb_sqrt).solution
+
+            if grad_check:
+                old_dtype = self.dtype
+                self.double_()
+                v_func = lambda X: torch.solve(kb_star_func(X), Kb_sqrt.double()).solution
+                with variable_required_grad(Xtest):
+                    torch.autograd.gradcheck(v_func, Xtest.double())
+                self.to(dtype=old_dtype)
+
             vp = torch.solve(kb_star_p, Kb_sqrt).solution if Xtestp_in is not None else v
+
+            if grad_check:
+                old_dtype = self.dtype
+                self.double_()
+                v_func = lambda X: torch.solve(kb_star_func(X), Kb_sqrt.double()).solution
+                with variable_required_grad(Xtest):
+                    torch.autograd.gradcheck(v_func, Xtest.double())
+                self.to(dtype=old_dtype)
+
             # 5. k* := k(x*,x*) - vᵀv
             scalar_var = kb_star_starp - v.t() @ vp
+            if grad_check:
+                old_dtype = self.dtype
+                self.double_()
+                scalar_var_func = lambda X: kb_star_starp_func(X) - v_func(X).t() @ v_func(Xtestp.double())
+                with variable_required_grad(Xtest):
+                    torch.autograd.gradcheck(scalar_var_func, Xtest.double())
+                self.model.float()
+                self.to(dtype=old_dtype)
+
             covar_mat = scalar_var.reshape(-1, 1, 1) * A
+            if grad_check:
+                old_dtype = self.dtype
+                self.double_()
+                covar_mat_func = lambda X: (scalar_var_func(X).reshape(-1, 1, 1) * A)[0,0]
+                with variable_required_grad(Xtest):
+                    torch.autograd.gradcheck(covar_mat_func, Xtest.double())
+                self.model.float()
+                self.to(dtype=old_dtype)
         else:
             covar_mat = 0 * A
         return mean, covar_mat
+
+    @property
+    def dtype(self):
+        return next(self.model.parameters())[0].dtype
+
+    def to(self, dtype=torch.float64):
+        if dtype is torch.float64:
+            self.double_()
+        else:
+            self.float_()
+
+    def double_(self):
+        self.model.double()
+        assert self.dtype is torch.float64
+        self.model.train_inputs = tuple([
+            inp.double()
+            for inp in self.model.train_inputs])
+        self.model.train_targets = self.model.train_targets.double()
+        for k, v in self._cache.items():
+            self._cache[k] = v.double()
+
+    def float_(self):
+        self.model.float()
+        assert self.dtype is torch.float32
+        self.model.train_inputs = tuple([
+            inp.float()
+            for inp in self.model.train_inputs])
+        self.model.train_targets = self.model.train_targets.float()
+        for k, v in self._cache.items():
+            self._cache[k] = v.float()
 
     def predict_flatten(self, Xtest_in, Utest_in):
         """
@@ -553,7 +699,7 @@ class ControlAffineRegressor(DynamicsModel):
     def hessian_fu_knl(self, Utest_in, Xtest_in):
         pass
 
-    def A_mat(self, Utest_in, Xtest_in):
+    def A_mat(self):
         return self.model.covar_module.task_covar_module.U.covar_matrix.evaluate()
 
     def f_func_mean(self, Xtest_in):
@@ -565,7 +711,7 @@ class ControlAffineRegressor(DynamicsModel):
             mean_f = mean_f.squeeze(0)
         return mean_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
 
-    def f_func_knl(self, Xtest_in, Xtestp_in):
+    def f_func_knl(self, Xtest_in, Xtestp_in, grad_check=False):
         Xtest = (Xtest_in.unsqueeze(0)
                  if Xtest_in.ndim == 1
                  else Xtest_in)
@@ -575,7 +721,17 @@ class ControlAffineRegressor(DynamicsModel):
         _, var_f =  self.custom_predict(Xtest, Xtestp_in=Xtestp, compute_cov=True)
         if Xtest_in.ndim == 1:
             var_f = var_f.squeeze(0)
-        return var_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
+        var_f_out  = var_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
+
+        if grad_check:
+            old_dtype = self.dtype
+            self.double_()
+            var_f_func = lambda X: self.custom_predict(X, Xtestp_in=X, compute_cov=True)[1][0,0,0]
+            with variable_required_grad(Xtest):
+                torch.autograd.gradcheck(var_f_func, Xtest.double())
+            self.model.float()
+            self.to(dtype=old_dtype)
+        return var_f_out
 
     def f_func_gp(self):
         return GaussianProcessFunc(self.f_func_mean, self.f_func_knl)
@@ -588,6 +744,20 @@ class ControlAffineRegressor(DynamicsModel):
                  if Utest_in.ndim == 1
                  else Utest_in)
         mean_f, _ =  self.custom_predict(Xtest, Utest, compute_cov=False)
+        if Xtest_in.ndim == 1:
+            mean_f = mean_f.squeeze(0)
+        mean_f = mean_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
+        return mean_f
+
+    def grad_fu_func_mean(self, Xtest_in, Utest_in=None):
+        Xtest = (Xtest_in.unsqueeze(0)
+                 if Xtest_in.ndim == 1
+                 else Xtest_in)
+        Utest = (Utest_in.unsqueeze(0)
+                 if Utest_in is not None and Utest_in.ndim == 1
+                 else Utest_in)
+        mean_f, _ = self.custom_predict(Xtest, Utest, compute_cov=False,
+                                        grad_gp=True)
         if Xtest_in.ndim == 1:
             mean_f = mean_f.squeeze(0)
         mean_f = mean_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)

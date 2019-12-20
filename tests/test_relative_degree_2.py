@@ -103,7 +103,7 @@ def test_gradient_simple():
     assert to_numpy(simp_gp.grad_mean(xtest)) == pytest.approx(
         to_numpy(grad_simp_gp.mean(xtest)))
     assert to_numpy(simp_gp.knl_hessian(xtest, xtest)) == pytest.approx(
-        to_numpy(grad_simp_gp.knl(xtest, xtest)))
+        to_numpy(grad_simp_gp.knl(xtest, xtest.detach())))
     xtestp = torch.rand(2)
     assert to_numpy(simp_gp.knl_hessian(xtest, xtestp)) == pytest.approx(
         to_numpy(grad_simp_gp.knl(xtest, xtestp)), rel=1e-3, abs=1e-5)
@@ -125,8 +125,14 @@ def test_gradient_f_gp(dynamic_models, skip_test=False, dist=1e-4):
 
 
 #@pytest.mark.skip(reason="Does not succeed in theta")
-def test_gradient_gp(dynamic_models, skip_test=False, dist=1e-4):
+def test_gradient_gp(dynamic_models, skip_test=False, dist=1e-4, grad_check=True):
     learned_model, true_model, xtest, _ = dynamic_models
+    if grad_check:
+        learned_model.double_()
+        func = lambda lm, X: lm.f_func_knl(X, xtest.double())[0,0]
+        with variable_required_grad(xtest):
+            torch.autograd.gradcheck(partial(func, learned_model), xtest.double())
+        learned_model.float_()
     l1h = test_affine_gp(dynamic_models, skip_test=True)
     true_cbf2 = RadialCBFRelDegree2(true_model)
     grad_l1h = GradientGP(l1h)
@@ -152,7 +158,7 @@ def test_quadratic_form(dynamic_models, skip_test=False, dist=1e-4):
             to_numpy(
                 true_cbf2.lie2_f_h_col(xtest)
                 + true_cbf2.lie_g_lie_f_h_col(xtest) * utest
-            ), abs=0.1, rel=0.4)
+            )[0], abs=0.1, rel=0.4)
     l2h.knl(xtest, xtest)
     return l2h
 
@@ -170,7 +176,7 @@ def test_lie2_gp(dynamic_models):
         to_numpy(
             true_cbf2.lie2_f_h_col(xtest)
             + true_cbf2.lie_g_lie_f_h_col(xtest) * utest
-        ), abs=0.1, rel=0.4)
+        )[0], abs=0.1, rel=0.4)
     L2h.knl(xtest, xtest)
     return L2h
 
@@ -214,8 +220,8 @@ if __name__ == '__main__':
     xtest, utest = get_test_sample_close_to_train(learned_model)
     fixture = (learned_model, dynamic_model, xtest, utest)
     test_affine_gp(fixture)
-    test_gradient_f_gp(fixture)
     test_gradient_gp(fixture)
+    test_gradient_f_gp(fixture)
     test_quadratic_form(fixture)
     test_lie2_gp(fixture)
     test_cbf2_gp(fixture)

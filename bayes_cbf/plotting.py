@@ -44,32 +44,33 @@ def plot_results(time_vec, omega_vec, theta_vec, u_vec,
                  axs=None, figtitle="Pendulum"):
     #plot thetha
     if axs is None:
-        fig, axs = plt.subplots(2,2)
-    axs[0,0].clear()
-    axs[0,0].plot(time_vec, rad2deg((theta_vec + np.pi) % (2*np.pi) - np.pi),
-                  ":", label = "theta (degrees)",color="blue")
-    axs[0,0].set_ylabel("theta (degrees)")
+        fig = plt.figure(figsize=(7, 2.5))
+        axs = fig.subplots(1,3)
+    axs[0].clear()
+    axs[0].plot(time_vec, rad2deg((theta_vec + np.pi) % (2*np.pi) - np.pi),
+                ":", label = "theta (degrees)",color="blue")
+    axs[0].set_ylabel(r"$\theta$ (degrees)")
 
-    axs[0,1].clear()
-    axs[0,1].plot(time_vec, omega_vec,":", label = "omega (rad/s)",color="blue")
-    axs[0,1].set_ylabel("omega")
+    axs[1].clear()
+    axs[1].plot(time_vec, omega_vec,":", label = "omega (rad/s)",color="blue")
+    axs[1].set_ylabel(r"$\omega$ (rad/s)")
 
-    axs[1,0].clear()
-    axs[1,0].plot(time_vec, u_vec,":", label = "u",color="blue")
-    axs[1,0].set_ylabel("u")
+    axs[2].clear()
+    axs[2].plot(time_vec, u_vec,":", label = "u", color="blue")
+    axs[2].set_ylabel("u")
 
-    axs[1,1].clear()
-    axs[1,1].plot(time_vec, np.cos(theta_vec),":", label="cos(theta)", color="blue")
-    axs[1,1].set_ylabel("cos/sin(theta)")
-    axs[1,1].plot(time_vec, np.sin(theta_vec),":", label="sin(theta)", color="red")
-    axs[1,1].set_ylabel("sin(theta)")
-    axs[1,1].legend()
+    #axs[1,1].clear()
+    #axs[1,1].plot(time_vec, np.cos(theta_vec),":", label="cos(theta)", color="blue")
+    #axs[1,1].set_ylabel("cos/sin(theta)")
+    #axs[1,1].plot(time_vec, np.sin(theta_vec),":", label="sin(theta)", color="red")
+    #axs[1,1].set_ylabel("sin(theta)")
+    #axs[1,1].legend()
 
-    fig = axs[0, 0].figure
+    fig = axs[0].figure
     fig.suptitle(figtitle)
     if hasattr(fig, "canvas") and hasattr(fig.canvas, "set_window_title"):
         fig.canvas.set_window_title(figtitle)
-    fig.subplots_adjust(wspace=0.31)
+    fig.subplots_adjust(wspace=0.67)
     return axs
 
 

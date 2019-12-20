@@ -140,7 +140,8 @@ def sampling_pendulum(dynamics_model, numSteps,
                       x0=None,
                       dt=0.01,
                       plot_every_n_steps=20,
-                      axs=None):
+                      axs=None,
+                      plotfile='plots/pendulum_data_{i}.pdf'):
     assert controller is not None, 'Surprise !! Changed interface to make controller a required argument'
     m, g, l = (dynamics_model.mass, dynamics_model.gravity,
                dynamics_model.length)
@@ -198,6 +199,7 @@ def sampling_pendulum(dynamics_model, numSteps,
                                theta_vec[:i+1].detach().cpu().numpy(),
                                u_vec[:i+1].detach().cpu().numpy(),
                                axs=axs)
+            plt_savefig_with_data(axs.flatten()[0].figure, plotfile.format(i=i))
             plt.pause(0.001)
 
     assert torch.all((theta_vec <= math.pi) & (-math.pi <= theta_vec))
@@ -247,12 +249,17 @@ def run_pendulum_experiment(#parameters
     if controller_class.needs_ground_truth:
         controller = controller_class(mass=mass, gravity=gravity,
                                       length=length, dt=tau,
-                                      true_model=pendulum_model).control
+                                      true_model=pendulum_model,
+                                      plotfile=plotfile.format(suffix='_ctrl_{suffix}')
+        ).control
     else:
-        controller = controller_class(dt=tau, true_model=pendulum_model).control
+        controller = controller_class(dt=tau, true_model=pendulum_model,
+                                      plotfile=plotfile.format(suffix='_ctrl_{suffix}')
+        ).control
     damge_perc,time_vec,theta_vec,omega_vec,u_vec = sampling_pendulum(
         pendulum_model,
-        numSteps, x0=torch.tensor([theta0,omega0]), controller=controller, dt=tau)
+        numSteps, x0=torch.tensor([theta0,omega0]), controller=controller, dt=tau,
+        plotfile=plotfile.format(suffix='_trajectory_{i}'))
     plot_results(time_vec, omega_vec, theta_vec, u_vec)
 
     for i in plt.get_fignums():
@@ -625,10 +632,11 @@ class ConstraintPlotter:
     @store_args
     def __init__(self,
                  axes=None,
-                 constraint_hists=[]):
+                 constraint_hists=[],
+                 plotfile='plots/constraint_hists_{i}.pdf'):
         pass
 
-    def plot_constraints(self, funcs, x, u):
+    def plot_constraints(self, funcs, x, u, i=None):
         axs = self.axes
         nfuncs = len(funcs)
         if axs is None:
@@ -646,13 +654,16 @@ class ConstraintPlotter:
         for i, af in enumerate(funcs):
             self.constraint_hists[i].append(af(x, u))
 
-        if torch.rand(1) <= 1:
+        if torch.rand(1) <= 0.2:
             for i, (ch, af) in enumerate(zip(self.constraint_hists, funcs)):
                 axs[i].clear()
                 axs[i].plot(ch)
                 axs[i].set_ylabel(af.__name__)
                 axs[i].set_xlabel("time")
                 plt.pause(0.0001)
+            if i is not None:
+                plt_savefig_with_data(axs[i].figure, self.plotfile.format(i=i))
+        return axs
 
 
 class PendulumCBFCLFDirect(Controller):
@@ -662,9 +673,10 @@ class PendulumCBFCLFDirect(Controller):
                  constraint_plotter_class=ConstraintPlotter,
                  pendulum_dynamics_class=PendulumDynamicsModel,
                  true_model=None,
+                 plotfile=None,
     ):
         self.set_model_params(mass=mass, length=length, gravity=gravity)
-        self.constraint_plotter = constraint_plotter_class()
+        self.constraint_plotter = constraint_plotter_class(plotfile=plotfile.format(suffix='_constraint_{i}'))
 
     def set_model_params(self, **kwargs):
         self.model = self.pendulum_dynamics_class(m=1, n=2, **kwargs)
@@ -682,6 +694,7 @@ class PendulumCBFCLFDirect(Controller):
         return self.model.g_func(torch.tensor(x))
 
     def control(self, xi, i=None):
+        plotfile = self.plotfile
         u = control_QP_cbf_clf(
             xi,
             ctrl_aff_constraints=self.aff_constraints,
@@ -716,7 +729,8 @@ class ControlCBFCLFLearned(Controller):
                  #gamma_length_scale_prior=[1/deg2rad(0.1), 1],
                  gamma_length_scale_prior=None,
                  constraint_plotter_class=ConstraintPlotter,
-                 true_model=None
+                 true_model=None,
+                 plotfile='plots/ctrl_cbf_learned_{suffix}.pdf'
     ):
         self.Xtrain = []
         self.Utrain = []
@@ -734,7 +748,8 @@ class ControlCBFCLFLearned(Controller):
         self.x_goal = torch.tensor([theta_goal, omega_goal])
         self.x_quad_goal_cost = torch.tensor(quad_goal_cost)
         self.axes = [None, None]
-        self.constraint_plotter = constraint_plotter_class()
+        self.constraint_plotter = constraint_plotter_class(
+            plotfile=plotfile.format(suffix='_constraints_{i}.pdf'))
 
     def debug_train(self, Xtrain, Utrain, XdotError):
         XdotErrorGot_train_mean, _ = self.model.predict_flatten(Xtrain[:-1], Utrain[:-1])
@@ -964,7 +979,7 @@ run_pendulum_control_cbf_clf = partial(
     run_pendulum_experiment, controller_class=PendulumCBFCLFDirect,
     plotfile='plots/run_pendulum_control_cbf_clf{suffix}.pdf',
     theta0=5*math.pi/12,
-    tau=0.001,
+    tau=0.002,
     numSteps=15000)
 """
 Run pendulum with a safe CLF-CBF controller.

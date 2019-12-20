@@ -13,7 +13,7 @@ from bayes_cbf.control_affine_model import ControlAffineRegressor
 from bayes_cbf.plotting import plot_2D_f_func, plot_results, plot_learned_2D_func
 from bayes_cbf.pendulum import PendulumDynamicsModel
 from bayes_cbf.sampling import sample_generator_independent, sample_generator_trajectory
-from bayes_cbf.misc import torch_kron
+from bayes_cbf.misc import torch_kron, variable_required_grad, to_numpy
 
 
 class RandomDynamicsModel:
@@ -83,7 +83,10 @@ def test_GP_train_predict(n=2, m=3,
                           perturb_scale=0.1,
                           sample_generator=sample_generator_trajectory,
                           dynamics_model_class=RandomDynamicsModel,
-                          training_iter=100):
+                          training_iter=100,
+                          grad_predict=False):
+    if grad_predict:
+        deterministic = True
     chosen_seed = torch.randint(100000, (1,))
     #chosen_seed = 52648
     print("Random seed: {}".format(chosen_seed))
@@ -121,72 +124,82 @@ def test_GP_train_predict(n=2, m=3,
     # Test prior
     _ = dgp.predict(Xtest, return_cov=False)
     dgp._fit_with_warnings(Xtrain, Utrain, XdotTrain, training_iter=training_iter, lr=0.01)
-    with torch.no_grad():
-        if X.shape[-1] == 2 and U.shape[-1] == 1:
-            plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func,
-                                 dynamics_model.f_func)
-            plt.savefig('/tmp/f_learned_vs_f_true.pdf')
-            plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.g_func,
-                                 dynamics_model.g_func, axtitle="g(x)[{i}]")
-            plt.savefig('/tmp/g_learned_vs_g_true.pdf')
+    if X.shape[-1] == 2 and U.shape[-1] == 1:
+        plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func,
+                                dynamics_model.f_func)
+        plt.savefig('/tmp/f_learned_vs_f_true.pdf')
+        plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.g_func,
+                                dynamics_model.g_func, axtitle="g(x)[{i}]")
+        plt.savefig('/tmp/g_learned_vs_g_true.pdf')
 
-        # check predicting training values
-        #FXT_train_mean, FXT_train_cov = dgp.predict(Xtrain)
-        #XdotGot_train = XdotTrain.new_empty(XdotTrain.shape)
-        #for i in range(Xtrain.shape[0]):
-        #    XdotGot_train[i, :] = FXT_train_mean[i, :, :].T @ UHtrain[i, :]
-        XdotGot_train_mean, XdotGot_train_cov = dgp.predict_flatten(
-            Xtrain[:-1], Utrain[:-1])
-        assert XdotGot_train_mean.detach().cpu().numpy() == pytest.approx(
-            XdotTrain[:-1].detach().cpu().numpy(), rel=rel_tol, abs=abs_tol), """
-            Train data check using original flatten predict """
+    # check predicting training values
+    #FXT_train_mean, FXT_train_cov = dgp.predict(Xtrain)
+    #XdotGot_train = XdotTrain.new_empty(XdotTrain.shape)
+    #for i in range(Xtrain.shape[0]):
+    #    XdotGot_train[i, :] = FXT_train_mean[i, :, :].T @ UHtrain[i, :]
+    XdotGot_train_mean, XdotGot_train_cov = dgp.predict_flatten(
+        Xtrain[:-1], Utrain[:-1])
+    assert XdotGot_train_mean.detach().cpu().numpy() == pytest.approx(
+        XdotTrain[:-1].detach().cpu().numpy(), rel=rel_tol, abs=abs_tol), """
+        Train data check using original flatten predict """
 
-        UHtest = torch.cat((Utest.new_ones((Utest.shape[0], 1)), Utest), dim=1)
-        if deterministic:
-            FXTexpected = torch.empty((Xtest.shape[0], 1+m, n))
-            for i in range(Xtest.shape[0]):
-                FXTexpected[i, ...] = torch.cat(
-                    (dynamics_model.f_func(Xtest[i, :])[None, :],
-                     dynamics_model.g_func(Xtest[i,  :]).T), dim=0)
-                assert torch.allclose(
-                    XdotTest[i, :], FXTexpected[i, :, :].T @ UHtest[i, :])
+    UHtest = torch.cat((Utest.new_ones((Utest.shape[0], 1)), Utest), dim=1)
+    if deterministic:
+        FXTexpected = torch.empty((Xtest.shape[0], 1+m, n))
+        for i in range(Xtest.shape[0]):
+            FXTexpected[i, ...] = torch.cat(
+                (dynamics_model.f_func(Xtest[i, :])[None, :],
+                    dynamics_model.g_func(Xtest[i,  :]).T), dim=0)
+            assert torch.allclose(
+                XdotTest[i, :], FXTexpected[i, :, :].T @ UHtest[i, :])
 
-        # check predicting train values
-        XdotTrain_mean = dgp.fu_func_mean(Utrain[:-1], Xtrain[:-1])
-        assert XdotTrain_mean.detach().cpu().numpy() == pytest.approx(
-            XdotTrain[:-1].detach().cpu().numpy(), rel=rel_tol, abs=abs_tol), """
-            Train data check using custom flatten predict """
+    # check predicting train values
+    XdotTrain_mean = dgp.fu_func_mean(Utrain[:-1], Xtrain[:-1])
+    assert XdotTrain_mean.detach().cpu().numpy() == pytest.approx(
+        XdotTrain[:-1].detach().cpu().numpy(), rel=rel_tol, abs=abs_tol), """
+        Train data check using custom flatten predict """
+    if grad_predict and n == 1:
+        x0 = Xtrain[9:10, :].detach().clone()
+        u0 = Utrain[9:10, :].detach().clone()
+        #est_grad_fx = dgp.grad_fu_func_mean(x0, u0)
+        true_fu_func = lambda X: dynamics_model.f_func(X) + dynamics_model.g_func(X).bmm(u0.unsqueeze(-1)).squeeze(-1)
+        with variable_required_grad(x0):
+            true_grad_fx = torch.autograd.grad(true_fu_func(x0), x0)[0]
+        with variable_required_grad(x0):
+            est_grad_fx_2 = torch.autograd.grad(dgp.fu_func_mean(u0, x0), x0)[0]
+        assert to_numpy(est_grad_fx_2) == pytest.approx(to_numpy(true_grad_fx), rel=rel_tol, abs=abs_tol)
+        #assert to_numpy(est_grad_fx) == pytest.approx(to_numpy(true_grad_fx), rel=rel_tol, abs=abs_tol)
 
-        # Check predicting perturbed train values
-        Xptrain = Xtrain[:-1] * (1 + torch.rand(Xtrain.shape[0]-1, 1) * perturb_scale)
-        Uptrain = Utrain[:-1] * (1 + torch.rand(Xtrain.shape[0]-1, 1) * perturb_scale)
-        XdotGot_ptrain_mean, XdotGot_ptrain_cov = dgp.predict_flatten(Xptrain, Uptrain)
-        Xdot_ptrain = dynamics_model.f_func(Xptrain) + dynamics_model.g_func(Xptrain).bmm(Uptrain.unsqueeze(-1)).squeeze(-1)
+    # Check predicting perturbed train values
+    Xptrain = Xtrain[:-1] * (1 + torch.rand(Xtrain.shape[0]-1, 1) * perturb_scale)
+    Uptrain = Utrain[:-1] * (1 + torch.rand(Xtrain.shape[0]-1, 1) * perturb_scale)
+    XdotGot_ptrain_mean, XdotGot_ptrain_cov = dgp.predict_flatten(Xptrain, Uptrain)
+    Xdot_ptrain = dynamics_model.f_func(Xptrain) + dynamics_model.g_func(Xptrain).bmm(Uptrain.unsqueeze(-1)).squeeze(-1)
 
-        assert XdotGot_ptrain_mean.detach().cpu().numpy() == pytest.approx(
-            Xdot_ptrain.detach().cpu().numpy(), rel=rel_tol, abs=abs_tol), """
-            Perturbed Train data check using original flatten predict """
+    assert XdotGot_ptrain_mean.detach().cpu().numpy() == pytest.approx(
+        Xdot_ptrain.detach().cpu().numpy(), rel=rel_tol, abs=abs_tol), """
+        Perturbed Train data check using original flatten predict """
 
-        XdotGot_ptrain_mean_custom = dgp.fu_func_mean(Uptrain, Xptrain)
-        assert XdotGot_ptrain_mean_custom.detach().cpu().numpy() == pytest.approx(
-            Xdot_ptrain.detach().cpu().numpy(), rel=rel_tol, abs=abs_tol), """
-            Perturbed Train data check using custom flatten predict """
+    XdotGot_ptrain_mean_custom = dgp.fu_func_mean(Uptrain, Xptrain)
+    assert XdotGot_ptrain_mean_custom.detach().cpu().numpy() == pytest.approx(
+        Xdot_ptrain.detach().cpu().numpy(), rel=rel_tol, abs=abs_tol), """
+        Perturbed Train data check using custom flatten predict """
 
-        # check predicting test values
-        # FXTmean, FXTcov = dgp.predict(Xtest)
-        # XdotGot = XdotTest.new_empty(XdotTest.shape)
-        # for i in range(Xtest.shape[0]):
-        #     XdotGot[i, :] = FXTmean[i, :, :].T @ UHtest[i, :]
-        XdotGot_mean, XdotGot_cov = dgp.predict_flatten(Xtest, Utest)
-        assert XdotGot_mean.detach().cpu().numpy() == pytest.approx(
-            XdotTest.detach().cpu().numpy(), rel=rel_tol, abs=abs_tol)
-            #abs=XdotGot_cov.flatten().max())
+    # check predicting test values
+    # FXTmean, FXTcov = dgp.predict(Xtest)
+    # XdotGot = XdotTest.new_empty(XdotTest.shape)
+    # for i in range(Xtest.shape[0]):
+    #     XdotGot[i, :] = FXTmean[i, :, :].T @ UHtest[i, :]
+    XdotGot_mean, XdotGot_cov = dgp.predict_flatten(Xtest, Utest)
+    assert XdotGot_mean.detach().cpu().numpy() == pytest.approx(
+        XdotTest.detach().cpu().numpy(), rel=rel_tol, abs=abs_tol)
+        #abs=XdotGot_cov.flatten().max())
 
-        # check predicting test values
-        Xdot_mean = dgp.fu_func_mean(Utest, Xtest)
-        assert Xdot_mean.detach().cpu().numpy() == pytest.approx(
-            XdotTest.detach().cpu().numpy(), rel=rel_tol, abs=abs_tol)
-        return dgp, dynamics_model
+    # check predicting test values
+    Xdot_mean = dgp.fu_func_mean(Utest, Xtest)
+    assert Xdot_mean.detach().cpu().numpy() == pytest.approx(
+        XdotTest.detach().cpu().numpy(), rel=rel_tol, abs=abs_tol)
+    return dgp, dynamics_model
 
 
 def relpath(path,
@@ -233,10 +246,18 @@ test_pendulum_train_predict = partial(
 Level 4: Pendulum model
 """
 
+
+test_gp_posterior_derivative = partial(test_GP_train_predict, grad_predict=True, n=1)
+"""
+Test gradient prediction
+"""
+
+
 if __name__ == '__main__':
     #test_GP_train_predict_detrministic()
     #test_GP_train_predict_independent()
     #test_GP_train_predict()
     #test_control_affine_gp()
-    test_pendulum_train_predict()
+    #test_pendulum_train_predict()
+    test_gp_posterior_derivative()
 

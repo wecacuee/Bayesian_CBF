@@ -68,6 +68,15 @@ class SimpleGP:
     def __init__(self, m, lengthscale):
         self.m = m
         self.lengthscale = lengthscale
+
+    @property
+    def dtype(self):
+        return self.lengthscale.dtype
+
+    def to(self, dtype):
+        self.m = self.m.to(dtype=dtype)
+        self.lengthscale = self.lengthscale.to(dtype=dtype)
+
     def mean(self, x):
         m = self.m
         return m @ x
@@ -103,7 +112,7 @@ def test_gradient_simple():
     assert to_numpy(simp_gp.grad_mean(xtest)) == pytest.approx(
         to_numpy(grad_simp_gp.mean(xtest)))
     assert to_numpy(simp_gp.knl_hessian(xtest, xtest)) == pytest.approx(
-        to_numpy(grad_simp_gp.knl(xtest, xtest.detach())))
+        to_numpy(grad_simp_gp.knl(xtest, xtest)))
     xtestp = torch.rand(2)
     assert to_numpy(simp_gp.knl_hessian(xtest, xtestp)) == pytest.approx(
         to_numpy(grad_simp_gp.knl(xtest, xtestp)), rel=1e-3, abs=1e-5)
@@ -187,7 +196,7 @@ def test_cbf2_gp(dynamic_models):
     learned_cbf2 = RadialCBFRelDegree2(learned_model)
     cbc2 = cbc2_gp(learned_cbf2.h2_col, learned_model, utest)
     assert to_numpy(cbc2.mean(xtest)) == pytest.approx(to_numpy(
-        - true_cbf2.A(xtest) @ utest + true_cbf2.b(xtest))[0], rel=0.1)
+        - true_cbf2.A(xtest) @ utest + true_cbf2.b(xtest))[0], rel=0.1, abs=0.1)
     cbc2.knl(xtest, xtest)
 
 

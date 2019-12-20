@@ -7,7 +7,7 @@ from functools import partial
 from bayes_cbf.control_affine_model import GaussianProcess, GaussianProcessFunc
 from bayes_cbf.misc import t_jac, variable_required_grad, t_hessian
 
-EPS = 1e-5
+EPS = 2e-3
 
 class AffineGP:
     """
@@ -16,6 +16,14 @@ class AffineGP:
     def __init__(self, affine, f):
         self.affine = affine
         self.f = f
+
+    @property
+    def dtype(self):
+        return self.f.mean.__self__.dtype
+
+    def to(self, dtype):
+        self.f.to(dtype=dtype)
+        self.affine.__self__.to(dtype=dtype)
 
     def mean(self, x):
         affine, f = self.affine, self.f
@@ -43,16 +51,42 @@ class GradientGP:
     """
     return ∇f, Hₓₓ k_f, ∇ covar_fg
     """
-    def __init__(self, f):
+    def __init__(self, f, grad_check=True):
         self.f = f
+        self.grad_check = grad_check
+
+    @property
+    def dtype(self):
+        return self.f.dtype
+
+    def to(self, dtype):
+        self.f.to(dtype)
 
     def mean(self, x):
         f = self.f
+
+        if self.grad_check:
+            old_dtype = self.dtype
+            self.to(torch.float64)
+            with variable_required_grad(x):
+                torch.autograd.gradcheck(f.mean, x.double())
+            self.to(dtype=old_dtype)
         with variable_required_grad(x):
             return torch.autograd.grad(f.mean(x), x)[0]
 
     def knl(self, x, xp, eigeps=EPS):
         f = self.f
+        if xp is x:
+            xp = xp.detach().clone()
+
+        if self.grad_check:
+            old_dtype = self.dtype
+            self.to(torch.float64)
+            f_knl_func = lambda xt: f.knl(xt, xp.double())
+            with variable_required_grad(x):
+                torch.autograd.gradcheck(f_knl_func, x.double())
+            self.to(dtype=old_dtype)
+
         Hxx_k = t_hessian(f.knl, x, xp)
         if torch.allclose(x, xp):
             eigenvalues, eigenvectors = torch.eig(Hxx_k, eigenvectors=False)
@@ -184,6 +218,13 @@ class Lie1GP:
         self.h = h
         self.f_gp = f_gp
         self._affine = AffineGP(grad_operator(h), f_gp)
+
+    @property
+    def dtype(self):
+        return self._affine.dtype
+
+    def to(self, dtype):
+        self._affine.to(dtype)
 
     def mean(self, x):
         return self._affine.mean(x)

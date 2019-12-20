@@ -92,13 +92,18 @@ class MeanPendulumDynamicsModel(DynamicsModel):
 class PendulumDynamicsModel(DynamicsModel):
     ground_truth = True
     def __init__(self, m, n, mass=1, gravity=10, length=1, deterministic=True,
-                 model_noise=0):
+                 model_noise=0,
+                 dtype=torch.get_default_dtype()):
         self.m = m
         self.n = n
         self.mass = mass
         self.gravity = gravity
         self.length = length
         self.model_noise = model_noise
+        self.dtype = dtype
+
+    def to(self, dtype):
+        self.dtype = dtype
 
     @property
     def ctrl_size(self):
@@ -115,7 +120,7 @@ class PendulumDynamicsModel(DynamicsModel):
         gravity = self.gravity
         length = self.length
         theta_old, omega_old = X[..., 0:1], X[..., 1:2]
-        noise = torch.random.normal(scale=self.model_noise) if self.model_noise else 0
+        noise = torch.random.normal(scale=self.model_noise, dtype=self.dtype) if self.model_noise else 0
         return noise + torch.cat(
             [omega_old,
              - (gravity/length)*torch.sin(theta_old)], axis=-1)
@@ -127,12 +132,12 @@ class PendulumDynamicsModel(DynamicsModel):
         gravity = self.gravity
         length = self.length
         size = x.shape[0] if x.ndim == 2 else 1
-        noise = torch.random.normal(scale=self.model_noise) if self.model_noise else 0
+        noise = torch.random.normal(scale=self.model_noise, dtype=self.dtype) if self.model_noise else 0
         if x.ndim == 2:
             return noise + torch.repeat_interleave(
-                torch.tensor([[[0], [1/(mass*length)]]]), size, axis=0)
+                torch.tensor([[[0], [1/(mass*length)]]], dtype=self.dtype), size, axis=0)
         else:
-            return noise + torch.tensor([[0], [1/(mass*length)]])
+            return noise + torch.tensor([[0], [1/(mass*length)]], dtype=self.dtype)
 
 
 def sampling_pendulum(dynamics_model, numSteps,
@@ -243,7 +248,9 @@ def run_pendulum_experiment(#parameters
         numSteps=10000,
         controller_class=ControlTrivial,
         pendulum_dynamics_class=PendulumDynamicsModel,
-        plotfile='plots/run_pendulum_experiment{suffix}.pdf'):
+        plotfile='plots/run_pendulum_experiment{suffix}.pdf',
+        dtype=torch.float32):
+    torch.set_default_dtype(dtype)
     pendulum_model = pendulum_dynamics_class(m=1, n=2, mass=mass, gravity=gravity,
                                              length=length)
     if controller_class.needs_ground_truth:
@@ -534,8 +541,13 @@ class RadialCBFRelDegree2(NamedAffineFunc):
                  theta_c=math.pi/4,
                  gamma_col=1,
                  delta_col=math.pi/8,
-                 name="cbf-r2"):
+                 name="cbf-r2",
+                 dtype=torch.get_default_dtype()):
         self.model = model
+
+    def to(self, dtype):
+        self.dtype = dtype
+        self.model.to(dtype=dtype)
 
     def h2_col(self, x):
         (theta, w) = x
@@ -549,9 +561,8 @@ class RadialCBFRelDegree2(NamedAffineFunc):
         return self.A(x) @ u - self.b(x)
 
     def grad_h2_col(self, x):
-        (θ, ω) = x
         θ_c = self.cbf_col_theta
-        return torch.tensor([torch.sin(θ - θ_c), 0])
+        return torch.cat((torch.sin(x[0:1] - θ_c), x.new_zeros(1)))
 
     def lie_f_h2_col(self, x):
         (θ, ω) = x
@@ -565,7 +576,7 @@ class RadialCBFRelDegree2(NamedAffineFunc):
     def grad_lie_f_h2_col(self, x):
         (θ, ω) = x
         θ_c = self.cbf_col_theta
-        direct = torch.tensor([ω * torch.cos(θ-θ_c), torch.sin(θ-θ_c)])
+        direct = torch.tensor([ω * torch.cos(θ-θ_c), torch.sin(θ-θ_c)], dtype=self.dtype)
         with variable_required_grad(x):
             abstract = torch.autograd.grad(self.lie_f_h2_col(x), x)[0]
         assert torch.allclose(direct, abstract, atol=1e-4)
@@ -596,12 +607,12 @@ class RadialCBFRelDegree2(NamedAffineFunc):
         return grad_L1h @ (self.f_func(x) + self.g_func(x) @ u)
 
     def A(self, x):
-        return torch.tensor([- self.lie_g_lie_f_h_col(x)])
+        return - self.lie_g_lie_f_h_col(x).unsqueeze(0)
 
     def b(self, x):
-        K_α = torch.tensor(self.cbf_col_K_alpha)
-        η_b_x = torch.tensor([self.h2_col(x), self.lie_f_h2_col(x)])
-        return torch.tensor([self.lie2_f_h_col(x) + K_α @ η_b_x])
+        K_α = torch.tensor(self.cbf_col_K_alpha, dtype=self.dtype)
+        η_b_x = torch.cat([self.h2_col(x), self.lie_f_h2_col(x)])
+        return (self.lie2_f_h_col(x) + K_α @ η_b_x).unsqueeze(0)
 
     def __getattr__(self, name):
         return getattr(self.model, name)
@@ -995,7 +1006,8 @@ def run_pendulum_control_online_learning(numSteps=2000):
         controller_class=ControlCBFCLFLearned,
         numSteps=numSteps,
         theta0=5*math.pi/12,
-        tau=5e-3)
+        tau=5e-3,
+        dtype=torch.float64)
 
 
 if __name__ == '__main__':

@@ -121,9 +121,14 @@ def variable_required_grad(x):
     finally:
         x.requires_grad_(old_x_requires_grad)
 
-def t_hessian(f, x, xp):
+def t_hessian(f, x, xp, grad_check=True):
     with variable_required_grad(x):
         with variable_required_grad(xp):
-            grad_k = torch.autograd.grad(f(x, xp), x, create_graph=True)[0]
-            Hxx_k = t_jac(grad_k, xp)
+            grad_k_func = lambda xs, xt: torch.autograd.grad(f(xs, xt), xs, create_graph=True)[0]
+            if grad_check:
+                old_dtype = f.__self__.dtype
+                f.__self__.to(dtype=torch.float64)
+                torch.autograd.gradcheck(partial(grad_k_func, x.double()), xp.double())
+                f.__self__.to(dtype=old_dtype)
+            Hxx_k = t_jac(grad_k_func(x, xp), xp)
     return Hxx_k

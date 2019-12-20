@@ -29,7 +29,15 @@ from bayes_cbf.misc import (torch_kron, DynamicsModel, t_jac, variable_required_
 
 
 GaussianProcess = namedtuple('GaussianProcess', ["mean", "k"])
-GaussianProcessFunc = namedtuple('GaussianProcessFunc', ["mean", "knl"])
+
+class GaussianProcessFunc(namedtuple('GaussianProcessFunc', ["mean", "knl"])):
+    @property
+    def dtype(self):
+        return self.mean.__self__.dtype
+
+    def to(self, dtype):
+        self.mean.__self__.to(dtype=dtype)
+
 
 
 class DifferentiableGaussianProcess(torch.autograd.Function):
@@ -399,7 +407,7 @@ class ControlAffineRegressor(DynamicsModel):
                        Utestp_in=None, UHfillp=1,
                        compute_cov=True,
                        grad_gp=False,
-                       grad_check=False):
+                       grad_check=True):
         """
         Gpytorch is complicated. It uses terminology like fantasy something,
         something. Even simple exact prediction strategy uses Laczos. I do not
@@ -586,7 +594,9 @@ class ControlAffineRegressor(DynamicsModel):
             if grad_check:
                 old_dtype = self.dtype
                 self.double_()
-                scalar_var_func = lambda X: kb_star_starp_func(X) - v_func(X).t() @ v_func(Xtestp.double())
+                scalar_var_func = lambda X: (
+                    kb_star_starp_func(X)
+                    - v_func(X).t() @ v_func(Xtestp))
                 with variable_required_grad(Xtest):
                     torch.autograd.gradcheck(scalar_var_func, Xtest.double())
                 self.model.float()
@@ -711,7 +721,7 @@ class ControlAffineRegressor(DynamicsModel):
             mean_f = mean_f.squeeze(0)
         return mean_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
 
-    def f_func_knl(self, Xtest_in, Xtestp_in, grad_check=False):
+    def f_func_knl(self, Xtest_in, Xtestp_in, grad_check=True):
         Xtest = (Xtest_in.unsqueeze(0)
                  if Xtest_in.ndim == 1
                  else Xtest_in)
@@ -726,7 +736,8 @@ class ControlAffineRegressor(DynamicsModel):
         if grad_check:
             old_dtype = self.dtype
             self.double_()
-            var_f_func = lambda X: self.custom_predict(X, Xtestp_in=X, compute_cov=True)[1][0,0,0]
+            var_f_func = lambda X: self.custom_predict(
+                X, Xtestp_in=Xtestp, compute_cov=True)[1][0,0,0]
             with variable_required_grad(Xtest):
                 torch.autograd.gradcheck(var_f_func, Xtest.double())
             self.model.float()

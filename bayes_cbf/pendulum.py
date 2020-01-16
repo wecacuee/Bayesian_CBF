@@ -745,7 +745,7 @@ class ControlCBFCLFLearned(Controller):
                  train_every_n_steps=10,
                  mean_dynamics_model_class=MeanPendulumDynamicsModel,
                  egreedy_scheme=[1, 0.01],
-                 iterations=1000,
+                 iterations=100,
                  max_unsafe_prob=0.01,
                  dt=0.001,
                  max_train=200,
@@ -894,8 +894,8 @@ class ControlCBFCLFLearned(Controller):
         c = -2.0*(λ * R @ u0 + (1-λ) * Gx.T @ P @ (x_g - fx))
         # Constant term + (1-λ)(x_g-fx)ᵀ P (x_g-fx) + λ u₀ᵀRu₀
         const = (1-λ) * (x_g-fx).T @ P @ (x_g-fx) + λ * u0.T @ R @ u0
-        return list(map(convert_out, (Q, c, const)))
-        #return list(map(convert_out, (R, torch.tensor([0]), torch.tensor(0))))
+        #return list(map(convert_out, (Q, c, const)))
+        return list(map(convert_out, (R, torch.tensor([0]), torch.tensor(0))))
 
 
     def _stochastic_cbf2(self, i, x, u0, convert_out=to_numpy):
@@ -922,9 +922,10 @@ class ControlCBFCLFLearned(Controller):
                 ("$-E[CBC2] \le 0$", list(map(convert_out, (torch.tensor([[0.]]), -mean_A, -mean_b))))
             ]
 
-            if (torch.eig(A)[0][:, 0] < 0).any():
-                constraints.append(r"$\frac{1-\delta}{\delta} V[CBC2] - E[CBC2]^2 \le 0$",
-                list(map(convert_out, (A, b, c))))
+            if (torch.eig(A)[0][:, 0] > 0).all():
+                print("We have at least two constraints")
+                constraints.append((r"$\frac{1-\delta}{\delta} V[CBC2] - E[CBC2]^2 \le 0$",
+                list(map(convert_out, (A, b, c)))))
             return constraints
 
     def _stochastic_cbf2_sqrt(self, i, x, u0, convert_out=to_numpy):

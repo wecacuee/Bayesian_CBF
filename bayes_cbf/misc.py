@@ -113,6 +113,9 @@ class DynamicsModel(ABC):
 
 @contextmanager
 def variable_required_grad(x):
+    """
+    creates context for x requiring gradient
+    """
     old_x_requires_grad = x.requires_grad
     try:
         x.requires_grad_(True)
@@ -120,9 +123,14 @@ def variable_required_grad(x):
     finally:
         x.requires_grad_(old_x_requires_grad)
 
+
 def t_hessian(f, x, xp, grad_check=True):
+    """
+    Computes second derivative, Hessian
+    """
     with variable_required_grad(x):
         with variable_required_grad(xp):
-            grad_k_func = lambda xs, xt: torch.autograd.grad(f(xs, xt), xs, create_graph=True)[0]
+            grad_k_func = lambda xs, xt: torch.autograd.grad(
+                f(xs, xt), xs, create_graph=True)[0]
             Hxx_k = t_jac(grad_k_func(x, xp), xp)
     return Hxx_k

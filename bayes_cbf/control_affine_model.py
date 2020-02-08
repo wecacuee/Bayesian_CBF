@@ -26,7 +26,7 @@ import gpytorch.settings as gpsettings
 from bayes_cbf.matrix_variate_multitask_kernel import MatrixVariateIndexKernel, HetergeneousMatrixVariateKernel
 from bayes_cbf.matrix_variate_multitask_model import HetergeneousMatrixVariateMean
 from bayes_cbf.misc import (torch_kron, DynamicsModel, t_jac, variable_required_grad,
-                            t_hessian)
+                            t_hessian, gradgradcheck)
 
 
 __directory__ = Path(__file__).parent or Path(".")
@@ -414,7 +414,7 @@ class ControlAffineRegressor(DynamicsModel):
                        Utestp_in=None, UHfillp=1,
                        compute_cov=True,
                        grad_gp=False,
-                       grad_check=True,
+                       grad_check=False,
                        scalar_var_only=False):
         """
         Gpytorch is complicated. It uses terminology like fantasy something,
@@ -540,10 +540,10 @@ class ControlAffineRegressor(DynamicsModel):
                     lambda X: self.model.covar_module.data_covar_module(
                             Xtrain.double(), X).evaluate(),
                     Xtest.double())
-                torch.autograd.gradgradcheck(
-                    partial(lambda s, Xt, X: s.model.covar_module.data_covar_module(
-                        X, X).evaluate(), self, Xtrain),
-                    Xtest.double())
+                gradgradcheck(
+                    partial(lambda s, X, Xp: s.model.covar_module.data_covar_module(
+                        X, Xp).evaluate(), self),
+                    Xtest[:1, :].double())
                 self.to(dtype=old_dtype)
         Y = (
             self.model.train_targets.reshape(nsamples, -1)
@@ -580,8 +580,8 @@ class ControlAffineRegressor(DynamicsModel):
                 kb_star_starp_func = lambda X: k_ss(X, Xtestp.double()) * (UHtest @ B @ UHtestp.t()).double()
                 with variable_required_grad(Xtest):
                     torch.autograd.gradcheck(kb_star_starp_func, Xtest.double())
-                    kb_star_star_func = lambda X: k_ss(X, X) * (UHtest @ B @ UHtestp.t()).double()
-                    torch.autograd.gradgradcheck(kb_star_star_func, Xtest.double())
+                    kb_star_star_func = lambda X, Xp: k_ss(X, Xp) * (UHtest @ B @ UHtestp.t()).double()
+                    gradgradcheck(kb_star_star_func, Xtest.double())
                 self.to(dtype=old_dtype)
 
             # 4. v := L \ kb*
@@ -593,7 +593,6 @@ class ControlAffineRegressor(DynamicsModel):
                 v_func = lambda X: torch.solve(kb_star_func(X), Kb_sqrt.double()).solution
                 with variable_required_grad(Xtest):
                     torch.autograd.gradcheck(v_func, Xtest.double())
-                    torch.autograd.gradgradcheck(v_func, Xtest.double())
                 self.to(dtype=old_dtype)
 
             vp = torch.solve(kb_star_p, Kb_sqrt).solution if Xtestp_in is not None else v
@@ -604,7 +603,6 @@ class ControlAffineRegressor(DynamicsModel):
                 v_func = lambda X: torch.solve(kb_star_func(X), Kb_sqrt.double()).solution
                 with variable_required_grad(Xtest):
                     torch.autograd.gradcheck(v_func, Xtest.double())
-                    torch.autograd.gradgradcheck(v_func, Xtest.double())
                 self.to(dtype=old_dtype)
 
             # 5. k* := k(x*,x*) - vᵀv
@@ -617,10 +615,10 @@ class ControlAffineRegressor(DynamicsModel):
                     - v_func(X).t() @ v_func(Xtestp.double()))
                 with variable_required_grad(Xtest):
                     torch.autograd.gradcheck(scalar_var_func, Xtest.double())
-                    scalar_var_XX_func = lambda X: (
-                        kb_star_star_func(X)
-                        - v_func(X).t() @ v_func(X))
-                    torch.autograd.gradgradcheck(scalar_var_XX_func, Xtest.double())
+                    scalar_var_XX_func = lambda X, Xp: (
+                        kb_star_star_func(X, Xp)
+                        - v_func(X).t() @ v_func(Xp))
+                    gradgradcheck(scalar_var_XX_func, Xtest.double())
                 self.model.float()
                 self.to(dtype=old_dtype)
 
@@ -631,8 +629,6 @@ class ControlAffineRegressor(DynamicsModel):
                 covar_mat_func = lambda X: (scalar_var_func(X).reshape(-1, 1, 1) * A.double())[0,0]
                 with variable_required_grad(Xtest):
                     torch.autograd.gradcheck(covar_mat_func, Xtest.double())
-                    covar_mat_XX_func = lambda X: (scalar_var_XX_func(X).reshape(-1, 1, 1) * A.double())[0,0]
-                    torch.autograd.gradgradcheck(covar_mat_XX_func, Xtest.double())
                 self.model.float()
                 self.to(dtype=old_dtype)
         else: # if not compute_cov
@@ -764,7 +760,9 @@ class ControlAffineRegressor(DynamicsModel):
                 X, Xtestp_in=Xtestp, compute_cov=True)[1][0,0,0]
             with variable_required_grad(Xtest):
                 torch.autograd.gradcheck(var_f_func, Xtest.double())
-                torch.autograd.gradgradcheck(var_f_func, Xtest.double())
+                var_f_func_2 = lambda X, Xp: self.custom_predict(
+                    X, Xtestp_in=Xp, compute_cov=True)[1][0,0,0]
+                gradgradcheck(var_f_func_2, Xtest.double())
             self.model.float()
             self.to(dtype=old_dtype)
         return var_f_out

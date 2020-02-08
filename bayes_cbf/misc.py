@@ -134,3 +134,17 @@ def t_hessian(f, x, xp, grad_check=True):
                 f(xs, xt), xs, create_graph=True)[0]
             Hxx_k = t_jac(grad_k_func(x, xp), xp)
     return Hxx_k
+
+
+def gradgradcheck(f2, x):
+    xp = x.detach().clone()
+
+    # assuming first analytical derivative is correct
+    grad_k_func_1 = lambda i, xs, xt: torch.autograd.grad(
+        f2(xs, xt), xs, create_graph=True)[0][i]
+
+    with variable_required_grad(x):
+        with variable_required_grad(xp):
+            for i in range(x.shape[0]):
+                torch.autograd.gradcheck(
+                    partial(grad_k_func_1, i, x), xp)

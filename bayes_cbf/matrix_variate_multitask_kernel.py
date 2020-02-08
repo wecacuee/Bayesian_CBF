@@ -90,7 +90,7 @@ class MatrixVariateKernel(Kernel):
     def __init__(self, task_covar_module, data_covar_module, decoder, **kwargs):
         """
         """
-        super().__init__(data_covar_module, **kwargs)
+        super().__init__(**kwargs)
         self.task_covar_module = task_covar_module
         self.data_covar_module = data_covar_module
         self.decoder = decoder

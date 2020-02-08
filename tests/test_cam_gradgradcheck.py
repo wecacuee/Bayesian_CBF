@@ -2,11 +2,13 @@ from pathlib import Path
 from functools import partial
 
 import torch
+import pytest
 
 from bayes_cbf.control_affine_model import ControlAffineRegressor
 
 __directory__ = Path(__file__).parent or Path(".")
 
+@pytest.mark.skip('regenerate pth file')
 def test_cam_gradgradcheck(
         saved_model_path=__directory__ / 'data' / 'cam-gradgradcheck-fail.pth'):
     D = torch.load(str(saved_model_path))

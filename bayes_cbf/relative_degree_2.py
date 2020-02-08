@@ -53,7 +53,7 @@ class GradientGP:
     """
     return ∇f, Hₓₓ k_f, ∇ covar_fg
     """
-    def __init__(self, f, grad_check=False, analytical_hessian=False):
+    def __init__(self, f, grad_check=False, analytical_hessian=True):
         self.f = f
         self.grad_check = grad_check
         self.analytical_hessian = analytical_hessian
@@ -82,14 +82,15 @@ class GradientGP:
         if xp is x:
             xp = xp.detach().clone()
 
-        grad_k_func = lambda xs, xt: torch.autograd.grad(f.knl(xs, xt), xs, create_graph=True)[0]
+        grad_k_func = lambda xs, xt: torch.autograd.grad(
+            f.knl(xs, xt), xs, create_graph=True)[0]
         if self.grad_check:
             old_dtype = self.dtype
             self.to(torch.float64)
             f_knl_func = lambda xt: f.knl(xt, xp.double())
             with variable_required_grad(x):
                 torch.autograd.gradcheck(f_knl_func, x.double())
-
+            torch.autograd.gradgradcheck(lambda x: f.knl(x, x), x.double())
             with variable_required_grad(x):
                 with variable_required_grad(xp):
                     torch.autograd.gradcheck(

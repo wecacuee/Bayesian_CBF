@@ -3,6 +3,10 @@ import os.path as osp
 
 import torch
 
+from gpytorch.kernels import RBFKernel
+from gpytorch.kernels.kernel import Distance, default_postprocess_script
+import gpytorch.settings
+
 from bayes_cbf.pendulum import (RadialCBFRelDegree2, PendulumDynamicsModel,
                                 ControlAffineRegressor)
 from bayes_cbf.control_affine_model import GaussianProcess
@@ -222,6 +226,97 @@ def test_quadratic_term():
     torch.allclose(Q, Qp)
     torch.allclose(a, ap)
     torch.allclose(c, cp)
+
+
+def gpytorch_distance_func(x1, x2):
+    return Distance().to(dtype=torch.float64)._sq_dist(x1, x2, False, False)
+
+
+def dist_func_unsqueeze(x1, x2):
+    diff = (x1.unsqueeze(-2) - x2.unsqueeze(-3))
+    return diff.pow(2).sum(dim=-1)
+
+
+def dist_func_matmul(x1, x2):
+    return (
+        ((-2*x1).matmul(x2.transpose(-2, -1)))
+        + x1.pow(2).sum(dim=-1, keepdim=True)
+        + x2.pow(2).sum(dim=-1).unsqueeze(-2)
+    )
+
+
+def test_hessian_sq_distance(dist_fun=gpytorch_distance_func):
+    """
+    d(x₁, x₂)     = |x₁ - x₂|²
+
+
+    ∂d(x₁, x₂)
+    —————————     = 2(x₁ - x₂)
+    ∂x₁
+
+    ∂²d(x₁, x₂)
+    ——————————–   = -2 I
+    ∂x₂ ∂x₁
+    """
+    #dist_fun = torch.cdist
+    with gpytorch.settings.lazily_evaluate_kernels(False):
+        x = torch.rand(1, 2, dtype=torch.float64)
+        xp = x.clone().detach()
+        x.requires_grad_(True)
+        xp.requires_grad_(True)
+
+        grad_dist_ne = lambda xq: torch.autograd.grad(
+            dist_fun(x, xq), x, create_graph=True)[0][0, 0]
+        torch.autograd.gradcheck(grad_dist_ne, xp)
+
+
+test_unsqueeze_dist_func = partial(test_hessian_sq_distance,
+                                   dist_fun=dist_func_unsqueeze)
+
+
+test_matmul_dist_func = partial(test_hessian_sq_distance,
+                                dist_fun=dist_func_matmul)
+
+
+def test_rbf_kernel():
+    """
+    k(x₁, x₂)   = exp(-|x₁ - x₂|²/l)
+
+
+    ∂k(x₁, x₂)
+    —————————   = -(2/l)(x₁ - x₂)exp(-|x₁ - x₂|²/l)
+    ∂x₁
+
+    ∂²d(x₁, x₂)
+    —————————   = (2/l) (I  - (2/l)|x₁ - x₂|²) exp(-|x₁ - x₂|²/l)
+    ∂x₂ ∂x₁
+
+
+    ∂²d(x₁, x₂)|
+    ——————————–|           = (2/l) (I) exp(-|x₁ - x₂|²/l)
+    ∂x₂ ∂x₁    |x₁ = x₂
+    """
+    knl = RBFKernel().to(dtype=torch.float64)
+    with gpytorch.settings.lazily_evaluate_kernels(False):
+        x = torch.rand(1, 2, dtype=torch.float64)
+        xp = x.clone().detach()
+        x.requires_grad_(True)
+        xp.requires_grad_(True)
+        grad_dist = lambda xq: torch.autograd.grad(
+            knl(x, xq), x, create_graph=True)[0][0, 0]
+        torch.autograd.gradcheck(grad_dist, xp)
+
+        grad_dist_ne = lambda xq: torch.autograd.grad(
+            knl(x, xq), x, create_graph=True)[0][0, 0]
+        torch.autograd.gradcheck(grad_dist_ne, xp)
+
+def test_distances():
+    x1 = torch.rand(20, 10)
+    x2 = torch.rand(30, 10)
+    assert torch.allclose(Distance()._sq_dist(x1, x2, False, False),
+                          dist_func_unsqueeze(x1, x2))
+    assert torch.allclose(Distance()._sq_dist(x1, x2, False, False),
+                          dist_func_matmul(x1, x2))
 
 
 if __name__ == '__main__':

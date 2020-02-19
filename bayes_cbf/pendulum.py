@@ -899,33 +899,40 @@ class ControlCBFCLFLearned(Controller):
 
 
     def _stochastic_cbf2(self, i, x, u0, convert_out=to_numpy):
-        (mean_A, mean_b), (k_Q, k_p, k_r), mean, var = cbc2_quadratic_terms(
-            self.cbf2.h2_col, self.cbf2.grad_h2_col, self.model, x, u0)
+        (E_mean_A, E_mean_b), (var_k_Q, var_k_p, var_k_r), mean, var = \
+            cbc2_quadratic_terms(
+                self.cbf2.h2_col, self.cbf2.grad_h2_col, self.model, x, u0)
         with torch.no_grad():
             δ = self.max_unsafe_prob
             ratio = (1-δ)/δ
             print("at theta, ω; u0: {},{}; {}".format(rad2deg(x[0]), x[1], u0))
-            print("mean^2 CBC2: ", (mean_A.T @ u0 + mean_b)**2)
-            mean_Q = (mean_A.T @ mean_A).reshape(self.u_dim,self.u_dim)
-            assert (torch.eig(k_Q)[0][:, 0] > 0).all()
+            print("mean^2 CBC2: ", (E_mean_A.T @ u0 + E_mean_b)**2)
+            mean_Q = (E_mean_A.T @ E_mean_A).reshape(self.u_dim,self.u_dim)
+            assert (torch.eig(var_k_Q)[0][:, 0] > 0).all()
             assert (torch.eig(mean_Q)[0][:, 0] > 0).all()
-            A = k_Q * ratio - mean_Q
+            A = var_k_Q * ratio - mean_Q
             #assert (torch.eig(A)[0][:, 0] > 0).all()
-            mean_p = (2 * mean_A @ mean_b) if mean_b.ndim else (2 * mean_A * mean_b)
-            b = k_p * ratio - mean_p
-            mean_r = (mean_b @ mean_b) if mean_b.ndim else (mean_b * mean_b)
-            c = k_r * ratio - mean_r
+            #if (torch.eig(A)[0][:, 0] < 0).any():
+            #    A = k_Q * ratio
+
+            mean_p = ((2 * E_mean_A @ E_mean_b)
+                      if E_mean_b.ndim
+                      else (2 * E_mean_A * E_mean_b))
+            b = var_k_p * ratio - mean_p
+            mean_r = (E_mean_b @ E_mean_b) if E_mean_b.ndim else (E_mean_b * E_mean_b)
+            c = var_k_r * ratio - mean_r
             #print("ratio * var CBC2 - mean²CBC2: ",
             #      ratio * (u0.T @ k_Q @ u0 + k_p.T @ u0 + k_r)
             #      - ((mean_A.T @ u0 + mean_b)**2))
-            constraints = [
-                ("$-E[CBC2] \le 0$", list(map(convert_out, (torch.tensor([[0.]]), -mean_A, -mean_b))))
-            ]
-
+            constraints = [(r"$E[CBC2] \le 0$",
+                            list(map(convert_out,
+                                     (torch.zeros(1,1), - E_mean_A, -E_mean_b))))]
             if (torch.eig(A)[0][:, 0] > 0).all():
                 print("We have at least two constraints")
                 constraints.append((r"$\frac{1-\delta}{\delta} V[CBC2] - E[CBC2]^2 \le 0$",
                 list(map(convert_out, (A, b, c)))))
+            else:
+                warnings.warn("Skipping constraint because not positive definite")
             return constraints
 
     def _stochastic_cbf2_sqrt(self, i, x, u0, convert_out=to_numpy):
@@ -986,7 +993,8 @@ class ControlCBFCLFLearned(Controller):
             u = controller_qcqp_gurobi(to_numpy(u0),
                                        self.quad_objective(i, xi, u0),
                                        self.quadratic_constraints(i, xi, u0),
-                                       DualReductions=0)
+                                       DualReductions=0,
+                                       OutputFlag=0)
             u = torch.from_numpy(u).to(dtype=xi.dtype, device=xi.device)
             self.constraint_plotter.plot_constraints(
                 self.plottables(i, xi, u0),

@@ -911,9 +911,6 @@ class ControlCBFCLFLearned(Controller):
             assert (torch.eig(var_k_Q)[0][:, 0] > 0).all()
             assert (torch.eig(mean_Q)[0][:, 0] > 0).all()
             A = var_k_Q * ratio - mean_Q
-            #assert (torch.eig(A)[0][:, 0] > 0).all()
-            #if (torch.eig(A)[0][:, 0] < 0).any():
-            #    A = k_Q * ratio
 
             mean_p = ((2 * E_mean_A @ E_mean_b)
                       if E_mean_b.ndim
@@ -921,18 +918,12 @@ class ControlCBFCLFLearned(Controller):
             b = var_k_p * ratio - mean_p
             mean_r = (E_mean_b @ E_mean_b) if E_mean_b.ndim else (E_mean_b * E_mean_b)
             c = var_k_r * ratio - mean_r
-            #print("ratio * var CBC2 - mean²CBC2: ",
-            #      ratio * (u0.T @ k_Q @ u0 + k_p.T @ u0 + k_r)
-            #      - ((mean_A.T @ u0 + mean_b)**2))
             constraints = [(r"$E[CBC2] \le 0$",
                             list(map(convert_out,
                                      (torch.zeros(1,1), - E_mean_A, -E_mean_b))))]
-            if (torch.eig(A)[0][:, 0] > 0).all():
-                print("We have at least two constraints")
-                constraints.append((r"$\frac{1-\delta}{\delta} V[CBC2] - E[CBC2]^2 \le 0$",
-                list(map(convert_out, (A, b, c)))))
-            else:
-                warnings.warn("Skipping constraint because not positive definite")
+            constraints.append(
+                (r"$\frac{1-\delta}{\delta} V[CBC2] - E[CBC2]^2 \le 0$",
+                 list(map(convert_out, (A, b, c)))))
             return constraints
 
     def _stochastic_cbf2_sqrt(self, i, x, u0, convert_out=to_numpy):
@@ -962,7 +953,11 @@ class ControlCBFCLFLearned(Controller):
 
 
     def plottables(self, i, x, u0):
-        def true_cbc(xp, up):
+        def true_h(xp, up):
+            val = - self.ground_truth_cbf2.h2_col(xp)
+            return val
+
+        def true_cbc2(xp, up):
             val = ( self.ground_truth_cbf2.A(xp) @ up - self.ground_truth_cbf2.b(xp))
             print("- true CBC2: ", val)
             return val
@@ -971,7 +966,8 @@ class ControlCBFCLFLearned(Controller):
             for name, (Q, c, const) in self.quadratic_constraints(
                     i, x, u0, convert_out=lambda x: x)
         ] + [
-            NamedFunc(true_cbc, "-CBC2true")
+            NamedFunc(true_cbc2, "-CBC2true"),
+            NamedFunc(true_h, "-h(x)"),
         ]
 
 
@@ -1035,7 +1031,7 @@ def run_pendulum_control_online_learning(numSteps=2000):
         controller_class=ControlCBFCLFLearned,
         numSteps=numSteps,
         theta0=5*math.pi/12,
-        tau=5e-3,
+        tau=2e-3,
         dtype=torch.float64)
 
 

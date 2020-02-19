@@ -117,13 +117,15 @@ class InfeasibleOptimization(Exception):
 def controller_qcqp_gurobi(u0, quad_objective, quadratic_constraints,
                            DisplayInterval=120,
                            OutputFlag=0,
+                           NonConvex=2,
                            **kwargs):
     import gurobipy as gp
     from gurobipy import GRB
     # Create a new model
     m = gp.Model("controller_qcqp_gurobi")
-    m.Params.DisplayInterval = DisplayInterval
     m.Params.OutputFlag = OutputFlag
+    m.Params.DisplayInterval = DisplayInterval
+    m.Params.NonConvex = NonConvex
     for k, v in kwargs.items():
         m.setParam(k, v)
 

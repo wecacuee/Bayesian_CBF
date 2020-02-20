@@ -26,6 +26,7 @@ setup(name="bayes_cbf",
               'run_pendulum_control_trival = bayes_cbf.pendulum:run_pendulum_control_trival',
               'run_pendulum_control_cbf_clf = bayes_cbf.pendulum:run_pendulum_control_cbf_clf',
               'pendulum_learn_dynamics = bayes_cbf.pendulum:learn_dynamics',
+              'pendulum_control_ground_truth = bayes_cbf.pendulum:run_pendulum_control_ground_truth',
               'pendulum_control_online_learning = bayes_cbf.pendulum:run_pendulum_control_online_learning'
 
           ]}

@@ -538,7 +538,7 @@ class RadialCBFRelDegree2(NamedAffineFunc):
     @store_args
     def __init__(self, model,
                  cbf_col_gamma=1,
-                 cbf_col_K_alpha=[1., 1.],
+                 cbf_col_K_alpha=[1., 3.],
                  cbf_col_delta=math.pi/8,
                  cbf_col_theta=math.pi/4,
                  theta_c=math.pi/4,
@@ -754,19 +754,22 @@ class ControlCBFCLFLearned(Controller):
                  constraint_plotter_class=ConstraintPlotter,
                  true_model=None,
                  plotfile='plots/ctrl_cbf_learned_{suffix}.pdf',
-                 dtype=torch.get_default_dtype()
+                 dtype=torch.get_default_dtype(),
+                 use_ground_truth_model=False
     ):
         self.Xtrain = []
         self.Utrain = []
-        self.model = ControlAffineRegressor(
-            x_dim, u_dim,
-            gamma_length_scale_prior=gamma_length_scale_prior)
-        #self.model = self.ground_truth_model
+        if self.use_ground_truth_model:
+            self.model = self.true_model
+        else:
+            self.model = ControlAffineRegressor(
+                x_dim, u_dim,
+                gamma_length_scale_prior=gamma_length_scale_prior)
         self.mean_dynamics_model = mean_dynamics_model_class(m=u_dim, n=x_dim)
         self.ctrl_aff_constraints=[EnergyCLF(self),
                                    RadialCBF(self)]
         self.cbf2 = RadialCBFRelDegree2(self.model, dtype=dtype)
-        self.ground_truth_cbf2 = RadialCBFRelDegree2(true_model, dtype=dtype)
+        self.ground_truth_cbf2 = RadialCBFRelDegree2(self.true_model, dtype=dtype)
         self._has_been_trained_once = False
         # These are used in the optimizer hence numpy
         self.x_goal = torch.tensor([theta_goal, omega_goal])
@@ -905,8 +908,6 @@ class ControlCBFCLFLearned(Controller):
         with torch.no_grad():
             δ = self.max_unsafe_prob
             ratio = (1-δ)/δ
-            print("at theta, ω; u0: {},{}; {}".format(rad2deg(x[0]), x[1], u0))
-            print("mean^2 CBC2: ", (E_mean_A.T @ u0 + E_mean_b)**2)
             mean_Q = (E_mean_A.T @ E_mean_A).reshape(self.u_dim,self.u_dim)
             assert (torch.eig(var_k_Q)[0][:, 0] > 0).all()
             assert (torch.eig(mean_Q)[0][:, 0] > 0).all()
@@ -936,9 +937,6 @@ class ControlCBFCLFLearned(Controller):
             assert scaled_var > 0
             margin = torch.sqrt(scaled_var)
             assert not torch.isnan(scaled_var).any()
-            print("at theta, ω; u0: {},{}; {}".format(rad2deg(x[0]), x[1], u0))
-            print("mean^2 CBC2: ", (mean_A.T @ u0 + mean_b))
-            print("margin CBC2: ", margin)
             return [("-E[CBC2]",
                      list(map(convert_out,
                               (torch.tensor([[0.]]), - mean_A, - mean_b + margin))))]
@@ -959,7 +957,6 @@ class ControlCBFCLFLearned(Controller):
 
         def true_cbc2(xp, up):
             val = ( self.ground_truth_cbf2.A(xp) @ up - self.ground_truth_cbf2.b(xp))
-            print("- true CBC2: ", val)
             return val
         return [
             NamedFunc(lambda _, up: up.T @ Q @ up + c.T @ up + const, name)
@@ -1021,22 +1018,43 @@ run_pendulum_control_cbf_clf = partial(
 Run pendulum with a safe CLF-CBF controller.
 """
 
+class ControlCBFCLFGroundTruth(ControlCBFCLFLearned):
+    """
+    Controller that avoids learning but uses the ground truth model
+    """
+    needs_ground_truth = False
+    def __init__(self, *a, **kw):
+        assert kw.pop("use_ground_truth_model", False) is False
+        super().__init__(*a, use_ground_truth_model=True, **kw)
 
-def run_pendulum_control_online_learning(numSteps=2000):
-    """
-    Run save pendulum control while learning the parameters online
-    """
-    return run_pendulum_experiment(
-        plotfile='plots/run_pendulum_control_online_learning{suffix}.pdf',
-        controller_class=ControlCBFCLFLearned,
-        numSteps=numSteps,
-        theta0=5*math.pi/12,
-        tau=2e-3,
-        dtype=torch.float64)
+
+run_pendulum_control_online_learning = partial(
+    run_pendulum_experiment,
+    plotfile='plots/run_pendulum_control_online_learning{suffix}.pdf',
+    controller_class=ControlCBFCLFLearned,
+    numSteps=3000,
+    theta0=5*math.pi/12,
+    tau=5e-3)
+"""
+Run save pendulum control while learning the parameters online
+"""
+
+run_pendulum_control_ground_truth = partial(
+    run_pendulum_experiment,
+    plotfile='plots/run_pendulum_control_ground_truth{suffix}.pdf',
+    controller_class=ControlCBFCLFGroundTruth,
+    numSteps=2500,
+    theta0=5*math.pi/12,
+    tau=1e-2)
+"""
+Run save pendulum control with ground_truth model
+"""
+
 
 
 if __name__ == '__main__':
     #run_pendulum_control_trival()
     #run_pendulum_control_cbf_clf()
     #learn_dynamics()
+    #run_pendulum_control_ground_truth()
     run_pendulum_control_online_learning()

@@ -137,11 +137,13 @@ def test_GP_train_predict(n=2, m=3,
     #XdotGot_train = XdotTrain.new_empty(XdotTrain.shape)
     #for i in range(Xtrain.shape[0]):
     #    XdotGot_train[i, :] = FXT_train_mean[i, :, :].T @ UHtrain[i, :]
-    XdotGot_train_mean, XdotGot_train_cov = dgp.predict_flatten(
-        Xtrain[:-1], Utrain[:-1])
-    assert XdotGot_train_mean.detach().cpu().numpy() == pytest.approx(
-        XdotTrain[:-1].detach().cpu().numpy(), rel=rel_tol, abs=abs_tol), """
-        Train data check using original flatten predict """
+    predict_flatten_deprecated = True
+    if not predict_flatten_deprecated:
+        XdotGot_train_mean, XdotGot_train_cov = dgp._predict_flatten(
+            Xtrain[:-1], Utrain[:-1])
+        assert XdotGot_train_mean.detach().cpu().numpy() == pytest.approx(
+            XdotTrain[:-1].detach().cpu().numpy(), rel=rel_tol, abs=abs_tol), """
+            Train data check using original flatten predict """
 
     UHtest = torch.cat((Utest.new_ones((Utest.shape[0], 1)), Utest), dim=1)
     if deterministic:
@@ -173,12 +175,12 @@ def test_GP_train_predict(n=2, m=3,
     # Check predicting perturbed train values
     Xptrain = Xtrain[:-1] * (1 + torch.rand(Xtrain.shape[0]-1, 1) * perturb_scale)
     Uptrain = Utrain[:-1] * (1 + torch.rand(Xtrain.shape[0]-1, 1) * perturb_scale)
-    XdotGot_ptrain_mean, XdotGot_ptrain_cov = dgp.predict_flatten(Xptrain, Uptrain)
     Xdot_ptrain = dynamics_model.f_func(Xptrain) + dynamics_model.g_func(Xptrain).bmm(Uptrain.unsqueeze(-1)).squeeze(-1)
-
-    assert XdotGot_ptrain_mean.detach().cpu().numpy() == pytest.approx(
-        Xdot_ptrain.detach().cpu().numpy(), rel=rel_tol, abs=abs_tol), """
-        Perturbed Train data check using original flatten predict """
+    if not predict_flatten_deprecated:
+        XdotGot_ptrain_mean, XdotGot_ptrain_cov = dgp._predict_flatten(Xptrain, Uptrain)
+        assert XdotGot_ptrain_mean.detach().cpu().numpy() == pytest.approx(
+            Xdot_ptrain.detach().cpu().numpy(), rel=rel_tol, abs=abs_tol), """
+            Perturbed Train data check using original flatten predict """
 
     XdotGot_ptrain_mean_custom = dgp.fu_func_mean(Uptrain, Xptrain)
     assert XdotGot_ptrain_mean_custom.detach().cpu().numpy() == pytest.approx(
@@ -190,10 +192,11 @@ def test_GP_train_predict(n=2, m=3,
     # XdotGot = XdotTest.new_empty(XdotTest.shape)
     # for i in range(Xtest.shape[0]):
     #     XdotGot[i, :] = FXTmean[i, :, :].T @ UHtest[i, :]
-    XdotGot_mean, XdotGot_cov = dgp.predict_flatten(Xtest, Utest)
-    assert XdotGot_mean.detach().cpu().numpy() == pytest.approx(
-        XdotTest.detach().cpu().numpy(), rel=rel_tol, abs=abs_tol)
-        #abs=XdotGot_cov.flatten().max())
+    if not predict_flatten_deprecated:
+        XdotGot_mean, XdotGot_cov = dgp.predict_flatten(Xtest, Utest)
+        assert XdotGot_mean.detach().cpu().numpy() == pytest.approx(
+            XdotTest.detach().cpu().numpy(), rel=rel_tol, abs=abs_tol)
+            #abs=XdotGot_cov.flatten().max())
 
     # check predicting test values
     Xdot_mean = dgp.fu_func_mean(Utest, Xtest)

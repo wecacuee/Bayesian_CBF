@@ -5,3 +5,4 @@ torch
 torch-vision
 pyro-ppl
 cvxpy
+vtkPlotter

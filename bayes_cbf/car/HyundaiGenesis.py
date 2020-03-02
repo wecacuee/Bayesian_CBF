@@ -147,6 +147,8 @@ class HyundaiGenesisDynamicsModel(object):
   def _fg_func(self, X_in):
     if X_in.ndim == 1:
       X = X_in.unsqueeze(0)
+    else:
+      X = X_in
 
     assert X.shape[-1] == self.state_size
     state, inp = StateAsArray().deserialize(X)

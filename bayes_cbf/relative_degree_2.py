@@ -407,6 +407,7 @@ def cbc2_quadratic_terms(h_func, grad_h_func, control_affine_model, x, u):
     """
     cbc2.mean(x) ≥ √(1-δ)/δ cbc2.k(x,x')
     """
+    # TODO: Too complicated and opaque. Try to find a way to simplify
     mean = lambda up: cbc2_gp(h_func, grad_h_func, control_affine_model, up).mean(x)
     k_func = lambda up: cbc2_gp(h_func, grad_h_func, control_affine_model, up).knl(x, x)
 

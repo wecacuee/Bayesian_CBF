@@ -665,7 +665,7 @@ class ControlAffineRegressor(DynamicsModel):
         for k, v in self._cache.items():
             self._cache[k] = v.float()
 
-    def predict_flatten(self, Xtest_in, Utest_in):
+    def _predict_flatten(self, Xtest_in, Utest_in):
         """
         Directly predict
 
@@ -710,7 +710,8 @@ class ControlAffineRegressor(DynamicsModel):
                  if Xtest_in.ndim == 1
                  else Xtest_in)
         Utest = Xtest.new_zeros((Xtest.shape[0], self.u_dim))
-        mean_fx, cov_fx = self.predict_flatten(Xtest, Utest)
+        #mean_fx, cov_fx = self._predict_flatten(Xtest, Utest)
+        mean_fx, cov_fx = self.custom_predict(Xtest, Utest)
         if return_cov:
             if Xtest_in.ndim == 1:
                 cov_fx = cov_fx.squeeze(0)

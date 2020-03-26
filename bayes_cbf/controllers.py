@@ -279,13 +279,13 @@ class ControlCBFLearned(Controller):
             assert (torch.eig(mean_Q)[0][:, 0] > 0).all()
             A = var_k_Q * ratio # - mean_Q
             E_mean_A_ = torch.cat((E_mean_A, torch.tensor([-1.])), dim=0)
-            A_ = add_diag_const(A, 0.)
+            A_ = add_diag_const(A, -1.)
 
             mean_p = ((2 * E_mean_A @ E_mean_b)
                       if E_mean_b.ndim
                       else (2 * E_mean_A * E_mean_b))
             b = var_k_p * ratio # - mean_p
-            b_ = torch.cat((b, torch.tensor([-1.])), dim=0)
+            b_ = torch.cat((b, torch.tensor([0.])), dim=0)
             mean_r = (E_mean_b @ E_mean_b) if E_mean_b.ndim else (E_mean_b * E_mean_b)
             c = var_k_r * ratio # - mean_r
             constraints = [(r"$-E[CBC2] \le \alpha$",

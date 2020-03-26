@@ -26,8 +26,9 @@ CALOG.setLevel(logging.WARNING)
 
 from bayes_cbf.plotting import plot_results, plot_learned_2D_func, plt_savefig_with_data
 from bayes_cbf.sampling import sample_generator_trajectory, controller_sine
-from bayes_cbf.controllers import (cvxopt_solve_qp, control_QP_cbf_clf, controller_qcqp_gurobi,
-                                   Controller, ControlCBFLearned, NamedAffineFunc)
+from bayes_cbf.controllers import (cvxopt_solve_qp, control_QP_cbf_clf,
+                                   controller_qcqp_gurobi, Controller,
+                                   ControlCBFLearned, NamedAffineFunc, NamedFunc)
 from bayes_cbf.misc import (t_vstack, t_hstack, to_numpy, store_args,
                             DynamicsModel, variable_required_grad)
 from bayes_cbf.relative_degree_2 import cbc2_quadratic_terms, cbc2_gp
@@ -368,15 +369,6 @@ def learn_dynamics(
     plt_savefig_with_data(axs.flatten()[0].figure,
                           'plots/cbc_learned_vs_cbc_true.pdf')
     return dgp, dX, U
-
-
-class NamedFunc:
-    def __init__(self, func, name):
-        self.__name__ = name
-        self.func = func
-
-    def __call__(self, *args, **kwargs):
-        return self.func(*args, **kwargs)
 
 
 class EnergyCLF(NamedAffineFunc):
@@ -800,7 +792,7 @@ run_pendulum_control_cbf_clf = partial(
 Run pendulum with a safe CLF-CBF controller.
 """
 
-class ControlCBFCLFGroundTruth(ControlCBFCLFLearned):
+class ControlCBFCLFGroundTruth(ControlPendulumCBFLearned):
     """
     Controller that avoids learning but uses the ground truth model
     """
@@ -813,7 +805,7 @@ class ControlCBFCLFGroundTruth(ControlCBFCLFLearned):
 run_pendulum_control_online_learning = partial(
     run_pendulum_experiment,
     plotfile='plots/run_pendulum_control_online_learning{suffix}.pdf',
-    controller_class=ControlCBFCLFLearned,
+    controller_class=ControlPendulumCBFLearned,
     numSteps=3000,
     theta0=5*math.pi/12,
     tau=2e-3,

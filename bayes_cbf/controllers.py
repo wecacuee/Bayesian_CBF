@@ -1,8 +1,27 @@
+import logging
+LOG = logging.getLogger(__name__)
+LOG.setLevel(logging.INFO)
 from abc import ABC, abstractmethod, abstractproperty
 from functools import partial
+import math
 
 import numpy as np
 import torch
+
+from bayes_cbf.misc import store_args
+from bayes_cbf.plotting import plot_results, plot_learned_2D_func, plt_savefig_with_data
+from bayes_cbf.relative_degree_2 import cbc2_quadratic_terms, cbc2_gp
+
+
+class NamedFunc:
+    def __init__(self, func, name):
+        self.__name__ = name
+        self.func = func
+
+    def __call__(self, *args, **kwargs):
+        return self.func(*args, **kwargs)
+
+
 
 def cvxopt_solve_qp(P, q, G=None, h=None, A=None, b=None, solver=None,
                     initvals=None, **kwargs):
@@ -149,6 +168,12 @@ def controller_qcqp_gurobi(u0, quad_objective, quadratic_constraints,
     return u.X
 
 
+def add_diag_const(Q, const=1.0):
+    return torch.cat((torch.cat([Q,     torch.zeros(Q.shape[0], 1)], dim=0),
+                      torch.cat([torch.zeros(1, Q.shape[1]), torch.tensor([[const]])], dim=0)),
+                     dim=1)
+
+
 class Controller(ABC):
     """
     Controller interface
@@ -236,9 +261,11 @@ class ControlCBFLearned(Controller):
         c = -2.0*(λ * R @ u0 + (1-λ) * Gx.T @ P @ (x_g - fx))
         # Constant term + (1-λ)(x_g-fx)ᵀ P (x_g-fx) + λ u₀ᵀRu₀
         const = (1-λ) * (x_g-fx).T @ P @ (x_g-fx) + λ * u0.T @ R @ u0
-        #return list(map(convert_out, (Q, c, const)))
-        return list(map(convert_out, (R, torch.tensor([0]), torch.tensor(0))))
 
+        Q_ = add_diag_const(Q)
+        c_ = torch.cat((c, torch.tensor([0.])), dim=0)
+        return list(map(convert_out, (Q_, c_, const)))
+        # return list(map(convert_out, (R, torch.tensor([0]), torch.tensor(0))))
 
     def _stochastic_cbf2(self, i, x, u0, convert_out=to_numpy):
         (E_mean_A, E_mean_b), (var_k_Q, var_k_p, var_k_r), mean, var = \
@@ -250,20 +277,24 @@ class ControlCBFLearned(Controller):
             mean_Q = (E_mean_A.T @ E_mean_A).reshape(self.u_dim,self.u_dim)
             assert (torch.eig(var_k_Q)[0][:, 0] > 0).all()
             assert (torch.eig(mean_Q)[0][:, 0] > 0).all()
-            A = var_k_Q * ratio - mean_Q
+            A = var_k_Q * ratio # - mean_Q
+            E_mean_A_ = torch.cat((E_mean_A, torch.tensor([-1.])), dim=0)
+            A_ = add_diag_const(A, 0.)
 
             mean_p = ((2 * E_mean_A @ E_mean_b)
                       if E_mean_b.ndim
                       else (2 * E_mean_A * E_mean_b))
-            b = var_k_p * ratio - mean_p
+            b = var_k_p * ratio # - mean_p
+            b_ = torch.cat((b, torch.tensor([-1.])), dim=0)
             mean_r = (E_mean_b @ E_mean_b) if E_mean_b.ndim else (E_mean_b * E_mean_b)
-            c = var_k_r * ratio - mean_r
-            constraints = [(r"$E[CBC2] \le 0$",
+            c = var_k_r * ratio # - mean_r
+            constraints = [(r"$-E[CBC2] \le \alpha$",
                             list(map(convert_out,
-                                     (torch.zeros(1,1), - E_mean_A, -E_mean_b))))]
+                                     (torch.zeros(u0.shape[0]+1, u0.shape[0]+1),
+                                     - E_mean_A_, -E_mean_b))))]
             constraints.append(
-                (r"$\frac{1-\delta}{\delta} V[CBC2] - E[CBC2]^2 \le 0$",
-                 list(map(convert_out, (A, b, c)))))
+                (r"$\frac{1-\delta}{\delta} V[CBC2] \le \alpha$",
+                 list(map(convert_out, (A_, b_, c)))))
             return constraints
 
     def _stochastic_cbf2_sqrt(self, i, x, u0, convert_out=to_numpy):
@@ -295,7 +326,8 @@ class ControlCBFLearned(Controller):
             return val
 
         def true_cbc2(xp, up):
-            val = ( self.ground_truth_cbf2.A(xp) @ up - self.ground_truth_cbf2.b(xp))
+            val = ( self.ground_truth_cbf2.A(xp) @ up[:-1]
+                    - self.ground_truth_cbf2.b(xp))
             return val
         return [
             NamedFunc(lambda _, up: up.T @ Q @ up + c.T @ up + const, name)
@@ -322,7 +354,7 @@ class ControlCBFLearned(Controller):
 
         if self.model.ground_truth or self._has_been_trained_once:
             u0 = self.random_control(xi)
-            u = controller_qcqp_gurobi(to_numpy(u0),
+            u = controller_qcqp_gurobi(to_numpy(torch.cat([u0, torch.tensor([1.])])),
                                        self.quad_objective(i, xi, u0),
                                        self.quadratic_constraints(i, xi, u0),
                                        DualReductions=0,
@@ -331,6 +363,7 @@ class ControlCBFLearned(Controller):
             self.constraint_plotter.plot_constraints(
                 self.plottables(i, xi, u0),
                 xi, u)
+            u = u[:-1]
         else:
             u = self.random_control(xi, min_=-5., max_=5.)
         # record the xi, ui pair

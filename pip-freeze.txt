@@ -1,13 +1,19 @@
 atomicwrites==1.3.0
 attrs==19.2.0
 backcall==0.1.0
--e git+git@github.com:mkhojas/BayesCBF.git@81213327ffd716dbdeef48e5e0d663aa46e4cd80#egg=bayes_cbf
+-e git+git@github.com:mkhojas/BayesCBF.git@a7265492e0df27fd7c0d5d3842141d83aa849ed2#egg=bayes_cbf
 cvxopt==1.2.3
+cvxpy==1.0.25
 cycler==0.10.0
 Cython==0.29.13
 decorator==4.4.0
--e git+git@github.com:cornellius-gp/gpytorch.git@0ba30acb4b4dce8da55a3a763d3ec18a52df8fb9#egg=gpytorch
+dill==0.3.1.1
+ecos==2.0.7.post1
+future==0.18.2
+-e git+git@github.com:wecacuee/gpytorch.git@fa8fdce11037c1b0d08b0a5def4e97dc7421f771#egg=gpytorch
 graphviz==0.13
+# Editable install with no version control (gurobipy==9.0.0)
+-e /home/vdhiman/aux/BayesCBF_ws/BayesCBF/.tox/py37/lib/python3.7/site-packages
 importlib-metadata==0.23
 ipdb==0.12.2
 ipython==7.8.0
@@ -16,8 +22,10 @@ jedi==0.15.1
 kiwisolver==1.1.0
 matplotlib==3.1.1
 more-itertools==7.2.0
+multiprocess==0.70.9
 numpy==1.17.2
 opt-einsum==3.1.0
+osqp==0.6.1
 packaging==19.2
 parso==0.5.1
 pexpect==4.7.0
@@ -32,10 +40,13 @@ pyro-ppl==0.4.1
 pytest==5.2.1
 python-dateutil==2.8.0
 scipy==1.3.1
+scs==2.1.1.post2
 six==1.12.0
 torch==1.2.0
 torch-vision==0.1.6.dev0
 tqdm==4.36.1
 traitlets==4.3.3
+vtk==8.1.2
+vtkplotter==2020.2.0
 wcwidth==0.1.7
 zipp==0.6.0

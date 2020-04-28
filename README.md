@@ -1,4 +1,5 @@
 # BayesCBF
+![Python package](https://github.com/wecacuee/BayesCBF/workflows/Python%20package/badge.svg)
 
 ## Installation
 

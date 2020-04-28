@@ -21,6 +21,7 @@ setup(name="bayes_cbf",
       tests_require=['pytest', 'scipy'],
       cmdclass = {'test': Pytest},
       install_requires=open(rel2abs('requirements.txt')).readlines(),
+      python_requires=">=3.6",
       entry_points={
           'console_scripts': [
               'run_pendulum_control_trival = bayes_cbf.pendulum:run_pendulum_control_trival',

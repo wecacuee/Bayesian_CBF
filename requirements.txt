@@ -6,3 +6,6 @@ torch-vision
 pyro-ppl
 cvxpy
 vtkPlotter
+# gurobipy==9.0.0
+cvxpy
+vtkplotter==2020.2.0

@@ -27,14 +27,13 @@ from bayes_cbf.matrix_variate_multitask_kernel import MatrixVariateIndexKernel, 
 from bayes_cbf.matrix_variate_multitask_model import HetergeneousMatrixVariateMean
 from bayes_cbf.misc import (torch_kron, DynamicsModel, t_jac, variable_required_grad,
                             t_hessian, gradgradcheck)
+from bayes_cbf.gp_algebra import GaussianProcess
 
 
 __directory__ = Path(__file__).parent or Path(".")
 """
 The directory for this file
 """
-
-GaussianProcess = namedtuple('GaussianProcess', ["mean", "k"])
 
 class GaussianProcessFunc(namedtuple('GaussianProcessFunc', ["mean", "knl"])):
     @property
@@ -259,6 +258,7 @@ class ControlAffineRegressor(DynamicsModel):
             gamma_length_scale_prior=gamma_length_scale_prior
         ).to(device=self.device)
         self._cache = dict()
+        self._f_func_gp = GaussianProcess(self.f_func_mean, self.f_func_knl, (self.x_dim,), name="f")
 
     @property
     def ctrl_size(self):
@@ -769,7 +769,8 @@ class ControlAffineRegressor(DynamicsModel):
         return var_f_out
 
     def f_func_gp(self):
-        return GaussianProcessFunc(self.f_func_mean, self.f_func_knl)
+        #return GaussianProcess(self.f_func_mean, self.f_func_knl, (self.x_dim,))
+        return self._f_func_gp
 
     def fu_func_mean(self, Utest_in, Xtest_in):
         Xtest = (Xtest_in.unsqueeze(0)
@@ -818,8 +819,12 @@ class ControlAffineRegressor(DynamicsModel):
 
 
     def fu_func_gp(self, Utest_in):
-        return GaussianProcessFunc(mean=partial(self.fu_func_mean, Utest_in),
-                                   knl=partial(self.fu_func_knl, Utest_in))
+        gp = GaussianProcess(mean=partial(self.fu_func_mean, Utest_in),
+                               knl=partial(self.fu_func_knl, Utest_in),
+                               shape=(self.x_dim,),
+                             name="F(.)u")
+        gp.register_covar(self._f_func_gp, partial(self.covar_fu_f, Utest_in))
+        return gp
 
     def covar_fu_f(self, Utest_in, Xtest_in, Xtestp_in):
         Xtest = (Xtest_in.unsqueeze(0)

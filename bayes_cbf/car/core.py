@@ -91,6 +91,72 @@ class CircularObstacle(NamedAffineFunc):
                            self.lie_f_h_col(X).unsqueeze(0)])
         return (self.lie2_f_h_col(x) + K_α @ η_b_x)
 
+class FourCircularObstacles(NamedAffineFunc):
+    @store_args
+    def __init__(self,
+                 model,
+                 centers,
+                 radii,
+                 cbf_col_K_alpha=[2, 3],
+                 name="cbf-circles",
+                 dtype=torch.get_default_dtype()):
+        self.model = model
+        self.centers = centers
+        self.radii = radii
+        self.encoder = StateAsArray()
+
+    def to(self, dtype):
+        self.dtype = dtype
+        self.model.to(dtype=dtype)
+
+    def value(self, X):
+        state, inp = self.encoder.deserialize(X)
+        pos = state.pose.position[:, :2]
+        distsq = ((pos - self.center)**2).sum(dim=-1)
+        return distsq - self.radius**2
+
+    def __call__ (self, x, u):
+        return self.A(x) @ u - self.b(x)
+
+    def grad_h_col(self, X_in):
+        if X_in.ndim == 1:
+            X = X_in.unsqueeze(0)
+
+        with variable_required_grad(X):
+            grad_h_x = torch.autograd.grad(self.value(X), X)[0]
+
+        if X_in.ndim == 1:
+            grad_h_x = grad_h_x.squeeze(0)
+        return grad_h_x
+
+    def lie_f_h_col(self, X):
+        return self.grad_h_col(X).bmm( self.model.f_func(X) )
+
+    def grad_lie_f_h_col(self, X):
+        with variable_required_grad(X):
+            return torch.autograd.grad(self.lie_f_h_col(X), X)[0]
+
+    def lie2_f_h_col(self, X):
+        return self.grad_lie_f_h_col(x).bmm( self.model.f_func(x) )
+
+    def lie_g_lie_f_h_col(self, X):
+        return self.grad_lie_f_h_col(X).bmm( self.model.g_func(X) )
+
+    def lie2_fu_h_col(self, X, U):
+        grad_L1h = self.grad_lie_f_h_col(x)
+        return grad_L1h.bmm(self.f_func(X) + self.g_func(X).bmm(U))
+
+    def A(self, X):
+        return - self.lie_g_lie_f_h_col(X)
+
+    def b(self, X):
+        K_α = torch.tensor(self.cbf_col_K_alpha, dtype=self.dtype)
+        η_b_x = torch.cat([self.value(X).unsqueeze(0),
+                           self.lie_f_h_col(X).unsqueeze(0)])
+        return (self.lie2_f_h_col(x) + K_α @ η_b_x)
+
+
+
 
 class ControlRandom:
     needs_ground_truth = False
@@ -102,9 +168,17 @@ class ControlRandom:
 class ControlCarCBFLearned(ControlCBFLearned):
     @store_args
     def __init__(self,
-                 ground_truth_model=HyundaiGenesisDynamicsModel,
+                 dtype=torch.get_default_dtype(),
+                 true_model=HyundaiGenesisDynamicsModel,
                  use_ground_truth_model=False):
-        pass
+        if self.use_ground_truth_model:
+            self.model = self.true_model
+        else:
+            self.model = ControlAffineRegressor(
+                x_dim, u_dim,
+                gamma_length_scale_prior=gamma_length_scale_prior)
+        self.cbf2 = CarFourObstacles(self.model, dtype=dtype)
+        self.ground_truth_cbf2 = CarFourObstacles(self.true_model, dtype=dtype)
 
 
 class ControlCarCBFGroundTruth(ControlCarCBFLearned):

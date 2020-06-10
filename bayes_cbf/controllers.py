@@ -4,13 +4,14 @@ LOG.setLevel(logging.INFO)
 from abc import ABC, abstractmethod, abstractproperty
 from functools import partial
 import math
+import random
 
 import numpy as np
 import torch
 
 from bayes_cbf.misc import store_args
 from bayes_cbf.plotting import plot_results, plot_learned_2D_func, plt_savefig_with_data
-from bayes_cbf.relative_degree_2 import cbc2_quadratic_terms, cbc2_gp
+from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp
 
 
 class NamedFunc:
@@ -168,6 +169,43 @@ def controller_qcqp_gurobi(u0, quad_objective, quadratic_constraints,
     return u.X
 
 
+def controller_socp_cvxopt(u0, linear_objective, socp_constraints,
+                           equality_constraint):
+    """
+    Solve the optimization problem
+
+    min_u   A u + b
+       s.t. Gq u 
+    u0: reference control signal
+    linear
+    """
+    from cvxopt import matrix
+    from cvxopt.solvers import socp
+    m = u0.shape[0]
+    c = matrix(linear_objective, (m+1, 1))
+    Gq = []
+    hq = []
+    for name, (A, bfb, bfc, d) in socp_constraints:
+        Gqi = matrix(0.0, (A.shape[0]+1, m+1))
+        Gqi[0, :] = -bfc
+        Gqi[1:, :] = -A
+        Gq.append(Gqi)
+        hqi = matrix(0.0, (A.shape[0]+1, 1))
+        hqi[0, 0] = d.reshape(1,1)
+        hqi[1:, 0] = bfb
+        hq.append(hqi)
+
+    name_eq, Aeq, beq =  equality_constraint
+
+    sol = socp(c, Gq = Gq, hq = hq, A = matrix(Aeq, (1, m+1)), b = matrix(beq, (1,1)))
+    if sol['status'] != 'optimal':
+        print("{c}.T [y, 1, u]\n".format(c=c)
+              + "s.t. sq = {hq} - {Gq} [y, 1, u]\n".format(hq=hq, Gq=Gq)
+              + "s.t. {Aeq} [y, 1, u] = {beq}".format(Aeq=Aeq, beq=beq))
+        raise ValueError("Infeasible problem: %s" % sol['status'])
+
+    return np.asarray(sol['x'][1:]).astype(Aeq.dtype).reshape(-1)
+
 def add_diag_const(Q, const=1.0):
     return torch.cat((torch.cat([Q,     torch.zeros(Q.shape[0], 1)], dim=0),
                       torch.cat([torch.zeros(1, Q.shape[1]), torch.tensor([[const]])], dim=0)),
@@ -182,6 +220,13 @@ class Controller(ABC):
     @abstractmethod
     def control(self, xi, i=None):
         pass
+
+
+def epsilon(i, interpolate={0: 1, 1000: 0.01}):
+    """
+    """
+    ((si,sv), (ei, ev)) = list(interpolate.items())
+    return math.exp((i-si)/(ei-si)*(math.log(ev)-math.log(sv)) + math.log(sv))
 
 
 class ControlCBFLearned(Controller):
@@ -297,19 +342,54 @@ class ControlCBFLearned(Controller):
                  list(map(convert_out, (A_, b_, c)))))
             return constraints
 
-    def _stochastic_cbf2_sqrt(self, i, x, u0, convert_out=to_numpy):
-        (mean_A, mean_b), (k_Q, k_p, k_r), mean, var = cbc2_quadratic_terms(
+    def _socp_constraint(self, i, x, u0, convert_out=to_numpy):
+        m = self.u_dim
+        if self.model.ground_truth:
+            bfa = self.cbf2.A(x)
+            b = self.cbf2.b(x)
+            c = torch.zeros((m+2,))
+            c[2:] = bfa
+            return list(map(convert_out, (torch.zeros((1, m+2)), torch.zeros((1,)), c, b)))
+
+        (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(
             self.cbf2.h2_col, self.cbf2.grad_h2_col, self.model, x, u0)
+        # (name, (A, b, c, d))
+        # s.t. ||Ax + b||_2 <= c'x + d
         with torch.no_grad():
-            δ = self.max_unsafe_prob
-            ratio = (1-δ)/δ
-            scaled_var = ratio * (u0.T @ k_Q @ u0 + k_p.T @ u0 + k_r)
-            assert scaled_var > 0
-            margin = torch.sqrt(scaled_var)
-            assert not torch.isnan(scaled_var).any()
-            return [("-E[CBC2]",
-                     list(map(convert_out,
-                              (torch.tensor([[0.]]), - mean_A, - mean_b + margin))))]
+            Asq = torch.cat(
+                (
+                    torch.cat((torch.tensor([[v]]),         (bfv / 2).reshape(1, -1)), dim=-1),
+                    torch.cat(((bfv / 2).reshape(-1, 1),    V), dim=-1)
+                ),
+                dim=-2)
+            A = torch.zeros((m + 1, m + 2))
+            try:
+                A[:, 1:] = torch.cholesky(Asq)
+            except RuntimeError as err:
+                if "cholesky" in str(err) and "singular" in str(err):
+                    diag_e, V = torch.symeig(Asq, eigenvectors=True)
+                    A[:, 1:] = torch.max(torch.diag(diag_e), torch.tensor(0.)).sqrt() @ V.t()
+                else:
+                    raise
+            b = torch.zeros((m+1, 1))
+            c = torch.zeros((m+2,))
+            c[1:] = bfe
+            return list(map(convert_out, (A, b, c, e)))
+
+
+    def _socp_objective(self, i, x, u0, convert_out=to_numpy):
+        # s.t. ||R[y, 1, u] + [0, 0, u_0]||_2 <= [1, 0, 0] [y, 1, u] + 0
+        R = torch.eye(self.u_dim, self.u_dim + 2)
+        h = torch.zeros(self.u_dim)
+        with torch.no_grad():
+            R[:2, :] = 0
+            R[2:, :] = torch.eye(self.u_dim)
+            h[:] = u0
+        a = torch.zeros((self.u_dim + 2,))
+        a[0] = 1
+        b = torch.tensor([[0.]])
+        return list(map(convert_out, (R, h, a, b)))
+
 
     def quadratic_constraints(self, i, x, u0, convert_out=to_numpy):
         if self.model.ground_truth:
@@ -318,7 +398,6 @@ class ControlCBFLearned(Controller):
             return [("CBC2det", (torch.tensor([[0.]]), A, -b))]
         else:
             return self._stochastic_cbf2(i, x, u0, convert_out=convert_out)
-
 
     def plottables(self, i, x, u0):
         def true_h(xp, up):
@@ -338,10 +417,32 @@ class ControlCBFLearned(Controller):
             NamedFunc(true_h, "-h(x)"),
         ]
 
+    def unsafe_control(self, x):
+        with torch.no_grad():
+            x_g = self.x_goal
+            P = self.x_quad_goal_cost
+            R = torch.eye(self.u_dim)
+            λ = 0.5
+            fx = (self.dt * self.model.f_func(x)
+                + self.dt * self.mean_dynamics_model.f_func(x))
+            Gx = (self.dt * self.model.g_func(x.unsqueeze(0)).squeeze(0)
+                + self.dt * self.mean_dynamics_model.g_func(x))
+            # xp = x + fx + Gx @ u
+            # (1-λ) (x + fx + Gx @ u - x_g)ᵀ P (x_g - (x + fx + Gx @ u)) + λ uᵀ R u
+            # Quadratic term: uᵀ (λ R + (1-λ)GₓᵀPGₓ) u
+            # Linear term   : - (2(1-λ)GₓP(x_g - x - fx)  )ᵀ u
+            # Constant term : + (1-λ)(x_g-fx)ᵀP(x_g- x - fx)
+            # Minima at u* = ((λ R + (1-λ)GₓᵀPGₓ))⁻¹ ((1-λ)GₓP(x_g - x - fx)  )
 
-    def random_control(self, x, min_=-20, max_=20):
-        return (torch.rand(self.u_dim, dtype=x.dtype, device=x.device)
-                * (max_ - min_) + min_)
+
+            # Quadratic term λ R + (1-λ)Gₓᵀ P Gₓ
+            Q = λ * R + (1-λ) * Gx.T @ P @ Gx
+            # Linear term - (2λRu₀ + 2(1-λ)Gₓ P(x_g - fx)  )ᵀ u
+            c = (λ * R + (1-λ) * Gx.T @ P @ (x_g - x - fx))
+            return torch.solve(c, Q).solution.reshape(-1)
+
+    def epsilon_greedy_unsafe_control(self, i, x, min_=-20, max_=20):
+        return torch.rand(self.u_dim) if (random.random() < epsilon(i)) else self.unsafe_control(x)
 
 
     def control(self, xi, i=None):
@@ -353,19 +454,26 @@ class ControlCBFLearned(Controller):
         assert torch.all((xi[0] <= math.pi) & (-math.pi <= xi[0]))
 
         if self.model.ground_truth or self._has_been_trained_once:
-            u0 = self.random_control(xi)
-            u = controller_qcqp_gurobi(to_numpy(torch.cat([u0, torch.tensor([1.])])),
-                                       self.quad_objective(i, xi, u0),
-                                       self.quadratic_constraints(i, xi, u0),
-                                       DualReductions=0,
-                                       OutputFlag=0)
+            u0 = self.epsilon_greedy_unsafe_control(i, xi)
+            # u = controller_qcqp_gurobi(to_numpy(torch.cat([u0, torch.tensor([1.])])),
+            #                            self.quad_objective(i, xi, u0),
+            #                            self.quadratic_constraints(i, xi, u0),
+            #                            DualReductions=0,
+            #                            OutputFlag=0)
+            u = controller_socp_cvxopt(
+                np.hstack([[1.], u0.detach().numpy()]),
+                np.hstack([[1.], [0.], np.zeros_like(u0)]),
+                [("obj", self._socp_objective(i, xi, u0)),
+                 ("safety", self._socp_constraint(i, xi, u0))],
+                ("hom", np.hstack([[0.], [1.], np.zeros_like(u0)]), np.array([1.]))
+            )
             u = torch.from_numpy(u).to(dtype=xi.dtype, device=xi.device)
             self.constraint_plotter.plot_constraints(
                 self.plottables(i, xi, u0),
                 xi, u)
             u = u[:-1]
         else:
-            u = self.random_control(xi, min_=-5., max_=5.)
+            u = self.epsilon_greedy_unsafe_control(i, xi, min_=-5., max_=5.)
         # record the xi, ui pair
         self.Xtrain.append(xi.detach())
         self.Utrain.append(u.detach())

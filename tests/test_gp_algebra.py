@@ -126,7 +126,7 @@ def test_gradient_f_gp(dynamic_models, skip_test=False, dist=1e-4):
     learned_model, true_model, xtest, utest = dynamic_models
     grad_f = GradientGP(DeterministicGP(
         lambda x: torch.tensor([1., 0.]), shape=(2,), name="[1, 0]").t()
-                        @ learned_model.f_func_gp(),
+                        @ learned_model.fu_func_gp(utest),
                         x_shape=(2,))
     def xdot_func(x):
         return true_model.f_func(x)[0] + (true_model.g_func(x) @ utest)[0]
@@ -204,16 +204,6 @@ def test_lie2_gp(dynamic_models):
         )[0], abs=0.1, rel=0.4)
     L2h.knl(xtest, xtest)
     return L2h
-
-def cbc2_gp(h, grad_h, learned_model, utest, K_α):
-    f_gp = learned_model.f_func_gp()
-    fu_gp = learned_model.fu_func_gp(utest)
-    h_gp = DeterministicGP(h, shape=(1,), name="h(x)")
-    grad_h_gp = DeterministicGP(grad_h, shape=(learned_model.state_size,), name="∇ h(x)")
-    L1h = grad_h_gp.t() @ f_gp
-    L2h = GradientGP(L1h, x_shape=(learned_model.state_size,)).t() @ fu_gp
-    return L2h + h_gp * K_α[0] + L1h * K_α[1]
-
 
 def test_cbf2_gp(dynamic_models):
     learned_model, true_model, xtest, utest = dynamic_models

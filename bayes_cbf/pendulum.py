@@ -278,7 +278,7 @@ def learn_dynamics(
         gravity=10,
         length=1,
         max_train=200,
-        numSteps=2000,
+        numSteps=1000,
         pendulum_dynamics_class=PendulumDynamicsModel):
     #from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
     #from bayes_cbf.affine_kernel import AffineScaleKernel
@@ -831,5 +831,5 @@ if __name__ == '__main__':
     #run_pendulum_control_trival()
     #run_pendulum_control_cbf_clf()
     #learn_dynamics()
-    #run_pendulum_control_ground_truth()
+    # run_pendulum_control_ground_truth()
     run_pendulum_control_online_learning()

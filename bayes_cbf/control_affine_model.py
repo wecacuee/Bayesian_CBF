@@ -423,6 +423,7 @@ class ControlAffineRegressor(DynamicsModel):
         Let the training be handled by Gpytorch. After that i take things in my
         own hands and predict myself.
 
+        TODO: Write the function like this some day
         Matrix variate GP: Separate A and B
 
             f(x; u) ~ 𝕄𝕍ℙ(mean(x)u, A, B k(x, x'))
@@ -457,7 +458,8 @@ class ControlAffineRegressor(DynamicsModel):
            6. log p(y|X) := -0.5 yᵀ α - ∑ log Lᵢᵢ - 0.5 n log(2π)
         """
         Xtest = self._ensure_device_dtype(Xtest_in)
-        Xtestp = self._ensure_device_dtype(Xtestp_in) if Xtestp_in is not None else Xtest
+        Xtestp = (self._ensure_device_dtype(Xtestp_in) if Xtestp_in is not None
+                  else Xtest)
         if Utest_in is None:
             UHtest = Xtest.new_zeros(Xtest.shape[0], self.model.matshape[0])
             UHtest[:, 0] = 1
@@ -472,7 +474,8 @@ class ControlAffineRegressor(DynamicsModel):
             UHtestp = torch.cat((Utest.new_full((Utestp.shape[0], 1), UHfillp),
                                  Utestp), dim=-1)
 
-        k_xx = lambda x, xp: self.model.covar_module.data_covar_module(x, xp).evaluate()
+        k_xx = lambda x, xp: self.model.covar_module.data_covar_module(
+            x, xp).evaluate()
         if not grad_gp:
             k_ss = k_xs = k_sx = k_xx
             mean_s = self.model.mean_module
@@ -481,12 +484,16 @@ class ControlAffineRegressor(DynamicsModel):
                 with variable_required_grad(xs):
                     # allow_unused=True because the mean_module can be ConstantMean
                     mean_xs = self.model.mean_module(xs)
-                    grad_mean_xs = torch.autograd.grad(list(mean_xs.flatten()), xs,
-                                              allow_unused=True)[0]
+                    grad_mean_xs = torch.autograd.grad(
+                        list(mean_xs.flatten()),
+                        xs, allow_unused=True)[0]
                 if grad_mean_xs is None:
-                    return xs.new_zeros(xs.shape[0], *self.model.matshape, xs.shape[-1])
+                    return xs.new_zeros(xs.shape[0], *self.model.matshape,
+                                        xs.shape[-1])
                 else:
-                    return grad_mean_xs.reshape(xs.shape[0], *self.model.matshape, xs.shape[-1])
+                    return grad_mean_xs.reshape(xs.shape[0],
+                                                *self.model.matshape,
+                                                xs.shape[-1])
 
             mean_s = grad_mean_s
 
@@ -523,9 +530,9 @@ class ControlAffineRegressor(DynamicsModel):
         if self.model.train_inputs is None:
             # We do not have training data just return the mean and prior covariance
             if fX_mean_test.ndim == 4:
-                fu_mean_test = fu_mean_test.reshape(Xtest.shape[0], *self.model.matshape, -1)
+                fu_mean_test = fu_mean_test.reshape(Xtest.shape[0], *self.model.matshape[1], -1)
             else:
-                fu_mean_test = fu_mean_test.reshape(Xtest.shape[0], *self.model.matshape)
+                fu_mean_test = fu_mean_test.reshape(Xtest.shape[0], *self.model.matshape[1])
             return fu_mean_test, k_ss(Xtest, Xtest) * A
 
         MXUHtrain = self.model.train_inputs[0]
@@ -848,7 +855,10 @@ class ControlAffineRegressor(DynamicsModel):
 
     def g_func(self, Xtest_in, return_cov=False):
         assert not return_cov, "Don't know what matrix covariance looks like"
-        mean_Fx = self.predict(Xtest_in, return_cov=return_cov)
+        Xtest = (Xtest_in.unsqueeze(0)
+                 if Xtest_in.ndim == 1
+                 else Xtest_in)
+        mean_Fx = self.predict(Xtest, return_cov=return_cov)
         mean_gx = mean_Fx[:, 1:, :]
         if Xtest_in.ndim == 1:
             mean_gx = mean_gx.squeeze(0)

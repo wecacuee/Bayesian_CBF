@@ -31,7 +31,7 @@ from bayes_cbf.controllers import (cvxopt_solve_qp, control_QP_cbf_clf,
                                    ControlCBFLearned, NamedAffineFunc, NamedFunc)
 from bayes_cbf.misc import (t_vstack, t_hstack, to_numpy, store_args,
                             DynamicsModel, variable_required_grad)
-from bayes_cbf.relative_degree_2 import cbc2_quadratic_terms, cbc2_gp
+from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp
 
 
 class ControlTrivial(Controller):
@@ -74,10 +74,12 @@ class MeanPendulumDynamicsModel(DynamicsModel):
         return self.n
 
     def f_func(self, X):
-        return torch.zeros((self.n,))
+        return (torch.zeros((self.n,))
+                if X.dim() <= 1
+                else torch.zeros(X.shape))
 
     def g_func(self, X):
-        return torch.zeros((self.n, self.m))
+        return torch.zeros((*X.shape, self.m))
 
 
 
@@ -799,14 +801,16 @@ class ControlCBFCLFGroundTruth(ControlPendulumCBFLearned):
     needs_ground_truth = False
     def __init__(self, *a, **kw):
         assert kw.pop("use_ground_truth_model", False) is False
-        super().__init__(*a, use_ground_truth_model=True, **kw)
+        super().__init__(*a, use_ground_truth_model=True,
+                         mean_dynamics_model_class=MeanPendulumDynamicsModel,
+                         **kw)
 
 
 run_pendulum_control_online_learning = partial(
     run_pendulum_experiment,
     plotfile='plots/run_pendulum_control_online_learning{suffix}.pdf',
     controller_class=ControlPendulumCBFLearned,
-    numSteps=3000,
+    numSteps=300,
     theta0=5*math.pi/12,
     tau=2e-3,
     dtype=torch.float64)
@@ -818,7 +822,7 @@ run_pendulum_control_ground_truth = partial(
     run_pendulum_experiment,
     plotfile='plots/run_pendulum_control_ground_truth{suffix}.pdf',
     controller_class=ControlCBFCLFGroundTruth,
-    numSteps=2500,
+    numSteps=300,
     theta0=5*math.pi/12,
     tau=1e-2)
 """

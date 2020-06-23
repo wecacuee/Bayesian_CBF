@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod, abstractproperty
 from importlib import import_module
 
 import torch
+from torch.distributions import MultivariateNormal
 tgradcheck = import_module("torch.autograd.gradcheck") # global variable conflicts with module name
 
 from bayes_cbf.misc import t_jac, variable_required_grad, t_hessian
@@ -27,6 +28,9 @@ class GaussianProcessBase(ABC):
     @abstractmethod
     def covar(self, Z, x, xp):
         pass
+
+    def sample(self, x, sample_shape=torch.Size([])):
+        return MultivariateNormal(self.mean(x), self.knl(x, x)).sample(sample_shape)
 
     def __add__(self, Y):
         return GaussianProcessAddExpr(self, Y)
@@ -90,6 +94,9 @@ class DeterministicGP(GaussianProcessLeaf):
                 max(Z.shape))
         else:
             return Z.covar(self, x, xp).t()
+
+    def sample(self, x, sample_shape=torch.Size([])):
+        return self.mean(x).expand(*sample_shape, -1)
 
     def __repr__(self):
         return "DeterministicGP(mean={self._mean})".format(self=self)

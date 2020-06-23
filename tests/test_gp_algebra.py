@@ -9,16 +9,36 @@ import gpytorch.settings
 
 from bayes_cbf.pendulum import (RadialCBFRelDegree2, PendulumDynamicsModel,
                                 ControlAffineRegressor)
-from bayes_cbf.control_affine_model import GaussianProcess
-# from bayes_cbf.relative_degree_2 import (AffineGP, GradientGP,
-#                                          QuadraticFormOfGP, Lie1GP, Lie2GP,
-#                                          cbc2_gp, get_quadratic_terms,
-#                                          cbc2_quadratic_terms)
 from bayes_cbf.misc import to_numpy, variable_required_grad
-from bayes_cbf.gp_algebra import DeterministicGP, GradientGP
+from bayes_cbf.gp_algebra import GaussianProcess, DeterministicGP, GradientGP
+from bayes_cbf.cbc2 import cbc2_gp, cbc2_quadratic_terms
 from tests.test_control_affine_regression import test_pendulum_train_predict
 
 import pytest
+
+
+def test_deterministic_matmul():
+    """
+    Let h(x) be deterministic and f(x) be GP
+
+    Then h(x)' f(x) is a GP whose mean and variance can be computed.
+    """
+    D = 2
+    N = 20
+    h = DeterministicGP(torch.cos, shape=(D,))
+    f = GaussianProcess(torch.sin,
+                        lambda x, xp: RBFKernel()(x, xp).evaluate(),
+                        shape=(D,))
+    hf = h.t() @ f
+    x = torch.rand(2)
+    hfx = hf.mean(x)
+    hfvarx = hf.knl(x, x)
+    hX = h.sample(x, (N,))
+    fX = f.sample(x, (N,))
+    hfX = hX.unsqueeze(-2).bmm(fX.unsqueeze(-1))
+    hfmeanX = hfX.mean(dim=0)
+
+
 
 
 def get_test_sample_close_to_train(learned_model, dist=0.1):
@@ -211,11 +231,10 @@ def test_cbf2_gp(dynamic_models):
     learned_cbf2 = RadialCBFRelDegree2(learned_model)
     cbc2 = cbc2_gp(learned_cbf2.h2_col,
                    learned_cbf2.grad_h2_col, learned_model, utest,
-                   K_α=learned_cbf2.cbf_col_K_alpha)
+                   k_α=learned_cbf2.cbf_col_K_alpha)
     assert to_numpy(cbc2.mean(xtest)) == pytest.approx(to_numpy(
         - true_cbf2.A(xtest) @ utest + true_cbf2.b(xtest)), rel=0.1, abs=0.1)
     cbc2.knl(xtest, xtest)
-
 
 
 

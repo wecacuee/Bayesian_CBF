@@ -225,13 +225,6 @@ class Controller(ABC):
         pass
 
 
-def epsilon(i, interpolate={0: 1, 1000: 0.01}):
-    """
-    """
-    ((si,sv), (ei, ev)) = list(interpolate.items())
-    return math.exp((i-si)/(ei-si)*(math.log(ev)-math.log(sv)) + math.log(sv))
-
-
 class ControlCBFLearned(Controller):
     needs_ground_truth = False
     def train(self):
@@ -376,36 +369,6 @@ class ControlCBFLearned(Controller):
                       r"$ \mathcal{L}_f h(x)^\top F(x) u - [h(x), \mathcal{L}_f h(x)] k_\alpha < 0$"),
             NamedFunc(true_h, r"$-h(x) < 0$")
         ]
-
-    def unsafe_control(self, x):
-        with torch.no_grad():
-            x_g = self.x_goal
-            P = self.x_quad_goal_cost
-            R = torch.eye(self.u_dim)
-            λ = 0.5
-            fx = (self.dt * self.model.f_func(x)
-                + self.dt * self.mean_dynamics_model.f_func(x))
-            Gx = (self.dt * self.model.g_func(x.unsqueeze(0)).squeeze(0)
-                + self.dt * self.mean_dynamics_model.g_func(x))
-            # xp = x + fx + Gx @ u
-            # (1-λ) (x + fx + Gx @ u - x_g)ᵀ P (x_g - (x + fx + Gx @ u)) + λ uᵀ R u
-            # Quadratic term: uᵀ (λ R + (1-λ)GₓᵀPGₓ) u
-            # Linear term   : - (2(1-λ)GₓP(x_g - x - fx)  )ᵀ u
-            # Constant term : + (1-λ)(x_g-fx)ᵀP(x_g- x - fx)
-            # Minima at u* = ((λ R + (1-λ)GₓᵀPGₓ))⁻¹ ((1-λ)GₓP(x_g - x - fx)  )
-
-
-            # Quadratic term λ R + (1-λ)Gₓᵀ P Gₓ
-            Q = λ * R + (1-λ) * Gx.T @ P @ Gx
-            # Linear term - (2λRu₀ + 2(1-λ)Gₓ P(x_g - fx)  )ᵀ u
-            c = (λ * R + (1-λ) * Gx.T @ P @ (x_g - x - fx))
-            return torch.solve(c, Q).solution.reshape(-1)
-
-    def epsilon_greedy_unsafe_control(self, i, x, min_=-20, max_=20):
-        return (torch.rand(self.u_dim)
-                if (random.random() < epsilon(i))
-                else self.unsafe_control(x))
-
 
     def control(self, xi, i=None):
         if (not self.model.ground_truth

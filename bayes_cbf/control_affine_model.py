@@ -530,9 +530,9 @@ class ControlAffineRegressor(DynamicsModel):
         if self.model.train_inputs is None:
             # We do not have training data just return the mean and prior covariance
             if fX_mean_test.ndim == 4:
-                fu_mean_test = fu_mean_test.reshape(Xtest.shape[0], *self.model.matshape[1], -1)
+                fu_mean_test = fu_mean_test.reshape(Xtest.shape[0], *self.model.matshape[1:], -1)
             else:
-                fu_mean_test = fu_mean_test.reshape(Xtest.shape[0], *self.model.matshape[1])
+                fu_mean_test = fu_mean_test.reshape(Xtest.shape[0], *self.model.matshape[1:])
             return fu_mean_test, k_ss(Xtest, Xtest) * A
 
         MXUHtrain = self.model.train_inputs[0]

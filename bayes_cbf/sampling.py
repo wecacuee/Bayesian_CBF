@@ -35,7 +35,7 @@ def sample_generator_trajectory(dynamics_model, D, dt=0.01, x0=None,
     n = dynamics_model.state_size
     U = torch.empty((D, m))
     X = torch.zeros((D+1, n))
-    X[0, :] = torch.rand(n) if x0 is None else torch.tensor(x0)
+    X[0, :] = torch.rand(n) if x0 is None else (torch.tensor(x0) if not isinstance(x0, torch.Tensor) else x0)
     Xdot = torch.zeros((D, n))
     # Single trajectory
     for i in range(D):

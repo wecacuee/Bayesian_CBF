@@ -3,6 +3,7 @@ import logging
 LOG = logging.getLogger(__name__)
 LOG.setLevel(logging.INFO)
 
+import random
 import warnings
 import sys
 import io
@@ -25,7 +26,8 @@ from bayes_cbf.control_affine_model import ControlAffineRegressor, LOG as CALOG
 CALOG.setLevel(logging.WARNING)
 
 from bayes_cbf.plotting import plot_results, plot_learned_2D_func, plt_savefig_with_data
-from bayes_cbf.sampling import sample_generator_trajectory, controller_sine
+from bayes_cbf.sampling import (sample_generator_trajectory, controller_sine,
+                                Visualizer, VisualizerZ)
 from bayes_cbf.controllers import (cvxopt_solve_qp, control_QP_cbf_clf,
                                    controller_qcqp_gurobi, Controller,
                                    ControlCBFLearned, NamedAffineFunc, NamedFunc)
@@ -140,6 +142,7 @@ def sampling_pendulum(dynamics_model, numSteps,
                       dt=0.01,
                       plot_every_n_steps=20,
                       axs=None,
+                      visualizer=VisualizerZ(),
                       plotfile='plots/pendulum_data_{i}.pdf'):
     assert controller is not None, 'Surprise !! Changed interface to make controller a required argument'
     m, g, l = (dynamics_model.mass, dynamics_model.gravity,
@@ -200,6 +203,7 @@ def sampling_pendulum(dynamics_model, numSteps,
                                axs=axs)
             plt_savefig_with_data(axs.flatten()[0].figure, plotfile.format(i=i))
             plt.pause(0.001)
+            visualizer.setStateCtrl(Xold[0], u, t=i)
 
     assert torch.all((theta_vec <= math.pi) & (-math.pi <= theta_vec))
     damge_perc=damage_vec.sum() * 100/numSteps
@@ -228,8 +232,36 @@ def sampling_pendulum_data(dynamics_model, D=100, dt=0.01, **kwargs):
 def rad2deg(rad):
     return rad * 180. / math.pi
 
+
 def deg2rad(deg):
     return deg * math.pi / 180.
+
+
+class PendulumVisualizer(Visualizer):
+    @store_args
+    def __init__(self, length, unsafe_c, unsafe_delta, plotfile='plots/visualizer/{t:04d}.png'):
+        self.fig, self.axes = plt.subplots(1,1)
+        self.axes.set_aspect('equal')
+        self.axes.set_axis_off()
+        self.fig.suptitle('Pendulum')
+        self.count = 0
+
+    def setStateCtrl(self, x, u, t=0):
+        ax = self.axes
+        ax.clear()
+        self.axes.set_aspect('equal')
+        self.axes.set_axis_off()
+        l = self.length
+        c = self.unsafe_c - np.pi/2
+        Δ = self.unsafe_delta
+        θ = x[0] - np.pi/2
+        ax.plot([0, l*math.cos(θ)],
+                [0, l*math.sin(θ)], 'b-o', linewidth=2, markersize=10)
+        ax.fill([0, l*math.cos(c + Δ), l*math.cos(c - Δ)],
+                [0, l*math.sin(c + Δ), l*math.sin(c - Δ)], 'r')
+        self.fig.savefig(self.plotfile.format(t=self.count))
+        self.count += 1
+        plt.draw()
 
 
 def run_pendulum_experiment(#parameters
@@ -248,21 +280,26 @@ def run_pendulum_experiment(#parameters
     pendulum_model = pendulum_dynamics_class(m=1, n=2, mass=mass, gravity=gravity,
                                              length=length, dtype=dtype)
     if controller_class.needs_ground_truth:
-        controller = controller_class(mass=mass, gravity=gravity,
+        controller_object = controller_class(mass=mass, gravity=gravity,
                                       length=length, dt=tau,
                                       true_model=pendulum_model,
                                       plotfile=plotfile.format(suffix='_ctrl_{suffix}'),
                                       dtype=dtype
-        ).control
+        )
+        controller = controller_object.control
     else:
-        controller = controller_class(dt=tau, true_model=pendulum_model,
+        controller_object = controller_class(dt=tau, true_model=pendulum_model,
                                       plotfile=plotfile.format(suffix='_ctrl_{suffix}'),
                                       dtype=dtype
 
-        ).control
+        )
+        controller = controller_object.control
     damge_perc,time_vec,theta_vec,omega_vec,u_vec = sampling_pendulum(
         pendulum_model,
         numSteps, x0=torch.tensor([theta0,omega0]), controller=controller, dt=tau,
+        visualizer=PendulumVisualizer(length=length,
+                                      unsafe_c=controller_object.cbf2.cbf_col_theta,
+                                      unsafe_delta=controller_object.cbf2.cbf_col_delta),
         plotfile=plotfile.format(suffix='_trajectory_{i}'))
     plot_results(time_vec, omega_vec, theta_vec, u_vec)
 
@@ -681,6 +718,14 @@ class PendulumCBFCLFDirect(Controller):
             xi, u)
         return u
 
+
+def epsilon(i, interpolate={0: 1, 1000: 0.01}):
+    """
+    """
+    ((si,sv), (ei, ev)) = list(interpolate.items())
+    return math.exp((i-si)/(ei-si)*(math.log(ev)-math.log(sv)) + math.log(sv))
+
+
 class ControlPendulumCBFLearned(ControlCBFLearned):
     @store_args
     def __init__(self,
@@ -774,6 +819,35 @@ class ControlPendulumCBFLearned(ControlCBFLearned):
         print("f(x; u)[1] ∈ [{}, {}]".format(fxutrue[:, 1].min(),
                                                fxutrue[:, 1].max()))
 
+    def unsafe_control(self, x):
+        with torch.no_grad():
+            x_g = self.x_goal
+            P = self.x_quad_goal_cost
+            R = torch.eye(self.u_dim)
+            λ = 0.5
+            fx = (self.dt * self.model.f_func(x)
+                + self.dt * self.mean_dynamics_model.f_func(x))
+            Gx = (self.dt * self.model.g_func(x.unsqueeze(0)).squeeze(0)
+                + self.dt * self.mean_dynamics_model.g_func(x))
+            # xp = x + fx + Gx @ u
+            # (1-λ) (x + fx + Gx @ u - x_g)ᵀ P (x_g - (x + fx + Gx @ u)) + λ uᵀ R u
+            # Quadratic term: uᵀ (λ R + (1-λ)GₓᵀPGₓ) u
+            # Linear term   : - (2(1-λ)GₓP(x_g - x - fx)  )ᵀ u
+            # Constant term : + (1-λ)(x_g-fx)ᵀP(x_g- x - fx)
+            # Minima at u* = ((λ R + (1-λ)GₓᵀPGₓ))⁻¹ ((1-λ)GₓP(x_g - x - fx)  )
+
+
+            # Quadratic term λ R + (1-λ)Gₓᵀ P Gₓ
+            Q = λ * R + (1-λ) * Gx.T @ P @ Gx
+            # Linear term - (2λRu₀ + 2(1-λ)Gₓ P(x_g - fx)  )ᵀ u
+            c = (λ * R + (1-λ) * Gx.T @ P @ (x_g - x - fx))
+            return torch.solve(c, Q).solution.reshape(-1)
+
+    def epsilon_greedy_unsafe_control(self, i, x, min_=-20, max_=20):
+        return (torch.rand(self.u_dim)
+                if (random.random() < epsilon(i))
+                else self.unsafe_control(x))
+
 
 
 run_pendulum_control_trival = partial(
@@ -811,8 +885,8 @@ run_pendulum_control_online_learning = partial(
     plotfile='plots/run_pendulum_control_online_learning{suffix}.pdf',
     controller_class=ControlPendulumCBFLearned,
     numSteps=300,
-    theta0=5*math.pi/12,
-    tau=2e-3,
+    theta0=11*math.pi/12,
+    tau=0.01,
     dtype=torch.float64)
 """
 Run save pendulum control while learning the parameters online

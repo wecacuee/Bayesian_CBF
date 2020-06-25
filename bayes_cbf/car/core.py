@@ -3,8 +3,9 @@ from functools import partial
 
 import torch
 
-from bayes_cbf.car.HyundaiGenesis import HyundaiGenesisDynamicsModel, StateAsArray, rotmat_to_z
-from bayes_cbf.misc import t_hstack, store_args
+from bayes_cbf.car.HyundaiGenesis import (HyundaiGenesisDynamicsModel,
+                                          StateAsArray, rotmat_to_z, rotz)
+from bayes_cbf.misc import t_hstack, store_args, DynamicsModel
 from bayes_cbf.sampling import sample_generator_trajectory, Visualizer
 from bayes_cbf.plotting import plot_learned_2D_func, plot_results
 from bayes_cbf.control_affine_model import ControlAffineRegressor
@@ -12,10 +13,71 @@ from bayes_cbf.controllers import ControlCBFLearned, NamedAffineFunc
 from bayes_cbf.car.vis import CarFourObstacles
 
 
+class UnicycleDynamicsModel(DynamicsModel):
+    """
+    Ẋ     =     f(X)     +   g(X)     u
+
+    [ v̇ₓ ]   [ 0        ]   [ cos(θ), 0 ]
+    [ v̇y ]   [ 0        ]   [ sin(θ), 0 ]
+    [ ω̇  ]   [ 0        ]   [ 0,      1 ]
+    [ ẋ  ] = [ vₓ       ] + [ 0,      0 ] [ a ]
+    [ ẏ  ]   [ vy       ]   [ 0,      0 ] [ α ]
+    [ θ̇  ]   [ ω        ]   [ 0,      0 ]
+    """
+    def __init__(self, m, n):
+        self.m = 2 # [a, α]
+        self.n = 6 # [vₓ, vy, ω, x, y, θ]
+
+    @property
+    def ctrl_size(self):
+        return self.m
+
+    @property
+    def state_size(self):
+        return self.n
+
+    def f_func(self, X_in):
+        """
+                [ 0        ]
+                [ 0        ]
+                [ 0        ]
+        f(x) =  [ v cos(θ) ]
+                [ v sin(θ) ]
+                [ ω        ]
+        """
+        X = X_in.unsqueeze(0) if X_in.dim() <= 1 else X_in
+        v = X[..., 0]
+        ω = X[..., 1]
+        θ = X[..., 4]
+        fX = X.new_zeros(X.shape)
+        fX[:, 0] = v.new_zeros(v.shape)
+        fX[:, 1] = ω.new_zeros(v.shape)
+        fX[:, 2] = (v * θ.cos()).sum(dim=-1)
+        fX[:, 3] = (v * θ.sin()).sum(dim=-1)
+        fX[:, 4] = ω
+        return fX.squeeze(0) if X_in.dim() <= 1 else fX
+
+    def g_func(self, X):
+        """
+                [ cos(θ), 0 ]
+                [ sin(θ), 0 ]
+                [ 0,      1 ]
+        g(x) =  [ 0,      0 ]
+                [ 0,      0 ]
+                [ 0,      0 ]
+        """
+        X = X_in.unsqueeze(0) if X_in.dim() <= 1 else X_in
+        gX = torch.zeros((*X.shape, self.m))
+        gX[..., :, :] = torch.eye(2)
+        return gX.squeeze(0) if X_in.dim() <= 1 else gX
+
+
 class CarVisualizer(Visualizer):
-    def __init__(self):
+    def __init__(self, centers, radii):
         super().__init__()
         self.carworld = CarFourObstacles()
+        for c, r in zip(centers, radii):
+            self.carworld.addObstacle(c[0], c[1], r)
         self.encoder = StateAsArray()
 
     def setStateCtrl(self, x, u, t=0):
@@ -170,15 +232,44 @@ class ControlCarCBFLearned(ControlCBFLearned):
     def __init__(self,
                  dtype=torch.get_default_dtype(),
                  true_model=HyundaiGenesisDynamicsModel,
-                 use_ground_truth_model=False):
+                 use_ground_truth_model=False,
+                 mean_dynamics_model=CarMeanDynamicsModel,
+                 centers=[(1, 1), (1, -1), (-1, -1), (-1, 1)],
+                 radii=[0.8]*4,
+                 x_goal=[(0,0)],
+                 x_dim=9,
+                 u_dim=3
+    ):
         if self.use_ground_truth_model:
             self.model = self.true_model
         else:
-            self.model = ControlAffineRegressor(
-                x_dim, u_dim,
-                gamma_length_scale_prior=gamma_length_scale_prior)
-        self.cbf2 = CarFourObstacles(self.model, dtype=dtype)
-        self.ground_truth_cbf2 = CarFourObstacles(self.true_model, dtype=dtype)
+            self.model = ControlAffineRegressor(x_dim, u_dim)
+        self.cbf2 = FourCircularObstacles(self.model, centers, radii, dtype=dtype)
+        self.ground_truth_cbf2 = FourCircularObstacles(self.true_model, centers, radii, dtype=dtype)
+
+    def unsafe_control(self, x):
+        with torch.no_grad():
+            x_g = self.x_goal
+            P = self.x_quad_goal_cost
+            R = torch.eye(self.u_dim)
+            λ = 0.5
+            fx = (self.dt * self.model.f_func(x)
+                + self.dt * self.mean_dynamics_model.f_func(x))
+            Gx = (self.dt * self.model.g_func(x.unsqueeze(0)).squeeze(0)
+                + self.dt * self.mean_dynamics_model.g_func(x))
+            # xp = x + fx + Gx @ u
+            # (1-λ) (x + fx + Gx @ u - x_g)ᵀ P (x_g - (x + fx + Gx @ u)) + λ uᵀ R u
+            # Quadratic term: uᵀ (λ R + (1-λ)GₓᵀPGₓ) u
+            # Linear term   : - (2(1-λ)GₓP(x_g - x - fx)  )ᵀ u
+            # Constant term : + (1-λ)(x_g-fx)ᵀP(x_g- x - fx)
+            # Minima at u* = ((λ R + (1-λ)GₓᵀPGₓ))⁻¹ ((1-λ)GₓP(x_g - x - fx)  )
+
+
+            # Quadratic term λ R + (1-λ)Gₓᵀ P Gₓ
+            Q = λ * R + (1-λ) * Gx.T @ P @ Gx
+            # Linear term - (2λRu₀ + 2(1-λ)Gₓ P(x_g - fx)  )ᵀ u
+            c = (λ * R + (1-λ) * Gx.T @ P @ (x_g - x - fx))
+            return torch.solve(c, Q).solution.reshape(-1)
 
 
 class ControlCarCBFGroundTruth(ControlCarCBFLearned):
@@ -256,12 +347,16 @@ def run_car_control_ground_truth():
     """
     Run save car control with ground_truth model
     """
-    controller = ControlCarCBFGroundTruth()
+    controller = ControlCarCBFLearned(mean_dynamics_model=CarMeanDynamicsModel)
+    start, inp = StateAsArray().deserialize(torch.zeros(1, controller.x_dim))
+    start.pose.position[:, :2] = torch.tensor([[0,2]])
+    start.pose.orientation = rotz(torch.tensor([-math.pi/2]))
     return sample_generator_trajectory(
         dynamics_model=HyundaiGenesisDynamicsModel(),
         D=1000,
         controller=controller.control,
-        visualizer=CarVisualizer())
+        visualizer=CarVisualizer(controller.centers, controller.radii),
+        x0=StateAsArray().serialize(start, inp))
 
 
 if __name__ == '__main__':

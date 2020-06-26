@@ -372,7 +372,7 @@ class ControlCBFLearned(Controller):
 
     def control(self, xi, i=None):
         if (not self.model.ground_truth
-            and len(self.Xtrain) % self.train_every_n_steps == 0):
+            and len(self.Xtrain) % int(self.train_every_n_steps) == 0):
             # train every n steps
             LOG.info("Training GP with dataset size {}".format(len(self.Xtrain)))
             self.train()

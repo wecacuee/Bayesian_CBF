@@ -241,17 +241,17 @@ class PendulumVisualizer(Visualizer):
     @store_args
     def __init__(self, length, unsafe_c, unsafe_delta, plotfile='plots/visualizer/{t:04d}.png'):
         self.fig, self.axes = plt.subplots(1,1)
-        self.axes.set_aspect('equal')
-        self.axes.set_axis_off()
         self.fig.suptitle('Pendulum')
         self.count = 0
 
     def setStateCtrl(self, x, u, t=0):
         ax = self.axes
         ax.clear()
-        self.axes.set_aspect('equal')
-        self.axes.set_axis_off()
+        ax.set_aspect('equal')
+        ax.set_axis_off()
         l = self.length
+        ax.set_xlim(-.05*l, 1.05*l)
+        ax.set_ylim(-.05*l, 1.05*l)
         c = self.unsafe_c - np.pi/2
         Δ = self.unsafe_delta
         θ = x[0] - np.pi/2
@@ -884,8 +884,8 @@ run_pendulum_control_online_learning = partial(
     run_pendulum_experiment,
     plotfile='plots/run_pendulum_control_online_learning{suffix}.pdf',
     controller_class=ControlPendulumCBFLearned,
-    numSteps=300,
-    theta0=11*math.pi/12,
+    numSteps=2000,
+    theta0=5*math.pi/6,
     tau=0.01,
     dtype=torch.float64)
 """

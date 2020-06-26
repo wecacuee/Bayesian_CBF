@@ -12,18 +12,20 @@ from bayes_cbf.control_affine_model import ControlAffineRegressor
 from bayes_cbf.controllers import ControlCBFLearned, NamedAffineFunc
 from bayes_cbf.car.vis import CarWithObstacles
 
-
 class UnicycleDynamicsModel(DynamicsModel):
     """
     Ẋ     =     f(X)     +   g(X)     u
 
-    [ ẋ  ] = [ 0 ] + [ cos(θ), 0 ] [ v ]
-    [ ẏ  ]   [ 0 ]   [ sin(θ), 0 ] [ ω ]
-    [ θ̇  ]   [ 0 ]   [ 0,      1 ]
+    [ v̇ₓ ]   [ 0        ]   [ cos(θ), 0 ]
+    [ v̇y ]   [ 0        ]   [ sin(θ), 0 ]
+    [ ω̇  ]   [ 0        ]   [ 0,      1 ]
+    [ ẋ  ] = [ vₓ       ] + [ 0,      0 ] [ a ]
+    [ ẏ  ]   [ vy       ]   [ 0,      0 ] [ α ]
+    [ θ̇  ]   [ ω        ]   [ 0,      0 ]
     """
     def __init__(self, m, n):
-        self.m = 2 # [v, ω]
-        self.n = 3 # [x, y, θ]
+        self.m = 2 # [a, α]
+        self.n = 6 # [vₓ, vy, ω, x, y, θ]
 
     @property
     def ctrl_size(self):
@@ -35,25 +37,40 @@ class UnicycleDynamicsModel(DynamicsModel):
 
     def f_func(self, X_in):
         """
-                [ 0   ]
-         f(x) = [ 0   ]
-                [ 0   ]
+                [ 0        ]
+                [ 0        ]
+                [ 0        ]
+        f(x) =  [ v cos(θ) ]
+                [ v sin(θ) ]
+                [ ω        ]
         """
-        return X_in.new_zeros(X_in.shape)
+        X = X_in.unsqueeze(0) if X_in.dim() <= 1 else X_in
+        v = X[..., 0]
+        ω = X[..., 1]
+        θ = X[..., 4]
+        fX = X.new_zeros(X.shape)
+        fX[:, 0] = v.new_zeros(v.shape)
+        fX[:, 1] = ω.new_zeros(v.shape)
+        fX[:, 2] = (v * θ.cos()).sum(dim=-1)
+        fX[:, 3] = (v * θ.sin()).sum(dim=-1)
+        fX[:, 4] = ω
+        return fX.squeeze(0) if X_in.dim() <= 1 else fX
 
     def g_func(self, X):
         """
                 [ cos(θ), 0 ]
-         g(x) = [ sin(θ), 0 ]
+                [ sin(θ), 0 ]
                 [ 0,      1 ]
+        g(x) =  [ 0,      0 ]
+                [ 0,      0 ]
+                [ 0,      0 ]
         """
         X = X_in.unsqueeze(0) if X_in.dim() <= 1 else X_in
         gX = torch.zeros((*X.shape, self.m))
-        θ = X[..., 2]
-        gX[..., 0, 0] = θ.cos()
-        gX[..., 1, 0] = θ.cos()
-        gX[..., 2, 1] = 1
+        gX[..., :, :] = torch.eye(2)
         return gX.squeeze(0) if X_in.dim() <= 1 else gX
+
+
 
 
 class UnicycleVisualizer(Visualizer):

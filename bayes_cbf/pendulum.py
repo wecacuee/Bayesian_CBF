@@ -28,11 +28,11 @@ CALOG.setLevel(logging.WARNING)
 from bayes_cbf.plotting import plot_results, plot_learned_2D_func, plt_savefig_with_data
 from bayes_cbf.sampling import (sample_generator_trajectory, controller_sine,
                                 Visualizer, VisualizerZ)
-from bayes_cbf.controllers import (cvxopt_solve_qp, control_QP_cbf_clf,
-                                   controller_qcqp_gurobi, Controller,
-                                   ControlCBFLearned, NamedAffineFunc, NamedFunc)
+from bayes_cbf.controllers import (Controller, ControlCBFLearned,
+                                   NamedAffineFunc, NamedFunc, ConstraintPlotter)
 from bayes_cbf.misc import (t_vstack, t_hstack, to_numpy, store_args,
-                            DynamicsModel, variable_required_grad)
+                            DynamicsModel, ZeroDynamicsModel, variable_required_grad,
+                            epsilon)
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp
 
 
@@ -60,28 +60,6 @@ class ControlRandom(Controller):
         return self.control_trivial.control(
             xi, i=i
         ) * torch.abs(torch.rand(1)) + torch.rand(1)
-
-
-class MeanPendulumDynamicsModel(DynamicsModel):
-    def __init__(self, m, n):
-        self.m = m
-        self.n = n
-
-    @property
-    def ctrl_size(self):
-        return self.m
-
-    @property
-    def state_size(self):
-        return self.n
-
-    def f_func(self, X):
-        return (torch.zeros((self.n,))
-                if X.dim() <= 1
-                else torch.zeros(X.shape))
-
-    def g_func(self, X):
-        return torch.zeros((*X.shape, self.m))
 
 
 
@@ -251,7 +229,7 @@ class PendulumVisualizer(Visualizer):
         ax.set_axis_off()
         l = self.length
         ax.set_xlim(-.05*l, 1.05*l)
-        ax.set_ylim(-.05*l, 1.05*l)
+        ax.set_ylim(-1.05*l, 1.05*l)
         c = self.unsafe_c - np.pi/2
         Δ = self.unsafe_delta
         θ = x[0] - np.pi/2
@@ -281,16 +259,18 @@ def run_pendulum_experiment(#parameters
                                              length=length, dtype=dtype)
     if controller_class.needs_ground_truth:
         controller_object = controller_class(mass=mass, gravity=gravity,
-                                      length=length, dt=tau,
-                                      true_model=pendulum_model,
-                                      plotfile=plotfile.format(suffix='_ctrl_{suffix}'),
-                                      dtype=dtype
+                                             length=length, dt=tau,
+                                             true_model=pendulum_model,
+                                             plotfile=plotfile.format(suffix='_ctrl_{suffix}'),
+                                             dtype=dtype,
+                                             numSteps=numSteps
         )
         controller = controller_object.control
     else:
         controller_object = controller_class(dt=tau, true_model=pendulum_model,
-                                      plotfile=plotfile.format(suffix='_ctrl_{suffix}'),
-                                      dtype=dtype
+                                             plotfile=plotfile.format(suffix='_ctrl_{suffix}'),
+                                             dtype=dtype,
+                                             numSteps=numSteps
 
         )
         controller = controller_object.control
@@ -639,44 +619,6 @@ class CBFSr(NamedAffineFunc):
         return torch.tensor([gamma_sr*(delta_sr-w**2)+(2*g*torch.sin(theta)*w)/(l)])
 
 
-class ConstraintPlotter:
-    @store_args
-    def __init__(self,
-                 axes=None,
-                 constraint_hists=[],
-                 plotfile='plots/constraint_hists_{i}.pdf'):
-        pass
-
-    def plot_constraints(self, funcs, x, u, i=None):
-        axs = self.axes
-        nfuncs = len(funcs)
-        if axs is None:
-            nplots = nfuncs
-            shape = ((math.ceil(nplots / 2), 2) if nplots >= 2 else (nplots,))
-            fig, axs = plt.subplots(*shape)
-            fig.subplots_adjust(wspace=0.35, hspace=0.5)
-            axs = self.axes = axs.flatten() if hasattr(axs, "flatten") else np.array([axs])
-
-        if len(self.constraint_hists) < nfuncs:
-            self.constraint_hists = self.constraint_hists + [
-                list() for _ in range(
-                nfuncs - len(self.constraint_hists))]
-
-        for i, af in enumerate(funcs):
-            self.constraint_hists[i].append(af(x, u))
-
-        if torch.rand(1) <= 0.2:
-            for i, (ch, af) in enumerate(zip(self.constraint_hists, funcs)):
-                axs[i].clear()
-                axs[i].plot(ch)
-                axs[i].set_ylabel(af.__name__)
-                axs[i].set_xlabel("time")
-                plt.pause(0.0001)
-            if i is not None:
-                plt_savefig_with_data(axs[i].figure, self.plotfile.format(i=i))
-        return axs
-
-
 class PendulumCBFCLFDirect(Controller):
     needs_ground_truth = True
     @store_args
@@ -719,13 +661,6 @@ class PendulumCBFCLFDirect(Controller):
         return u
 
 
-def epsilon(i, interpolate={0: 1, 1000: 0.01}):
-    """
-    """
-    ((si,sv), (ei, ev)) = list(interpolate.items())
-    return math.exp((i-si)/(ei-si)*(math.log(ev)-math.log(sv)) + math.log(sv))
-
-
 class ControlPendulumCBFLearned(ControlCBFLearned):
     @store_args
     def __init__(self,
@@ -738,7 +673,7 @@ class ControlPendulumCBFLearned(ControlCBFLearned):
                  gamma_sr=1,
                  delta_sr=10,
                  train_every_n_steps=10,
-                 mean_dynamics_model_class=MeanPendulumDynamicsModel,
+                 mean_dynamics_model_class=ZeroDynamicsModel,
                  egreedy_scheme=[1, 0.01],
                  iterations=100,
                  max_unsafe_prob=0.01,
@@ -750,7 +685,8 @@ class ControlPendulumCBFLearned(ControlCBFLearned):
                  true_model=None,
                  plotfile='plots/ctrl_cbf_learned_{suffix}.pdf',
                  dtype=torch.get_default_dtype(),
-                 use_ground_truth_model=False
+                 use_ground_truth_model=False,
+                 numSteps=1000,
     ):
         self.Xtrain = []
         self.Utrain = []
@@ -843,9 +779,11 @@ class ControlPendulumCBFLearned(ControlCBFLearned):
             c = (λ * R + (1-λ) * Gx.T @ P @ (x_g - x - fx))
             return torch.solve(c, Q).solution.reshape(-1)
 
-    def epsilon_greedy_unsafe_control(self, i, x, min_=-20, max_=20):
-        return (torch.rand(self.u_dim)
-                if (random.random() < epsilon(i))
+    def epsilon_greedy_unsafe_control(self, i, x, min_=-5., max_=5.):
+        eps = epsilon(i, interpolate={0: self.egreedy_scheme[0],
+                                      self.numSteps: self.egreedy_scheme[1]})
+        return ((torch.rand(self.u_dim) * (max_ - min_) + min_)
+                if (random.random() < eps)
                 else self.unsafe_control(x))
 
 
@@ -884,9 +822,9 @@ run_pendulum_control_online_learning = partial(
     run_pendulum_experiment,
     plotfile='plots/run_pendulum_control_online_learning{suffix}.pdf',
     controller_class=ControlPendulumCBFLearned,
-    numSteps=2000,
-    theta0=5*math.pi/6,
-    tau=0.01,
+    numSteps=5000,
+    theta0=5*math.pi/12,
+    tau=0.002,
     dtype=torch.float64)
 """
 Run save pendulum control while learning the parameters online

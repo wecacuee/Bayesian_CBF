@@ -1,6 +1,7 @@
 """
 Home for functions/classes that haven't find a home of their own
 """
+import math
 from functools import wraps, partial
 from itertools import zip_longest
 from abc import ABC, abstractmethod
@@ -110,6 +111,26 @@ class DynamicsModel(ABC):
         @returns: g(X)
         """
 
+class ZeroDynamicsModel(DynamicsModel):
+    def __init__(self, m, n):
+        self.m = m
+        self.n = n
+
+    @property
+    def ctrl_size(self):
+        return self.m
+
+    @property
+    def state_size(self):
+        return self.n
+
+    def f_func(self, X):
+        return (torch.zeros((self.n,))
+                if X.dim() <= 1
+                else torch.zeros(X.shape))
+
+    def g_func(self, X):
+        return torch.zeros((*X.shape, self.m))
 
 @contextmanager
 def variable_required_grad(x):
@@ -148,3 +169,10 @@ def gradgradcheck(f2, x):
             for i in range(x.shape[0]):
                 torch.autograd.gradcheck(
                     partial(grad_k_func_1, i, x), xp)
+
+def epsilon(i, interpolate={0: 1, 1000: 0.01}):
+    """
+    """
+    ((si,sv), (ei, ev)) = list(interpolate.items())
+    return math.exp((i-si)/(ei-si)*(math.log(ev)-math.log(sv)) + math.log(sv))
+

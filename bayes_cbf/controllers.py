@@ -8,8 +8,9 @@ import random
 
 import numpy as np
 import torch
+import matplotlib.pyplot as plt
 
-from bayes_cbf.misc import store_args
+from bayes_cbf.misc import store_args, ZeroDynamicsModel
 from bayes_cbf.plotting import plot_results, plot_learned_2D_func, plt_savefig_with_data
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp
 
@@ -21,153 +22,8 @@ class NamedFunc:
 
     def __call__(self, *args, **kwargs):
         return self.func(*args, **kwargs)
-
-
-
-def cvxopt_solve_qp(P, q, G=None, h=None, A=None, b=None, solver=None,
-                    initvals=None, **kwargs):
-    import cvxopt
-    from cvxopt import matrix
-    #P = (P + P.T)  # make sure P is symmetric
-    args = [matrix(P), matrix(q)]
-    if G is not None:
-        args.extend([matrix(G), matrix(h)])
-    else:
-        args.extend([None, None])
-    if A is not None:
-        args.extend([matrix(A), matrix(b)])
-    else:
-        args.extend([None, None])
-    args.extend([initvals, solver])
-    solvers = cvxopt.solvers
-    old_options = solvers.options.copy()
-    solvers.options.update(kwargs)
-    try:
-        sol = cvxopt.solvers.qp(*args)
-    except ValueError:
-        return None
-    finally:
-        solvers.options.update(old_options)
-    if 'optimal' not in sol['status']:
-        return None
-    return np.asarray(sol['x']).reshape((P.shape[1],))
-
-
-def control_QP_cbf_clf(x,
-                       ctrl_aff_constraints,
-                       constraint_margin_weights=[]):
-    """
-    Args:
-          A_cbfs: A tuple of CBF functions
-          b_cbfs: A tuple of CBF functions
-          constraint_margin_weights: Add a margin constant to the constraint
-                                     that is maximized.
-
-    """
-    #import ipdb; ipdb.set_trace()
-    clf_idx = 0
-    A_total = np.vstack([af.A(x).detach().numpy()
-                         for af in ctrl_aff_constraints])
-    b_total = np.vstack([af.b(x).detach().numpy()
-                         for af in ctrl_aff_constraints]).flatten()
-    D_u = A_total.shape[1]
-    N_const = A_total.shape[0]
-
-    # u0 = l*g*sin(theta)
-    # uopt = 0.1*g
-    # contraints = A_total.dot(uopt) - b_total
-    # assert contraints[0] <= 0
-    # assert contraints[1] <= 0
-    # assert contraints[2] <= 0
-
-
-    # [A, I][ u ]
-    #       [ ρ ] ≤ b for all constraints
-    #
-    # minimize
-    #         [ u, ρ1, ρ2 ] [ 1,     0] [  u ]
-    #                       [ 0,   100] [ ρ2 ]
-    #         [A_cbf, 1] [ u, -ρ ] ≤ b_cbf
-    #         [A_clf, 1] [ u, -ρ ] ≤ b_clf
-    N_slack = len(constraint_margin_weights)
-    A_total_rho = np.hstack(
-        (A_total,
-         np.vstack((-np.eye(N_slack),
-                    np.zeros((N_const - N_slack, N_slack))))
-        ))
-    A = A_total
-    P_rho = np.eye(D_u + N_slack)
-    P_rho[D_u:, D_u:] = np.diag(constraint_margin_weights)
-    q_rho = np.zeros(P_rho.shape[0])
-    #u_rho_init = np.linalg.lstsq(A_total_rho, b_total - 1e-1, rcond=-1)[0]
-    u_rho = cvxopt_solve_qp(P_rho.astype(np.float64),
-                            q_rho.astype(np.float64),
-                            G=A_total_rho.astype(np.float64),
-                            h=b_total.astype(np.float64),
-                            show_progress=False,
-                            maxiters=1000)
-    if u_rho is None:
-        raise RuntimeError("""QP is infeasible
-        minimize
-        u_rhoᵀ {P_rho} u_rho
-        s.t.
-        {A_total_rho} u_rho ≤ {b_total}""".format(
-            P_rho=P_rho,
-            A_total_rho=A_total_rho, b_total=b_total))
-    # Constraints should be satisfied
-    constraint = A_total_rho @ u_rho - b_total
-    assert np.all((constraint <= 1e-2) | (constraint / np.abs(b_total) <= 1e-2))
-    return torch.from_numpy(u_rho[:D_u]).to(dtype=x.dtype)
-
-
 def to_numpy(x):
     return x.detach().double().cpu().numpy() if isinstance(x, torch.Tensor) else x
-
-
-def controller_qcqp(u0, objective, quadratic_constraints):
-    import cvxpy as cp
-    import gurobipy
-    u = cp.Variable(u0.shape)
-    cp_obj = objective(u)
-    cp_qc = [qc(u) for qc in quadratic_constraints]
-    prob = cp.Problem(cp.Minimize(cp_obj), cp_qc)
-    prob.solve(solver=cp.GUROBI)
-    return u.value
-
-class InfeasibleOptimization(Exception):
-    pass
-
-def controller_qcqp_gurobi(u0, quad_objective, quadratic_constraints,
-                           DisplayInterval=120,
-                           OutputFlag=0,
-                           NonConvex=2,
-                           **kwargs):
-    import gurobipy as gp
-    from gurobipy import GRB
-    # Create a new model
-    m = gp.Model("controller_qcqp_gurobi")
-    m.Params.OutputFlag = OutputFlag
-    m.Params.DisplayInterval = DisplayInterval
-    m.Params.NonConvex = NonConvex
-    for k, v in kwargs.items():
-        m.setParam(k, v)
-
-    # Create variables
-    u = m.addMVar(shape=u0.shape, vtype=GRB.CONTINUOUS, name="u")
-
-
-    m.setMObjective(*quad_objective, sense=GRB.MINIMIZE)
-    for i, (name, (Q, c, const)) in enumerate(quadratic_constraints):
-        m.addMQConstr(Q, c, "<", -const, xQ_L=u, xQ_R=u, xc=u, name=name)
-    m.optimize()
-    if m.getAttr(GRB.Attr.Status) == GRB.OPTIMAL:
-        return u.X
-    elif m.getAttr(GRB.Attr.Status) == GRB.INFEASIBLE:
-        raise InfeasibleOptimization("Optimal value not found. Problem is infeasible.")
-    elif m.getAttr(GRB.Attr.Status) == GRB.UNBOUNDED:
-        raise InfeasibleOptimization("Optimal value not found. Problem is unbounded.")
-    return u.X
-
 
 def controller_socp_cvxopt(u0, linear_objective, socp_constraints):
     """
@@ -224,9 +80,65 @@ class Controller(ABC):
     def control(self, xi, i=None):
         pass
 
+class ConstraintPlotter:
+    @store_args
+    def __init__(self,
+                 axes=None,
+                 constraint_hists=[],
+                 plotfile='plots/constraint_hists_{i}.pdf'):
+        pass
+
+    def plot_constraints(self, funcs, x, u, i=None):
+        axs = self.axes
+        nfuncs = len(funcs)
+        if axs is None:
+            nplots = nfuncs
+            shape = ((math.ceil(nplots / 2), 2) if nplots >= 2 else (nplots,))
+            fig, axs = plt.subplots(*shape)
+            fig.subplots_adjust(wspace=0.35, hspace=0.5)
+            axs = self.axes = axs.flatten() if hasattr(axs, "flatten") else np.array([axs])
+
+        if len(self.constraint_hists) < nfuncs:
+            self.constraint_hists = self.constraint_hists + [
+                list() for _ in range(
+                nfuncs - len(self.constraint_hists))]
+
+        for i, af in enumerate(funcs):
+            self.constraint_hists[i].append(af(x, u))
+
+        if torch.rand(1) <= 0.2:
+            for i, (ch, af) in enumerate(zip(self.constraint_hists, funcs)):
+                axs[i].clear()
+                axs[i].plot(ch)
+                axs[i].set_ylabel(af.__name__)
+                axs[i].set_xlabel("time")
+                plt.pause(0.0001)
+            if i is not None:
+                plt_savefig_with_data(axs[i].figure, self.plotfile.format(i=i))
+        return axs
+
 
 class ControlCBFLearned(Controller):
     needs_ground_truth = False
+    @store_args
+    def __init__(self,
+                 x_dim=2,
+                 u_dim=1,
+                 train_every_n_steps=10,
+                 mean_dynamics_model_class=ZeroDynamicsModel,
+                 max_unsafe_prob=0.01,
+                 dt=0.001,
+                 constraint_plotter_class=ConstraintPlotter,
+                 plotfile='plots/ctrl_cbf_learned_{suffix}.pdf',
+    ):
+        self.Xtrain = []
+        self.Utrain = []
+        self.mean_dynamics_model = mean_dynamics_model_class(m=u_dim, n=x_dim)
+        self.axes = [None, None]
+        self.constraint_plotter = constraint_plotter_class(
+            plotfile=plotfile.format(suffix='_constraints_{i}'))
+
+
     def train(self):
         if not len(self.Xtrain):
             return
@@ -343,7 +255,7 @@ class ControlCBFLearned(Controller):
                 (r"$\mathbf{e}(x)^\top u - \zeta - \frac{\rho}{1-\rho}\|V(x, x')u\|>0$", self._socp_safety(*args, **kw))]
 
 
-    def quadratic_constraints(self, i, x, u0, convert_out=to_numpy):
+    def _all_constraints(self, i, x, u0, convert_out=to_numpy):
         if self.model.ground_truth:
             A = self.cbf2.A(x)
             b = self.cbf2.b(x)
@@ -351,7 +263,7 @@ class ControlCBFLearned(Controller):
         else:
             return self._socp_constraints(i, x, u0, convert_out=convert_out)
 
-    def plottables(self, i, x, y_u0):
+    def _plottables(self, i, x, y_u0):
         def true_h(xp, up):
             val = - self.ground_truth_cbf2.h2_col(xp)
             return val
@@ -362,7 +274,7 @@ class ControlCBFLearned(Controller):
             return val
         return [
             NamedFunc(lambda _, y_u: (bfc @ y_u + d - A @ y_u - bfb)[1:] , name)
-            for name, (A, bfb, bfc, d) in self.quadratic_constraints(
+            for name, (A, bfb, bfc, d) in self._all_constraints(
                     i, x, y_u0, convert_out=lambda x: x)
         ] + [
             NamedFunc(true_cbc2,
@@ -387,7 +299,7 @@ class ControlCBFLearned(Controller):
                 self._socp_constraints(i, xi, u0, convert_out=to_numpy))
             y_uopt = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
             self.constraint_plotter.plot_constraints(
-                self.plottables(i, xi, u0),
+                self._plottables(i, xi, u0),
                 xi, y_uopt)
             uopt = y_uopt[1:]
         else:
@@ -429,4 +341,5 @@ class NamedAffineFunc(ABC):
         A(x) @ u - b(x)
         """
         return self.A(x) @ u - self.b(x)
+
 

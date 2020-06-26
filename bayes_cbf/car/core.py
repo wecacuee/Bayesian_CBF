@@ -5,28 +5,25 @@ import torch
 
 from bayes_cbf.car.HyundaiGenesis import (HyundaiGenesisDynamicsModel,
                                           StateAsArray, rotmat_to_z, rotz)
-from bayes_cbf.misc import t_hstack, store_args, DynamicsModel
+from bayes_cbf.misc import t_hstack, store_args, DynamicsModel, ZeroDynamicsModel
 from bayes_cbf.sampling import sample_generator_trajectory, Visualizer
 from bayes_cbf.plotting import plot_learned_2D_func, plot_results
 from bayes_cbf.control_affine_model import ControlAffineRegressor
 from bayes_cbf.controllers import ControlCBFLearned, NamedAffineFunc
-from bayes_cbf.car.vis import CarFourObstacles
+from bayes_cbf.car.vis import CarWithObstacles
 
 
 class UnicycleDynamicsModel(DynamicsModel):
     """
     Ẋ     =     f(X)     +   g(X)     u
 
-    [ v̇ₓ ]   [ 0        ]   [ cos(θ), 0 ]
-    [ v̇y ]   [ 0        ]   [ sin(θ), 0 ]
-    [ ω̇  ]   [ 0        ]   [ 0,      1 ]
-    [ ẋ  ] = [ vₓ       ] + [ 0,      0 ] [ a ]
-    [ ẏ  ]   [ vy       ]   [ 0,      0 ] [ α ]
-    [ θ̇  ]   [ ω        ]   [ 0,      0 ]
+    [ ẋ  ] = [ 0 ] + [ cos(θ), 0 ] [ v ]
+    [ ẏ  ]   [ 0 ]   [ sin(θ), 0 ] [ ω ]
+    [ θ̇  ]   [ 0 ]   [ 0,      1 ]
     """
     def __init__(self, m, n):
-        self.m = 2 # [a, α]
-        self.n = 6 # [vₓ, vy, ω, x, y, θ]
+        self.m = 2 # [v, ω]
+        self.n = 3 # [x, y, θ]
 
     @property
     def ctrl_size(self):
@@ -38,44 +35,31 @@ class UnicycleDynamicsModel(DynamicsModel):
 
     def f_func(self, X_in):
         """
-                [ 0        ]
-                [ 0        ]
-                [ 0        ]
-        f(x) =  [ v cos(θ) ]
-                [ v sin(θ) ]
-                [ ω        ]
+                [ 0   ]
+         f(x) = [ 0   ]
+                [ 0   ]
         """
-        X = X_in.unsqueeze(0) if X_in.dim() <= 1 else X_in
-        v = X[..., 0]
-        ω = X[..., 1]
-        θ = X[..., 4]
-        fX = X.new_zeros(X.shape)
-        fX[:, 0] = v.new_zeros(v.shape)
-        fX[:, 1] = ω.new_zeros(v.shape)
-        fX[:, 2] = (v * θ.cos()).sum(dim=-1)
-        fX[:, 3] = (v * θ.sin()).sum(dim=-1)
-        fX[:, 4] = ω
-        return fX.squeeze(0) if X_in.dim() <= 1 else fX
+        return X_in.new_zeros(X_in.shape)
 
     def g_func(self, X):
         """
                 [ cos(θ), 0 ]
-                [ sin(θ), 0 ]
+         g(x) = [ sin(θ), 0 ]
                 [ 0,      1 ]
-        g(x) =  [ 0,      0 ]
-                [ 0,      0 ]
-                [ 0,      0 ]
         """
         X = X_in.unsqueeze(0) if X_in.dim() <= 1 else X_in
         gX = torch.zeros((*X.shape, self.m))
-        gX[..., :, :] = torch.eye(2)
+        θ = X[..., 2]
+        gX[..., 0, 0] = θ.cos()
+        gX[..., 1, 0] = θ.cos()
+        gX[..., 2, 1] = 1
         return gX.squeeze(0) if X_in.dim() <= 1 else gX
 
 
-class CarVisualizer(Visualizer):
+class UnicycleVisualizer(Visualizer):
     def __init__(self, centers, radii):
         super().__init__()
-        self.carworld = CarFourObstacles()
+        self.carworld = CarWithObstacles()
         for c, r in zip(centers, radii):
             self.carworld.addObstacle(c[0], c[1], r)
         self.encoder = StateAsArray()
@@ -89,7 +73,11 @@ class CarVisualizer(Visualizer):
         self.carworld.show()
 
 
-class CircularObstacle(NamedAffineFunc):
+class CircularObstacleCBC(NamedAffineFunc):
+    """
+    Relative degree 1
+    L_f h(x) + L_g h(x) u - α h(x) > 0
+    """
     @store_args
     def __init__(self,
                  model,
@@ -101,70 +89,6 @@ class CircularObstacle(NamedAffineFunc):
         self.model = model
         self.center = center
         self.radius = radius
-        self.encoder = StateAsArray()
-
-    def to(self, dtype):
-        self.dtype = dtype
-        self.model.to(dtype=dtype)
-
-    def value(self, X):
-        state, inp = self.encoder.deserialize(X)
-        pos = state.pose.position[:, :2]
-        distsq = ((pos - self.center)**2).sum(dim=-1)
-        return distsq - self.radius**2
-
-    def __call__ (self, x, u):
-        return self.A(x) @ u - self.b(x)
-
-    def grad_h_col(self, X_in):
-        if X_in.ndim == 1:
-            X = X_in.unsqueeze(0)
-
-        with variable_required_grad(X):
-            grad_h_x = torch.autograd.grad(self.value(X), X)[0]
-
-        if X_in.ndim == 1:
-            grad_h_x = grad_h_x.squeeze(0)
-        return grad_h_x
-
-    def lie_f_h_col(self, X):
-        return self.grad_h_col(X).bmm( self.model.f_func(X) )
-
-    def grad_lie_f_h_col(self, X):
-        with variable_required_grad(X):
-            return torch.autograd.grad(self.lie_f_h_col(X), X)[0]
-
-    def lie2_f_h_col(self, X):
-        return self.grad_lie_f_h_col(x).bmm( self.model.f_func(x) )
-
-    def lie_g_lie_f_h_col(self, X):
-        return self.grad_lie_f_h_col(X).bmm( self.model.g_func(X) )
-
-    def lie2_fu_h_col(self, X, U):
-        grad_L1h = self.grad_lie_f_h_col(x)
-        return grad_L1h.bmm(self.f_func(X) + self.g_func(X).bmm(U))
-
-    def A(self, X):
-        return - self.lie_g_lie_f_h_col(X)
-
-    def b(self, X):
-        K_α = torch.tensor(self.cbf_col_K_alpha, dtype=self.dtype)
-        η_b_x = torch.cat([self.value(X).unsqueeze(0),
-                           self.lie_f_h_col(X).unsqueeze(0)])
-        return (self.lie2_f_h_col(x) + K_α @ η_b_x)
-
-class FourCircularObstacles(NamedAffineFunc):
-    @store_args
-    def __init__(self,
-                 model,
-                 centers,
-                 radii,
-                 cbf_col_K_alpha=[2, 3],
-                 name="cbf-circles",
-                 dtype=torch.get_default_dtype()):
-        self.model = model
-        self.centers = centers
-        self.radii = radii
         self.encoder = StateAsArray()
 
     def to(self, dtype):
@@ -231,7 +155,7 @@ class ControlCarCBFLearned(ControlCBFLearned):
     @store_args
     def __init__(self,
                  dtype=torch.get_default_dtype(),
-                 true_model=HyundaiGenesisDynamicsModel,
+                 true_model=MeanPendulumDynamicsModel,
                  use_ground_truth_model=False,
                  mean_dynamics_model=CarMeanDynamicsModel,
                  centers=[(1, 1), (1, -1), (-1, -1), (-1, 1)],

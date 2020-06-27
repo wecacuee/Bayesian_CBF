@@ -31,6 +31,7 @@ def sample_generator_trajectory(dynamics_model, D, dt=0.01, x0=None,
 
     f = dynamics_model.f_func
     g = dynamics_model.g_func
+    normalize_state = dynamics_model.normalize_state
     m = dynamics_model.ctrl_size
     n = dynamics_model.state_size
     U = torch.empty((D, m))
@@ -39,10 +40,10 @@ def sample_generator_trajectory(dynamics_model, D, dt=0.01, x0=None,
     Xdot = torch.zeros((D, n))
     # Single trajectory
     for i in range(D):
-        U[i, :] = controller_sine(X[i, :], m)
+        U[i, :] = controller(X[i, :], m)
         visualizer.setStateCtrl(X[i, :], U[i, :], t=i)
         Xdot[i, :] = f(X[i, :]) + g(X[i, :]) @ U[i, :]
-        X[i+1, :] = X[i, :] + Xdot[i, :] * dt
+        X[i+1, :] = normalize_state(X[i, :] + Xdot[i, :] * dt)
     return Xdot, X, U
 
 

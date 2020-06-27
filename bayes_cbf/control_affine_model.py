@@ -330,6 +330,7 @@ class ControlAffineRegressor(DynamicsModel):
                     1 + 1e-6  * torch.rand_like(XdotTrain.reshape(-1))))
 
             assert not torch.isnan(loss).any()
+            assert not torch.isinf(loss).any()
             loss.backward()
             for p in model.parameters(recurse=True):
                 if p.grad is not None:

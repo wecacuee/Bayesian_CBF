@@ -111,6 +111,9 @@ class DynamicsModel(ABC):
         @returns: g(X)
         """
 
+    def normalize_state(self, X_in):
+        return X_in
+
 class ZeroDynamicsModel(DynamicsModel):
     def __init__(self, m, n):
         self.m = m

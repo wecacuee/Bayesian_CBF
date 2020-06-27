@@ -512,6 +512,7 @@ class RadialCBFRelDegree2(NamedAffineFunc):
                  cbf_col_theta=math.pi/4,
                  theta_c=math.pi/4,
                  gamma_col=1,
+                 max_unsafe_prob=0.01,
                  delta_col=math.pi/8,
                  name="cbf-r2",
                  dtype=torch.get_default_dtype()):
@@ -593,6 +594,48 @@ class RadialCBFRelDegree2(NamedAffineFunc):
         K_α = torch.tensor(self.cbf_col_K_alpha, dtype=self.dtype)
         η_b_x = torch.cat([self.h2_col(x).unsqueeze(0), self.lie_f_h2_col(x).unsqueeze(0)])
         return (self.lie2_f_h_col(x) + K_α @ η_b_x)
+
+    def as_socp(self, i, x, u0, convert_out=to_numpy):
+        """
+        Var(CBC2) = Au² + b' u + c
+        E(CBC2) = e' u + e
+        """
+        δ = self.max_unsafe_prob
+        assert δ < 0.5 # Ask for at least more than 50% safety
+        ratio = np.sqrt((1-δ)/δ)
+        m = self.u_dim
+
+        (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(
+            self.h2_col, self.grad_h2_col, self.model, x, u0,
+            k_α=self.cbf_col_K_alpha)
+        with torch.no_grad():
+            # [1, u] Asq [1; u]
+            Asq = torch.cat(
+                (
+                    torch.cat((torch.tensor([[v]]),         (bfv / 2).reshape(1, -1)), dim=-1),
+                    torch.cat(((bfv / 2).reshape(-1, 1),    V), dim=-1)
+                ),
+                dim=-2)
+
+            # [1, u] Asq [1; u] = |L[1; u]|_2 = |A [y; u] + b|_2
+            A = torch.zeros((m + 1, m + 1))
+            try:
+                L = torch.cholesky(Asq) # (m+1) x (m+1)
+            except RuntimeError as err:
+                if "cholesky" in str(err) and "singular" in str(err):
+                    diag_e, V = torch.symeig(Asq, eigenvectors=True)
+                    L = torch.max(torch.diag(diag_e),
+                                  torch.tensor(0.)).sqrt() @ V.t()
+                else:
+                    raise
+            A[:, 1:] = L[:, 1:]
+            b = L[:, 0] # (m+1)
+            c = torch.zeros((m+1,))
+            c[1:] = bfe
+            # # We want to return in format?
+            # (name, (A, b, c, d))
+            # s.t. ||A[y, u] + b||_2 <= c'x + d
+            return list(map(convert_out, (ratio * A, ratio * b, c, e)))
 
     def __getattr__(self, name):
         return getattr(self.model, name)
@@ -676,7 +719,6 @@ class ControlPendulumCBFLearned(ControlCBFLearned):
                  mean_dynamics_model_class=ZeroDynamicsModel,
                  egreedy_scheme=[1, 0.01],
                  iterations=100,
-                 max_unsafe_prob=0.01,
                  dt=0.001,
                  max_train=200,
                  #gamma_length_scale_prior=[1/deg2rad(0.1), 1],
@@ -687,27 +729,30 @@ class ControlPendulumCBFLearned(ControlCBFLearned):
                  dtype=torch.get_default_dtype(),
                  use_ground_truth_model=False,
                  numSteps=1000,
+                 ctrl_range=[-5., 5.],
     ):
-        self.Xtrain = []
-        self.Utrain = []
+        super().__init__(x_dim=x_dim,
+                         u_dim=u_dim,
+                         train_every_n_steps=train_every_n_steps,
+                         mean_dynamics_model_class=mean_dynamics_model_class,
+                         dt=dt,
+                         constraint_plotter_class=constraint_plotter_class,
+                         plotfile=plotfile,
+                         ctrl_range=ctrl_range)
         if self.use_ground_truth_model:
             self.model = self.true_model
         else:
             self.model = ControlAffineRegressor(
                 x_dim, u_dim,
                 gamma_length_scale_prior=gamma_length_scale_prior)
-        self.mean_dynamics_model = mean_dynamics_model_class(m=u_dim, n=x_dim)
         self.ctrl_aff_constraints=[EnergyCLF(self),
                                    RadialCBF(self)]
         self.cbf2 = RadialCBFRelDegree2(self.model, dtype=dtype)
         self.ground_truth_cbf2 = RadialCBFRelDegree2(self.true_model, dtype=dtype)
-        self._has_been_trained_once = False
         # These are used in the optimizer hence numpy
         self.x_goal = torch.tensor([theta_goal, omega_goal])
         self.x_quad_goal_cost = torch.tensor(quad_goal_cost)
         self.axes = [None, None]
-        self.constraint_plotter = constraint_plotter_class(
-            plotfile=plotfile.format(suffix='_constraints_{i}'))
 
     def debug_train(self, Xtrain, Utrain, XdotError):
         XdotErrorGot_train_mean, _ = self.model.predict_flatten(Xtrain[:-1], Utrain[:-1])
@@ -822,30 +867,16 @@ run_pendulum_control_online_learning = partial(
     run_pendulum_experiment,
     plotfile='plots/run_pendulum_control_online_learning{suffix}.pdf',
     controller_class=ControlPendulumCBFLearned,
-    numSteps=5000,
-    theta0=5*math.pi/12,
+    numSteps=1000,
+    theta0=7*math.pi/12,
     tau=0.002,
     dtype=torch.float64)
 """
 Run save pendulum control while learning the parameters online
 """
 
-run_pendulum_control_ground_truth = partial(
-    run_pendulum_experiment,
-    plotfile='plots/run_pendulum_control_ground_truth{suffix}.pdf',
-    controller_class=ControlCBFCLFGroundTruth,
-    numSteps=300,
-    theta0=5*math.pi/12,
-    tau=1e-2)
-"""
-Run save pendulum control with ground_truth model
-"""
-
-
-
 if __name__ == '__main__':
     #run_pendulum_control_trival()
     #run_pendulum_control_cbf_clf()
     #learn_dynamics()
-    # run_pendulum_control_ground_truth()
     run_pendulum_control_online_learning()

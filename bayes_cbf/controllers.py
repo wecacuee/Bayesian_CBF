@@ -1,3 +1,4 @@
+import time
 import logging
 LOG = logging.getLogger(__name__)
 LOG.setLevel(logging.INFO)
@@ -126,10 +127,10 @@ class ControlCBFLearned(Controller):
                  u_dim=1,
                  train_every_n_steps=10,
                  mean_dynamics_model_class=ZeroDynamicsModel,
-                 max_unsafe_prob=0.01,
                  dt=0.001,
                  constraint_plotter_class=ConstraintPlotter,
                  plotfile='plots/ctrl_cbf_learned_{suffix}.pdf',
+                 ctrl_range=[-5., 5.],
     ):
         self.Xtrain = []
         self.Utrain = []
@@ -137,6 +138,7 @@ class ControlCBFLearned(Controller):
         self.axes = [None, None]
         self.constraint_plotter = constraint_plotter_class(
             plotfile=plotfile.format(suffix='_constraints_{i}'))
+        self._has_been_trained_once = False
 
 
     def train(self):
@@ -149,90 +151,43 @@ class ControlCBFLearned(Controller):
         XdotMean = self.mean_dynamics_model.f_func(Xtrain) + (
             self.mean_dynamics_model.g_func(Xtrain).bmm(Utrain.unsqueeze(-1)).squeeze(-1))
         XdotError = XdotTrain - XdotMean[:-1, :]
-        #self.axes = axs = plot_results(np.arange(Utrain.shape[0]),
-        #                   omega_vec=to_numpy(Xtrain[:, 0]),
-        #                   theta_vec=to_numpy(Xtrain[:, 1]),
-        #                   u_vec=to_numpy(Utrain[:, 0]),
-        #                   axs=self.axes)
-        #plt_savefig_with_data(
-        #    axs[0,0].figure,
-        #    'plots/pendulum_data_{}.pdf'.format(Xtrain.shape[0]))
-        assert torch.all((Xtrain[:, 0] <= math.pi) & (-math.pi <= Xtrain[:, 0]))
-        LOG.info("Training model with datasize {}".format(XdotTrain.shape[0]))
-        if XdotTrain.shape[0] > self.max_train:
-            indices = torch.randint(XdotTrain.shape[0], (self.max_train,))
-            train_data = Xtrain[indices, :], Utrain[indices, :], XdotError[indices, :],
-        else:
-            train_data = Xtrain[:-1, :], Utrain[:-1, :], XdotError
+        if  self.x_dim == 2:
+            #self.axes = axs = plot_results(np.arange(Utrain.shape[0]),
+            #                   omega_vec=to_numpy(Xtrain[:, 0]),
+            #                   theta_vec=to_numpy(Xtrain[:, 1]),
+            #                   u_vec=to_numpy(Utrain[:, 0]),
+            #                   axs=self.axes)
+            #plt_savefig_with_data(
+            #    axs[0,0].figure,
+            #    'plots/pendulum_data_{}.pdf'.format(Xtrain.shape[0]))
+            assert torch.all((Xtrain[:, 0] <= math.pi) & (-math.pi <= Xtrain[:, 0]))
+            LOG.info("Training model with datasize {}".format(XdotTrain.shape[0]))
+            if XdotTrain.shape[0] > self.max_train:
+                indices = torch.randint(XdotTrain.shape[0], (self.max_train,))
+                train_data = Xtrain[indices, :], Utrain[indices, :], XdotError[indices, :],
+            else:
+                train_data = Xtrain[:-1, :], Utrain[:-1, :], XdotError
 
-        self.model.fit(*train_data, training_iter=100)
+            self.model.fit(*train_data, training_iter=100)
 
-        self.axes[0] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
-                                   self.model.f_func,
-                                   self.true_model.f_func,
-                                   axtitle="f(x)[{i}]",
-                                   axs=self.axes[0])
-        plt_savefig_with_data(
-            self.axes[0].flatten()[0].figure,
-            'plots/online_f_learned_vs_f_true_%d.pdf' % Xtrain.shape[0])
-        self.axes[1] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
-                                   self.model.g_func,
-                                   self.true_model.g_func,
-                                   axtitle="g(x)[{i}]",
-                                   axs=self.axes[1])
-        plt_savefig_with_data(
-            self.axes[1].flatten()[0].figure,
-            'plots/online_g_learned_vs_g_true_%d.pdf' % Xtrain.shape[0])
+            self.axes[0] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
+                                    self.model.f_func,
+                                    self.true_model.f_func,
+                                    axtitle="f(x)[{i}]",
+                                    axs=self.axes[0])
+            plt_savefig_with_data(
+                self.axes[0].flatten()[0].figure,
+                'plots/online_f_learned_vs_f_true_%d.pdf' % Xtrain.shape[0])
+            self.axes[1] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
+                                    self.model.g_func,
+                                    self.true_model.g_func,
+                                    axtitle="g(x)[{i}]",
+                                    axs=self.axes[1])
+            plt_savefig_with_data(
+                self.axes[1].flatten()[0].figure,
+                'plots/online_g_learned_vs_g_true_%d.pdf' % Xtrain.shape[0])
 
         self._has_been_trained_once = True
-
-    def egreedy(self, i):
-        se, ee = map(math.log, self.egreedy_scheme)
-        T = self.iterations
-        return math.exp( i * (ee - se) / T )
-
-    def _socp_safety(self, i, x, u0, convert_out=to_numpy):
-        """
-        Var(CBC2) = Au² + b' u + c
-        E(CBC2) = e' u + e
-        """
-        δ = self.max_unsafe_prob
-        assert δ < 0.5 # Ask for at least more than 50% safety
-        ratio = np.sqrt((1-δ)/δ)
-        m = self.u_dim
-
-        (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(
-            self.cbf2.h2_col, self.cbf2.grad_h2_col, self.model, x, u0,
-            k_α=self.cbf2.cbf_col_K_alpha)
-        with torch.no_grad():
-            # [1, u] Asq [1; u]
-            Asq = torch.cat(
-                (
-                    torch.cat((torch.tensor([[v]]),         (bfv / 2).reshape(1, -1)), dim=-1),
-                    torch.cat(((bfv / 2).reshape(-1, 1),    V), dim=-1)
-                ),
-                dim=-2)
-
-            # [1, u] Asq [1; u] = |L[1; u]|_2 = |A [y; u] + b|_2
-            A = torch.zeros((m + 1, m + 1))
-            try:
-                L = torch.cholesky(Asq) # (m+1) x (m+1)
-            except RuntimeError as err:
-                if "cholesky" in str(err) and "singular" in str(err):
-                    diag_e, V = torch.symeig(Asq, eigenvectors=True)
-                    L = torch.max(torch.diag(diag_e),
-                                  torch.tensor(0.)).sqrt() @ V.t()
-                else:
-                    raise
-            A[:, 1:] = L[:, 1:]
-            b = L[:, 0] # (m+1)
-            c = torch.zeros((m+1,))
-            c[1:] = bfe
-            # # We want to return in format?
-            # (name, (A, b, c, d))
-            # s.t. ||A[y, u] + b||_2 <= c'x + d
-            return list(map(convert_out, (ratio * A, ratio * b, c, e)))
-
 
     def _socp_objective(self, i, x, u0, convert_out=to_numpy):
         # s.t. ||[0, Q][y; u] - Q u_0||_2 <= [1, 0] [y; u] + 0
@@ -252,7 +207,7 @@ class ControlCBFLearned(Controller):
 
     def _socp_constraints(self, *args, **kw):
         return [(r"$y - \|R u\|>0$", self._socp_objective(*args, **kw)),
-                (r"$\mathbf{e}(x)^\top u - \zeta - \frac{\rho}{1-\rho}\|V(x, x')u\|>0$", self._socp_safety(*args, **kw))]
+                (r"$\mathbf{e}(x)^\top u - \zeta - \frac{\rho}{1-\rho}\|V(x, x')u\|>0$", self.cbf2.as_socp(*args, **kw))]
 
 
     def _all_constraints(self, i, x, u0, convert_out=to_numpy):
@@ -283,6 +238,7 @@ class ControlCBFLearned(Controller):
         ]
 
     def control(self, xi, i=None):
+        tic = time.time()
         if (not self.model.ground_truth
             and len(self.Xtrain) % int(self.train_every_n_steps) == 0):
             # train every n steps
@@ -291,7 +247,9 @@ class ControlCBFLearned(Controller):
 
         assert torch.all((xi[0] <= math.pi) & (-math.pi <= xi[0]))
 
-        u0 = self.epsilon_greedy_unsafe_control(i, xi, min_=-5., max_=5.)
+        u0 = self.epsilon_greedy_unsafe_control(i, xi,
+                                                min_=self.ctrl_range[0],
+                                                max_=self.ctrl_range[1])
         if self.model.ground_truth or self._has_been_trained_once:
             y_uopt = controller_socp_cvxopt(
                 np.hstack([[1.], u0.detach().numpy()]),
@@ -308,6 +266,7 @@ class ControlCBFLearned(Controller):
         self.Xtrain.append(xi.detach())
         self.Utrain.append(uopt.detach())
         assert len(self.Xtrain) == len(self.Utrain)
+        print("Controller took {:.4f} sec".format(time.time()- tic))
         return uopt
 
 class NamedAffineFunc(ABC):

@@ -1,9 +1,11 @@
+import random
 import math
 from functools import partial
 
 import torch
 
-from bayes_cbf.misc import t_hstack, store_args, DynamicsModel, ZeroDynamicsModel
+from bayes_cbf.misc import (t_hstack, store_args, DynamicsModel,
+                            ZeroDynamicsModel, epsilon)
 from bayes_cbf.car.vis import CarWithObstacles
 from bayes_cbf.sampling import sample_generator_trajectory, Visualizer
 from bayes_cbf.plotting import plot_learned_2D_func, plot_results
@@ -20,7 +22,7 @@ class UnicycleDynamicsModel(DynamicsModel):
     [ ẏ  ]   [ 0 ]   [ sin(θ), 0 ] [ ω ]
     [ θ̇  ]   [ 0 ]   [ 0,      1 ]
     """
-    def __init__(self, m, n):
+    def __init__(self):
         self.m = 2 # [v, ω]
         self.n = 3 # [x, y, θ]
 
@@ -53,6 +55,10 @@ class UnicycleDynamicsModel(DynamicsModel):
         gX[..., 1, 0] = θ.cos()
         gX[..., 2, 1] = 1
         return gX.squeeze(0) if X_in.dim() <= 1 else gX
+
+    def normalize_state(self, X_in):
+        X_in[..., 2] = X_in[..., 2] % math.pi
+        return X_in
 
 
 class ObstacleCBF(NamedAffineFunc):
@@ -113,6 +119,8 @@ class ControllerUnicycle(ControlCBFLearned):
                  obstacle_centers=[(0, 0)],
                  obstacle_radii=[0.5],
                  numSteps=1000,
+                 ctrl_range=torch.tensor([[-1, math.pi/10],
+                                          [1, math.pi/10]])
     ):
         super().__init__(x_dim=x_dim,
                          u_dim=u_dim,
@@ -121,7 +129,8 @@ class ControllerUnicycle(ControlCBFLearned):
                          max_unsafe_prob=max_unsafe_prob,
                          dt=dt,
                          constraint_plotter_class=constraint_plotter_class,
-                         plotfile=plotfile)
+                         plotfile=plotfile,
+                         ctrl_range=ctrl_range)
         if self.use_ground_truth_model:
             self.model = self.true_model
         else:
@@ -133,7 +142,6 @@ class ControllerUnicycle(ControlCBFLearned):
         self.ground_truth_cbf2 = cbc_class(self.true_model,
                                            obstacle_centers[0],
                                            obstacle_radii[0], dtype=dtype)
-        self._has_been_trained_once = False
         self.x_goal = torch.tensor(x_goal)
         self.x_quad_goal_cost = torch.tensor(quad_goal_cost)
 
@@ -161,12 +169,13 @@ class ControllerUnicycle(ControlCBFLearned):
             c = (λ * R + (1-λ) * Gx.T @ P @ (x_g - x - fx))
             return torch.solve(c, Q).solution.reshape(-1)
 
-    def epsilon_greedy_unsafe_control(self, i, x):
+    def epsilon_greedy_unsafe_control(self, i, x, min_=-5., max_=5.):
         eps = epsilon(i, interpolate={0: self.egreedy_scheme[0],
                                       self.numSteps: self.egreedy_scheme[1]})
-        return (torch.rand(self.u_dim)
+        uegreedy = (torch.rand(self.u_dim) * (max_ - min_) + min_
                 if (random.random() < eps)
                 else self.unsafe_control(x))
+        return torch.max(torch.min(uegreedy, max_), min_)
 
 
 class UnicycleVisualizer(Visualizer):
@@ -187,7 +196,8 @@ class UnicycleVisualizer(Visualizer):
 def run_unicycle_control_learned(
         obstacle_centers=[(0,0)],
         obstacle_radii=[0.5],
-        x0=[-1, -1, math.pi/4]):
+        x0=[-1, -1, math.pi/4],
+        D=1000):
     """
     Run safe unicycle control with learned model
     """
@@ -196,8 +206,8 @@ def run_unicycle_control_learned(
                                     obstacle_centers=obstacle_centers,
                                     obstacle_radii=obstacle_radii)
     return sample_generator_trajectory(
-        dynamics_model=UnicycleDynamicsModel(2, 3),
-        D=1000,
+        dynamics_model=UnicycleDynamicsModel(),
+        D=D,
         controller=controller.control,
         visualizer=UnicycleVisualizer(obstacle_centers, obstacle_radii),
         x0=x0)

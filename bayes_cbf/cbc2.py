@@ -1,5 +1,8 @@
+from abc import ABC, abstractproperty, abstractmethod
+import math
 import torch
 from .gp_algebra import *
+from .misc import to_numpy
 
 def cbc2_quadratic_terms(h_func, grad_h_func, control_affine_model, x, u, k_α):
     """
@@ -49,3 +52,60 @@ def get_quadratic_terms(func, x):
         const = f_x - x.T @ quad @ x - linear @ x
     return quad, linear, const
 
+class RelDeg2Safety(ABC):
+    @abstractproperty
+    def k_alpha(self):
+        pass
+    @abstractproperty
+    def model(self):
+        pass
+
+    @abstractmethod
+    def cbf(self, x):
+        pass
+
+    @abstractmethod
+    def grad_cbf(self, x):
+        pass
+
+    def as_socp(self, i, x, u0, convert_out=to_numpy):
+        """
+        Var(CBC2) = Au² + b' u + c
+        E(CBC2) = e' u + e
+        """
+        δ = self.max_unsafe_prob
+        assert δ < 0.5 # Ask for at least more than 50% safety
+        ratio = math.sqrt((1-δ)/δ)
+        m = self.model.u_dim
+
+        (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(
+            self.cbf, self.grad_cbf, self.model, x, u0,
+            k_α=self.k_alpha)
+        with torch.no_grad():
+            # [1, u] Asq [1; u]
+            Asq = torch.cat(
+                (
+                    torch.cat((torch.tensor([[v]]),         (bfv / 2).reshape(1, -1)), dim=-1),
+                    torch.cat(((bfv / 2).reshape(-1, 1),    V), dim=-1)
+                ),
+                dim=-2)
+
+            # [1, u] Asq [1; u] = |L[1; u]|_2 = |A [y; u] + b|_2
+            A = torch.zeros((m + 1, m + 1))
+            try:
+                L = torch.cholesky(Asq) # (m+1) x (m+1)
+            except RuntimeError as err:
+                if "cholesky" in str(err) and "singular" in str(err):
+                    diag_e, V = torch.symeig(Asq, eigenvectors=True)
+                    L = torch.max(torch.diag(diag_e),
+                                  torch.tensor(0.)).sqrt() @ V.t()
+                else:
+                    raise
+            A[:, 1:] = L[:, 1:]
+            b = L[:, 0] # (m+1)
+            c = torch.zeros((m+1,))
+            c[1:] = bfe
+            # # We want to return in format?
+            # (name, (A, b, c, d))
+            # s.t. ||A[y, u] + b||_2 <= c'x + d
+            return list(map(convert_out, (ratio * A, ratio * b, c, e)))

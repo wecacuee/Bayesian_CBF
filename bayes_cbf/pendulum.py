@@ -33,7 +33,7 @@ from bayes_cbf.controllers import (Controller, ControlCBFLearned,
 from bayes_cbf.misc import (t_vstack, t_hstack, to_numpy, store_args,
                             DynamicsModel, ZeroDynamicsModel, variable_required_grad,
                             epsilon)
-from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp
+from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, RelDeg2Safety
 
 
 class ControlTrivial(Controller):
@@ -371,7 +371,7 @@ def learn_dynamics(
     def learned_cbc2(X):
         l_cbc2 = torch.zeros(X.shape[0], 2)
         for i in range(X.shape[0]):
-            cbc2 = cbc2_gp( learned_h_func.h2_col, dgp, U[N+1, :])
+            cbc2 = cbc2_gp( learned_h_func.cbf, dgp, U[N+1, :])
             l_cbc2[i, 0] = cbc2.mean(X[i, :])
         return l_cbc2
     #true_cbc2 = - true_h_func.A(X[N+1, :]) @ U[N+1,:] + true_h_func.b(X[N+1, :])
@@ -446,7 +446,7 @@ class RadialCBF(NamedAffineFunc):
     @store_args
     def __init__(self, model,
                  cbf_col_gamma=1,
-                 cbf_col_K_alpha=[1., 1.],
+                 k_alpha=[1., 1.],
                  cbf_col_delta=math.pi/8,
                  cbf_col_theta=math.pi/4,
                  theta_c=math.pi/4,
@@ -503,11 +503,11 @@ class RadialCBF(NamedAffineFunc):
         return getattr(self.model, name)
 
 
-class RadialCBFRelDegree2(NamedAffineFunc):
+class RadialCBFRelDegree2(RelDeg2Safety, NamedAffineFunc):
     @store_args
-    def __init__(self, model,
+    def __init__(self, _model,
                  cbf_col_gamma=1,
-                 cbf_col_K_alpha=[1., 3.],
+                 _k_alpha=[1., 3.],
                  cbf_col_delta=math.pi/8,
                  cbf_col_theta=math.pi/4,
                  theta_c=math.pi/4,
@@ -516,24 +516,32 @@ class RadialCBFRelDegree2(NamedAffineFunc):
                  delta_col=math.pi/8,
                  name="cbf-r2",
                  dtype=torch.get_default_dtype()):
-        self.model = model
+        self._model = _model
+
+    @property
+    def k_alpha(self):
+        return self._k_alpha
+
+    @property
+    def model(self):
+        return self._model
 
     def to(self, dtype):
         self.dtype = dtype
         self.model.to(dtype=dtype)
 
-    def h2_col(self, x):
+    def cbf(self, x):
         (theta, w) = x
         delta_col = self.cbf_col_delta
         theta_c = self.cbf_col_theta
         return math.cos(delta_col) - torch.cos(theta - theta_c)
 
-    value = h2_col
+    value = cbf
 
     def __call__ (self, x, u):
         return self.A(x) @ u - self.b(x)
 
-    def grad_h2_col(self, X_in):
+    def grad_cbf(self, X_in):
         if X_in.ndim == 1:
             X = X_in.unsqueeze(0)
 
@@ -545,100 +553,55 @@ class RadialCBFRelDegree2(NamedAffineFunc):
             grad_h2_x = grad_h2_x.squeeze(0)
         return grad_h2_x
 
-    def lie_f_h2_col(self, x):
+    def lie_f_cbf(self, x):
         (θ, ω) = x
         θ_c = self.cbf_col_theta
         direct = ω * torch.sin(θ-θ_c)
-        abstract = self.grad_h2_col(x) @ self.f_func(x)
+        abstract = self.grad_cbf(x) @ self.model.f_func(x)
         assert torch.allclose(direct, abstract, atol=1e-4)
         return direct
 
 
-    def grad_lie_f_h2_col(self, x):
+    def grad_lie_f_cbf(self, x):
         (θ, ω) = x
         θ_c = self.cbf_col_theta
         direct = torch.tensor([ω * torch.cos(θ-θ_c), torch.sin(θ-θ_c)], dtype=self.dtype)
         with variable_required_grad(x):
-            abstract = torch.autograd.grad(self.lie_f_h2_col(x), x)[0]
+            abstract = torch.autograd.grad(self.lie_f_cbf(x), x)[0]
         assert torch.allclose(direct, abstract, atol=1e-4)
         return direct
 
     def lie2_f_h_col(self, x):
         (θ, ω) = x
-        m, l, g = self.mass, self.length, self.gravity
+        m, l, g = self.model.mass, self.model.length, self.model.gravity
         Δ_c = self.cbf_col_delta
         θ_c = self.cbf_col_theta
         direct =  ω**2 * torch.cos(θ - θ_c) - (g / l) * torch.sin(θ - θ_c) * torch.sin(θ)
-        abstract = self.grad_lie_f_h2_col(x) @ self.f_func(x)
+        abstract = self.grad_lie_f_cbf(x) @ self.model.f_func(x)
         assert torch.allclose(direct, abstract, atol=1e-4)
         return direct
 
     def lie_g_lie_f_h_col(self, x):
         (θ, ω) = x
-        m, l, g = self.mass, self.length, self.gravity
+        m, l, g = self.model.mass, self.model.length, self.model.gravity
         Δ_c = self.cbf_col_delta
         θ_c = self.cbf_col_theta
         direct = (1/(m*l)) * torch.sin(θ - θ_c)
-        abstract = self.grad_lie_f_h2_col(x) @ self.g_func(x)
+        abstract = self.grad_lie_f_cbf(x) @ self.model.g_func(x)
         assert torch.allclose(direct, abstract, atol=1e-4)
         return direct
 
     def lie2_fu_h_col(self, x, u):
-        grad_L1h = self.grad_lie_f_h2_col(x)
-        return grad_L1h @ (self.f_func(x) + self.g_func(x) @ u)
+        grad_L1h = self.grad_lie_f_cbf(x)
+        return grad_L1h @ (self.model.f_func(x) + self.model.g_func(x) @ u)
 
     def A(self, x):
         return - self.lie_g_lie_f_h_col(x).unsqueeze(0)
 
     def b(self, x):
-        K_α = torch.tensor(self.cbf_col_K_alpha, dtype=self.dtype)
-        η_b_x = torch.cat([self.h2_col(x).unsqueeze(0), self.lie_f_h2_col(x).unsqueeze(0)])
+        K_α = torch.tensor(self.k_alpha, dtype=self.dtype)
+        η_b_x = torch.cat([self.cbf(x).unsqueeze(0), self.lie_f_cbf(x).unsqueeze(0)])
         return (self.lie2_f_h_col(x) + K_α @ η_b_x)
-
-    def as_socp(self, i, x, u0, convert_out=to_numpy):
-        """
-        Var(CBC2) = Au² + b' u + c
-        E(CBC2) = e' u + e
-        """
-        δ = self.max_unsafe_prob
-        assert δ < 0.5 # Ask for at least more than 50% safety
-        ratio = np.sqrt((1-δ)/δ)
-        m = self.u_dim
-
-        (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(
-            self.h2_col, self.grad_h2_col, self.model, x, u0,
-            k_α=self.cbf_col_K_alpha)
-        with torch.no_grad():
-            # [1, u] Asq [1; u]
-            Asq = torch.cat(
-                (
-                    torch.cat((torch.tensor([[v]]),         (bfv / 2).reshape(1, -1)), dim=-1),
-                    torch.cat(((bfv / 2).reshape(-1, 1),    V), dim=-1)
-                ),
-                dim=-2)
-
-            # [1, u] Asq [1; u] = |L[1; u]|_2 = |A [y; u] + b|_2
-            A = torch.zeros((m + 1, m + 1))
-            try:
-                L = torch.cholesky(Asq) # (m+1) x (m+1)
-            except RuntimeError as err:
-                if "cholesky" in str(err) and "singular" in str(err):
-                    diag_e, V = torch.symeig(Asq, eigenvectors=True)
-                    L = torch.max(torch.diag(diag_e),
-                                  torch.tensor(0.)).sqrt() @ V.t()
-                else:
-                    raise
-            A[:, 1:] = L[:, 1:]
-            b = L[:, 0] # (m+1)
-            c = torch.zeros((m+1,))
-            c[1:] = bfe
-            # # We want to return in format?
-            # (name, (A, b, c, d))
-            # s.t. ||A[y, u] + b||_2 <= c'x + d
-            return list(map(convert_out, (ratio * A, ratio * b, c, e)))
-
-    def __getattr__(self, name):
-        return getattr(self.model, name)
 
 
 class CBFSr(NamedAffineFunc):

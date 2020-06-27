@@ -220,7 +220,7 @@ class ControlCBFLearned(Controller):
 
     def _plottables(self, i, x, y_u0):
         def true_h(xp, up):
-            val = - self.ground_truth_cbf2.h2_col(xp)
+            val = - self.ground_truth_cbf2.cbf(xp)
             return val
 
         def true_cbc2(xp, up):

@@ -2,10 +2,13 @@ import random
 import math
 from functools import partial
 
+from scipy.special import erfinv
 import torch
 
 from bayes_cbf.misc import (t_hstack, store_args, DynamicsModel,
-                            ZeroDynamicsModel, epsilon)
+                            ZeroDynamicsModel, epsilon, to_numpy)
+from bayes_cbf.gp_algebra import (DeterministicGP,)
+from bayes_cbf.cbc2 import (get_affine_terms, get_quadratic_terms)
 from bayes_cbf.car.vis import CarWithObstacles
 from bayes_cbf.sampling import sample_generator_trajectory, Visualizer
 from bayes_cbf.plotting import plot_learned_2D_func, plot_results
@@ -67,13 +70,16 @@ class ObstacleCBF(NamedAffineFunc):
     """
     @store_args
     def __init__(self, model, center, radius, γ_c=1, name="obstacle_cbf",
-                 dtype=torch.get_default_dtype()):
-        pass
+                 dtype=torch.get_default_dtype(),
+                 max_unsafe_prob=0.01):
+        self.model = model
+        self.center = center
+        self.radius = radius
 
-    def h_col(self, x):
+    def cbf(self, x):
         return (((x[:2] - self.center)**2).sum(-1) - self.radius**2)
 
-    value = h_col
+    value = cbf
 
     def __call__ (self, x, u):
         """
@@ -81,7 +87,7 @@ class ObstacleCBF(NamedAffineFunc):
         """
         return self.A(x) @ u - self.b(x)
 
-    def _grad_h_col(self, x):
+    def grad_cbf(self, x):
         return torch.cat([2 * x[..., :2],
                           x.new_zeros(*x.shape[:-1], 1)], dim=-1)
 
@@ -90,6 +96,53 @@ class ObstacleCBF(NamedAffineFunc):
 
     def b(self, x):
         return self._grad_h_col(x) @ self.f_func(x) + γ_c * self.h_col(x)
+
+    def cbc(self, u0):
+        h_gp = DeterministicGP(self.cbf, shape=(1,), name="h(x)")
+        grad_h_gp = DeterministicGP(self.grad_cbf,
+                                    shape=(self.model.state_size,),
+                                    name="∇ h(x)")
+        fu_gp = self.model.fu_func_gp(u0)
+        cbc = grad_h_gp.t() @ fu_gp + self.γ_c * h_gp
+        return cbc
+
+    def as_socp(self, i, xi, u0, convert_out=to_numpy):
+        δ = self.max_unsafe_prob
+        assert δ < 0.5 # Ask for at least more than 50% safety
+        ratio = math.sqrt(2)*erfinv(1 - 2*δ)
+        assert ratio > 0
+        bfe, e = get_affine_terms(lambda u: self.cbc(u).mean, u0)
+        V, bfv, v = get_quadratic_terms(lambda u: self.cbc(u).knl, u0)
+        m = u0.shape[-1]
+        with torch.no_grad():
+            # [1, u] Asq [1; u]
+            Asq = torch.cat(
+                (
+                    torch.cat((torch.tensor([[v]]),         (bfv / 2).reshape(1, -1)), dim=-1),
+                    torch.cat(((bfv / 2).reshape(-1, 1),    V), dim=-1)
+                ),
+                dim=-2)
+
+            # [1, u] Asq [1; u] = |L[1; u]|_2 = |A [y; u] + b|_2
+            A = torch.zeros((m + 1, m + 1))
+            try:
+                L = torch.cholesky(Asq) # (m+1) x (m+1)
+            except RuntimeError as err:
+                if "cholesky" in str(err) and "singular" in str(err):
+                    diag_e, V = torch.symeig(Asq, eigenvectors=True)
+                    L = torch.max(torch.diag(diag_e),
+                                  torch.tensor(0.)).sqrt() @ V.t()
+                else:
+                    raise
+            A[:, 1:] = L[:, 1:]
+            b = L[:, 0] # (m+1)
+            c = torch.zeros((m+1,))
+            c[1:] = bfe
+            # # We want to return in format?
+            # (name, (A, b, c, d))
+            # s.t. ||A[y, u] + b||_2 <= c'x + d
+            return list(map(convert_out, (ratio * A, ratio * b, c, e)))
+
 
 
 class ControllerUnicycle(ControlCBFLearned):
@@ -112,7 +165,6 @@ class ControllerUnicycle(ControlCBFLearned):
                  u_dim=2,
                  train_every_n_steps=10,
                  mean_dynamics_model_class=ZeroDynamicsModel,
-                 max_unsafe_prob=0.01,
                  dt=0.001,
                  constraint_plotter_class=ConstraintPlotter,
                  cbc_class=ObstacleCBF,
@@ -126,13 +178,12 @@ class ControllerUnicycle(ControlCBFLearned):
                          u_dim=u_dim,
                          train_every_n_steps=train_every_n_steps,
                          mean_dynamics_model_class=mean_dynamics_model_class,
-                         max_unsafe_prob=max_unsafe_prob,
                          dt=dt,
                          constraint_plotter_class=constraint_plotter_class,
                          plotfile=plotfile,
                          ctrl_range=ctrl_range)
         if self.use_ground_truth_model:
-            self.model = self.true_model
+            self.model = self.true_model()
         else:
             self.model = ControlAffineRegressor(
                 x_dim, u_dim,

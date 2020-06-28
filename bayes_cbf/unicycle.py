@@ -4,11 +4,14 @@ from functools import partial
 
 from scipy.special import erfinv
 import torch
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, FancyArrowPatch
 
 from bayes_cbf.misc import (t_hstack, store_args, DynamicsModel,
-                            ZeroDynamicsModel, epsilon, to_numpy)
+                            ZeroDynamicsModel, epsilon, to_numpy,
+                            get_affine_terms, get_quadratic_terms)
 from bayes_cbf.gp_algebra import (DeterministicGP,)
-from bayes_cbf.cbc2 import (get_affine_terms, get_quadratic_terms)
+from bayes_cbf.cbc1 import RelDeg1Safety
 from bayes_cbf.car.vis import CarWithObstacles
 from bayes_cbf.sampling import sample_generator_trajectory, Visualizer
 from bayes_cbf.plotting import plot_learned_2D_func, plot_results
@@ -64,17 +67,29 @@ class UnicycleDynamicsModel(DynamicsModel):
         return X_in
 
 
-class ObstacleCBF(NamedAffineFunc):
+class ObstacleCBF(RelDeg1Safety, NamedAffineFunc):
     """
     ∇h(x)ᵀf(x) + ∇h(x)ᵀg(x)u + γ_c h(x) > 0
     """
-    @store_args
+    @partial(store_args, skip=["model"])
     def __init__(self, model, center, radius, γ_c=1.0, name="obstacle_cbf",
                  dtype=torch.get_default_dtype(),
                  max_unsafe_prob=0.01):
-        self.model = model
+        self._model = model
         self.center = torch.tensor(center, dtype=dtype)
         self.radius = torch.tensor(radius, dtype=dtype)
+
+    @property
+    def model(self):
+        return self._model
+
+    @model.setter
+    def set_model(self, model):
+        self._model = model
+
+    @property
+    def gamma(self):
+        return self.γ_c
 
     def cbf(self, x):
         return (((x[:2] - self.center)**2).sum(-1) - self.radius**2)
@@ -96,54 +111,6 @@ class ObstacleCBF(NamedAffineFunc):
 
     def b(self, x):
         return self._grad_h_col(x) @ self.f_func(x) + γ_c * self.h_col(x)
-
-    def cbc(self, u0):
-        h_gp = DeterministicGP(lambda x: self.γ_c * self.cbf(x),
-                               shape=(1,), name="h(x)")
-        grad_h_gp = DeterministicGP(self.grad_cbf,
-                                    shape=(self.model.state_size,),
-                                    name="∇ h(x)")
-        fu_gp = self.model.fu_func_gp(u0)
-        cbc = grad_h_gp.t() @ fu_gp + h_gp
-        return cbc
-
-    def as_socp(self, i, xi, u0, convert_out=to_numpy):
-        δ = self.max_unsafe_prob
-        assert δ < 0.5 # Ask for at least more than 50% safety
-        ratio = math.sqrt(2)*erfinv(1 - 2*δ)
-        assert ratio > 0
-        bfe, e = get_affine_terms(lambda u: self.cbc(u).mean(xi), u0)
-        V, bfv, v = get_quadratic_terms(lambda u: self.cbc(u).knl(xi, xi), u0)
-        m = u0.shape[-1]
-        with torch.no_grad():
-            # [1, u] Asq [1; u]
-            Asq = torch.cat(
-                (
-                    torch.cat((torch.tensor([[v]]),         (bfv / 2).reshape(1, -1)), dim=-1),
-                    torch.cat(((bfv / 2).reshape(-1, 1),    V), dim=-1)
-                ),
-                dim=-2)
-
-            # [1, u] Asq [1; u] = |L[1; u]|_2 = |A [y; u] + b|_2
-            A = torch.zeros((m + 1, m + 1))
-            try:
-                L = torch.cholesky(Asq) # (m+1) x (m+1)
-            except RuntimeError as err:
-                if "cholesky" in str(err) and "singular" in str(err):
-                    diag_e, V = torch.symeig(Asq, eigenvectors=True)
-                    L = torch.max(torch.diag(diag_e),
-                                  torch.tensor(0.)).sqrt() @ V.t()
-                else:
-                    raise
-            A[:, 1:] = L[:, 1:]
-            b = L[:, 0] # (m+1)
-            c = torch.zeros((m+1,))
-            c[1:] = bfe
-            # # We want to return in format?
-            # (name, (A, b, c, d))
-            # s.t. ||A[y, u] + b||_2 <= c'x + d
-            return list(map(convert_out, (ratio * A, ratio * b, c, e)))
-
 
 
 class ControllerUnicycle(ControlCBFLearned):
@@ -219,7 +186,9 @@ class ControllerUnicycle(ControlCBFLearned):
             Q = λ * R + (1-λ) * Gx.T @ P @ Gx
             # Linear term - (2λRu₀ + 2(1-λ)Gₓ P(x_g - fx)  )ᵀ u
             c = (λ * R + (1-λ) * Gx.T @ P @ (x_g - x - fx))
-            return torch.solve(c, Q).solution.reshape(-1)
+            ugreedy = torch.solve(c, Q).solution.reshape(-1)
+            assert ugreedy.shape[-1] == self.u_dim
+            return ugreedy
 
     def epsilon_greedy_unsafe_control(self, i, x, min_=-5., max_=5.):
         eps = epsilon(i, interpolate={0: self.egreedy_scheme[0],
@@ -245,8 +214,36 @@ class UnicycleVisualizer(Visualizer):
         self.carworld.setCarPose(x_, y_, theta_)
         self.carworld.show()
 
+class UnicycleVisualizerMatplotlib(Visualizer):
+    @store_args
+    def __init__(self, robotsize, obstacle_centers, obstacle_radii):
+        self.fig, self.axes = plt.subplots(1,1)
+
+    def _init_drawing(self):
+        self.axes.set_aspect('equal')
+        self._add_obstacles(self.obstacle_centers, self.obstacle_radii)
+
+    def _add_obstacles(self, centers, radii):
+        for c, r in zip(centers, radii):
+            circle = Circle(c, radius=r, fill=True, color='r')
+            self.axes.add_patch(circle)
+
+    def _add_robot(self, pos, theta, robotsize):
+        dx = pos[0] + math.cos(theta)* robotsize
+        dy = pos[0] + math.sin(theta)* robotsize
+
+        arrow = FancyArrowPatch(pos, (dx, dy),
+                                mutation_scale=100)
+        self.axes.add_patch(arrow)
+
+    def setStateCtrl(self, x, u, t=0):
+        self._add_robot(x[:2], x[2], self.robotsize)
+        plt.draw()
+        plt.pause(0.001)
+
 
 def run_unicycle_control_learned(
+        robotsize=0.2,
         obstacle_centers=[(0,0)],
         obstacle_radii=[0.5],
         x0=[-3, -3, math.pi/4],
@@ -262,7 +259,7 @@ def run_unicycle_control_learned(
         dynamics_model=UnicycleDynamicsModel(),
         D=D,
         controller=controller.control,
-        visualizer=UnicycleVisualizer(obstacle_centers, obstacle_radii),
+        visualizer=UnicycleVisualizerMatplotlib(robotsize, obstacle_centers, obstacle_radii),
         x0=x0)
 
 if __name__ == '__main__':

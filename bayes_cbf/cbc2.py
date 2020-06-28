@@ -2,15 +2,15 @@ from abc import ABC, abstractproperty, abstractmethod
 import math
 import torch
 from .gp_algebra import *
-from .misc import to_numpy
+from .misc import to_numpy, get_affine_terms, get_quadratic_terms
 
-def cbc2_quadratic_terms(h_func, grad_h_func, control_affine_model, x, u, k_α):
+def cbc2_quadratic_terms(cbc2, x, u):
     """
     cbc2.mean(x) ≥ √(1-δ)/δ cbc2.k(x,x')
     """
     # TODO: Too complicated and opaque. Try to find a way to simplify
-    mean = lambda up: cbc2_gp(h_func, grad_h_func, control_affine_model, up, k_α).mean(x)
-    k_func = lambda up: cbc2_gp(h_func, grad_h_func, control_affine_model, up, k_α).knl(x, x)
+    mean = lambda up: cbc2(up).mean(x)
+    k_func = lambda up: cbc2(up).knl(x, x)
 
     #assert mean(u) > 0, 'cbf2 should be at least satisfied in expectation'
     mean_A, mean_b = get_affine_terms(mean, u)
@@ -33,24 +33,53 @@ def cbc2_gp(h, grad_h, learned_model, utest, k_α):
     return L2h + h_gp * k_α[0] + L1h * k_α[1]
 
 
-def get_affine_terms(func, x):
-    with variable_required_grad(x):
-        f_x = func(x)
-        linear = torch.autograd.grad(f_x, x, create_graph=True)[0]
-    with torch.no_grad():
-        const = f_x - linear @ x
-    return linear, const
+def cbc2_safety_factor(δ):
+    assert δ < 0.5 # Ask for at least more than 50% safety
+    factor = math.sqrt((1-δ)/δ)
+    assert factor > 1
+    return factor
 
 
-def get_quadratic_terms(func, x):
-    with variable_required_grad(x):
-        f_x = func(x)
-        linear_more = torch.autograd.grad(f_x, x, create_graph=True)[0]
-        quad = t_jac(linear_more, x) / 2
+def cbc2_safety_socp(cbc2, x, u0,
+                     max_unsafe_prob=0.01,
+                     safety_factor=cbc2_safety_factor):
+    """
+    Var(CBC2) = Au² + b' u + c
+    E(CBC2) = e' u + e
+    """
+    δ = max_unsafe_prob
+    factor = safety_factor(δ)
+    m = u0.shape[-1]
+
+    (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(cbc2, x, u0)
     with torch.no_grad():
-        linear = linear_more - 2 * quad @ x
-        const = f_x - x.T @ quad @ x - linear @ x
-    return quad, linear, const
+        # [1, u] Asq [1; u]
+        Asq = torch.cat(
+            (
+                torch.cat((torch.tensor([[v]]),         (bfv / 2).reshape(1, -1)), dim=-1),
+                torch.cat(((bfv / 2).reshape(-1, 1),    V), dim=-1)
+            ),
+            dim=-2)
+
+        # [1, u] Asq [1; u] = |L[1; u]|_2 = |A [y; u] + b|_2
+        A = torch.zeros((m + 1, m + 1))
+        try:
+            L = torch.cholesky(Asq) # (m+1) x (m+1)
+        except RuntimeError as err:
+            if "cholesky" in str(err) and "singular" in str(err):
+                diag_e, V = torch.symeig(Asq, eigenvectors=True)
+                L = torch.max(torch.diag(diag_e),
+                                torch.tensor(0.)).sqrt() @ V.t()
+            else:
+                raise
+        A[:, 1:] = L[:, 1:]
+        b = L[:, 0] # (m+1)
+        c = torch.zeros((m+1,))
+        c[1:] = bfe
+        # # We want to return in format?
+        # (name, (A, b, c, d))
+        # s.t. factor * ||A[y, u] + b||_2 <= c'x + d
+        return (factor * A, factor * b, c, e)
 
 class RelDeg2Safety(ABC):
     @abstractproperty
@@ -68,44 +97,10 @@ class RelDeg2Safety(ABC):
     def grad_cbf(self, x):
         pass
 
-    def as_socp(self, i, x, u0, convert_out=to_numpy):
-        """
-        Var(CBC2) = Au² + b' u + c
-        E(CBC2) = e' u + e
-        """
-        δ = self.max_unsafe_prob
-        assert δ < 0.5 # Ask for at least more than 50% safety
-        ratio = math.sqrt((1-δ)/δ)
-        m = self.model.u_dim
+    def cbc2(self, u0):
+        return cbc2_gp(self.cbf, self.grad_cbf, self.model, u0, self.k_alpha)
 
-        (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(
-            self.cbf, self.grad_cbf, self.model, x, u0,
-            k_α=self.k_alpha)
-        with torch.no_grad():
-            # [1, u] Asq [1; u]
-            Asq = torch.cat(
-                (
-                    torch.cat((torch.tensor([[v]]),         (bfv / 2).reshape(1, -1)), dim=-1),
-                    torch.cat(((bfv / 2).reshape(-1, 1),    V), dim=-1)
-                ),
-                dim=-2)
+    def as_socp(self, i, xi, u0, convert_out=to_numpy):
+        return list(map(convert_out, cbc2_safety_socp(self.cbc2, xi, u0,
+                        max_unsafe_prob=self.max_unsafe_prob)))
 
-            # [1, u] Asq [1; u] = |L[1; u]|_2 = |A [y; u] + b|_2
-            A = torch.zeros((m + 1, m + 1))
-            try:
-                L = torch.cholesky(Asq) # (m+1) x (m+1)
-            except RuntimeError as err:
-                if "cholesky" in str(err) and "singular" in str(err):
-                    diag_e, V = torch.symeig(Asq, eigenvectors=True)
-                    L = torch.max(torch.diag(diag_e),
-                                  torch.tensor(0.)).sqrt() @ V.t()
-                else:
-                    raise
-            A[:, 1:] = L[:, 1:]
-            b = L[:, 0] # (m+1)
-            c = torch.zeros((m+1,))
-            c[1:] = bfe
-            # # We want to return in format?
-            # (name, (A, b, c, d))
-            # s.t. ||A[y, u] + b||_2 <= c'x + d
-            return list(map(convert_out, (ratio * A, ratio * b, c, e)))

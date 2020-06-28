@@ -34,20 +34,24 @@ def t_jac(f_x, x, retain_graph=False):
         return torch.autograd.grad(f_x, x, retain_graph=retain_graph)[0]
 
 
-def store_args(method):
+def store_args(method, skip=[]):
     argspec = inspect.getfullargspec(method)
     @wraps(method)
     def wrapped_method(self, *args, **kwargs):
         if argspec.defaults is not None:
           for name, val in zip(argspec.args[::-1], argspec.defaults[::-1]):
-              setattr(self, name, val)
+              if name not in skip:
+                  setattr(self, name, val)
         if argspec.kwonlydefaults and args.kwonlyargs:
             for name, val in zip(argspec.kwonlyargs, argspec.kwonlydefaults):
+                if name not in skip:
+                    setattr(self, name, val)
+        for name, val in zip(argspec.args[1:], args):
+            if name not in skip:
                 setattr(self, name, val)
-        for name, val in zip(argspec.args, args):
-            setattr(self, name, val)
         for name, val in kwargs.items():
-            setattr(self, name, val)
+            if name not in skip:
+                setattr(self, name, val)
 
         method(self, *args, **kwargs)
 
@@ -179,3 +183,22 @@ def epsilon(i, interpolate={0: 1, 1000: 0.01}):
     ((si,sv), (ei, ev)) = list(interpolate.items())
     return math.exp((i-si)/(ei-si)*(math.log(ev)-math.log(sv)) + math.log(sv))
 
+
+def get_affine_terms(func, x):
+    with variable_required_grad(x):
+        f_x = func(x)
+        linear = torch.autograd.grad(f_x, x, create_graph=True)[0]
+    with torch.no_grad():
+        const = f_x - linear @ x
+    return linear, const
+
+
+def get_quadratic_terms(func, x):
+    with variable_required_grad(x):
+        f_x = func(x)
+        linear_more = torch.autograd.grad(f_x, x, create_graph=True)[0]
+        quad = t_jac(linear_more, x) / 2
+    with torch.no_grad():
+        linear = linear_more - 2 * quad @ x
+        const = f_x - x.T @ quad @ x - linear @ x
+    return quad, linear, const

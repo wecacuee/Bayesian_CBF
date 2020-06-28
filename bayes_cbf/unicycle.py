@@ -69,12 +69,12 @@ class ObstacleCBF(NamedAffineFunc):
     ∇h(x)ᵀf(x) + ∇h(x)ᵀg(x)u + γ_c h(x) > 0
     """
     @store_args
-    def __init__(self, model, center, radius, γ_c=1, name="obstacle_cbf",
+    def __init__(self, model, center, radius, γ_c=1.0, name="obstacle_cbf",
                  dtype=torch.get_default_dtype(),
                  max_unsafe_prob=0.01):
         self.model = model
-        self.center = center
-        self.radius = radius
+        self.center = torch.tensor(center, dtype=dtype)
+        self.radius = torch.tensor(radius, dtype=dtype)
 
     def cbf(self, x):
         return (((x[:2] - self.center)**2).sum(-1) - self.radius**2)
@@ -98,12 +98,13 @@ class ObstacleCBF(NamedAffineFunc):
         return self._grad_h_col(x) @ self.f_func(x) + γ_c * self.h_col(x)
 
     def cbc(self, u0):
-        h_gp = DeterministicGP(self.cbf, shape=(1,), name="h(x)")
+        h_gp = DeterministicGP(lambda x: self.γ_c * self.cbf(x),
+                               shape=(1,), name="h(x)")
         grad_h_gp = DeterministicGP(self.grad_cbf,
                                     shape=(self.model.state_size,),
                                     name="∇ h(x)")
         fu_gp = self.model.fu_func_gp(u0)
-        cbc = grad_h_gp.t() @ fu_gp + self.γ_c * h_gp
+        cbc = grad_h_gp.t() @ fu_gp + h_gp
         return cbc
 
     def as_socp(self, i, xi, u0, convert_out=to_numpy):
@@ -111,8 +112,8 @@ class ObstacleCBF(NamedAffineFunc):
         assert δ < 0.5 # Ask for at least more than 50% safety
         ratio = math.sqrt(2)*erfinv(1 - 2*δ)
         assert ratio > 0
-        bfe, e = get_affine_terms(lambda u: self.cbc(u).mean, u0)
-        V, bfv, v = get_quadratic_terms(lambda u: self.cbc(u).knl, u0)
+        bfe, e = get_affine_terms(lambda u: self.cbc(u).mean(xi), u0)
+        V, bfv, v = get_quadratic_terms(lambda u: self.cbc(u).knl(xi, xi), u0)
         m = u0.shape[-1]
         with torch.no_grad():
             # [1, u] Asq [1; u]
@@ -223,7 +224,8 @@ class ControllerUnicycle(ControlCBFLearned):
     def epsilon_greedy_unsafe_control(self, i, x, min_=-5., max_=5.):
         eps = epsilon(i, interpolate={0: self.egreedy_scheme[0],
                                       self.numSteps: self.egreedy_scheme[1]})
-        uegreedy = (torch.rand(self.u_dim) * (max_ - min_) + min_
+        randomact = torch.rand(self.u_dim) * (max_ - min_) + min_
+        uegreedy = (randomact
                 if (random.random() < eps)
                 else self.unsafe_control(x))
         return torch.max(torch.min(uegreedy, max_), min_)
@@ -247,7 +249,7 @@ class UnicycleVisualizer(Visualizer):
 def run_unicycle_control_learned(
         obstacle_centers=[(0,0)],
         obstacle_radii=[0.5],
-        x0=[-1, -1, math.pi/4],
+        x0=[-3, -3, math.pi/4],
         D=1000):
     """
     Run safe unicycle control with learned model

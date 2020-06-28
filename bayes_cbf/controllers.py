@@ -201,7 +201,7 @@ class ControlCBFLearned(Controller):
             h = - Q @ u0
         a = torch.zeros((self.u_dim + 1,))
         a[0] = 1
-        b = torch.tensor([[0.]])
+        b = torch.tensor(0.)
         # s.t. ||R[y, u] + h||_2 <= a' [y, u] + b
         return list(map(convert_out, (R, h, a, b)))
 
@@ -228,7 +228,8 @@ class ControlCBFLearned(Controller):
                     - self.ground_truth_cbf2.b(xp))
             return val
         return [
-            NamedFunc(lambda _, y_u: (bfc @ y_u + d - A @ y_u - bfb)[1:] , name)
+            NamedFunc(lambda _, y_u: (bfc @ y_u + d - (A @ y_u +
+                                                       bfb).norm(p=2,dim=-1)) , name)
             for name, (A, bfb, bfc, d) in self._all_constraints(
                     i, x, y_u0, convert_out=lambda x: x)
         ] + [
@@ -244,8 +245,6 @@ class ControlCBFLearned(Controller):
             # train every n steps
             LOG.info("Training GP with dataset size {}".format(len(self.Xtrain)))
             self.train()
-
-        assert torch.all((xi[0] <= math.pi) & (-math.pi <= xi[0]))
 
         u0 = self.epsilon_greedy_unsafe_control(i, xi,
                                                 min_=self.ctrl_range[0],

@@ -96,21 +96,21 @@ class ObstacleCBF(RelDeg1Safety, NamedAffineFunc):
 
     value = cbf
 
+    def grad_cbf(self, x):
+        return torch.cat([2 * x[..., :2],
+                          x.new_zeros(*x.shape[:-1], 1)], dim=-1)
+
     def __call__ (self, x, u):
         """
         A(x) u - b(x) < 0
         """
         return self.A(x) @ u - self.b(x)
 
-    def grad_cbf(self, x):
-        return torch.cat([2 * x[..., :2],
-                          x.new_zeros(*x.shape[:-1], 1)], dim=-1)
-
     def A(self, x):
-        return -self._grad_h_col(x) @ self.model.g_func(x)
+        return -self.grad_cbf(x) @ self.model.g_func(x)
 
     def b(self, x):
-        return self._grad_h_col(x) @ self.f_func(x) + γ_c * self.h_col(x)
+        return self.grad_cbf(x) @ self.model.f_func(x) + self.gamma * self.cbf(x)
 
 
 class ControllerUnicycle(ControlCBFLearned):
@@ -125,7 +125,7 @@ class ControllerUnicycle(ControlCBFLearned):
                  max_train=200,
                  #gamma_length_scale_prior=[1/deg2rad(0.1), 1],
                  gamma_length_scale_prior=None,
-                 true_model=UnicycleDynamicsModel,
+                 true_model=UnicycleDynamicsModel(),
                  plotfile='plots/ctrl_cbf_learned_{suffix}.pdf',
                  dtype=torch.get_default_dtype(),
                  use_ground_truth_model=False,
@@ -151,7 +151,7 @@ class ControllerUnicycle(ControlCBFLearned):
                          plotfile=plotfile,
                          ctrl_range=ctrl_range)
         if self.use_ground_truth_model:
-            self.model = self.true_model()
+            self.model = self.true_model
         else:
             self.model = ControlAffineRegressor(
                 x_dim, u_dim,
@@ -184,9 +184,9 @@ class ControllerUnicycle(ControlCBFLearned):
 
             # Quadratic term λ R + (1-λ)Gₓᵀ P Gₓ
             Q = λ * R + (1-λ) * Gx.T @ P @ Gx
-            # Linear term - (2λRu₀ + 2(1-λ)Gₓ P(x_g - fx)  )ᵀ u
-            c = (λ * R + (1-λ) * Gx.T @ P @ (x_g - x - fx))
-            ugreedy = torch.solve(c, Q).solution.reshape(-1)
+            # Linear term - ((1-λ)Gₓ P(x_g - x - fx)  )ᵀ u
+            c = (1-λ) * Gx.T @ P @ (x_g - x - fx)
+            ugreedy = torch.solve(c.unsqueeze(0), Q).solution.reshape(-1)
             assert ugreedy.shape[-1] == self.u_dim
             return ugreedy
 
@@ -215,13 +215,24 @@ class UnicycleVisualizer(Visualizer):
         self.carworld.show()
 
 class UnicycleVisualizerMatplotlib(Visualizer):
+    XMIN, YMIN, XMAX, YMAX = range(4)
     @store_args
     def __init__(self, robotsize, obstacle_centers, obstacle_radii):
         self.fig, self.axes = plt.subplots(1,1)
+        self._range = [-1, -1, 1, 1]
+        self._init_drawing()
 
     def _init_drawing(self):
-        self.axes.set_aspect('equal')
         self._add_obstacles(self.obstacle_centers, self.obstacle_radii)
+        self._range = [
+            min((c[0]-r) for c, r in zip(self.obstacle_centers, self.obstacle_radii)),
+            min((c[1]-r) for c, r in zip(self.obstacle_centers, self.obstacle_radii)),
+            max((c[0]+r) for c, r in zip(self.obstacle_centers, self.obstacle_radii)),
+            max((c[1]+r) for c, r in zip(self.obstacle_centers, self.obstacle_radii))]
+        self.axes.set_xlim(self._range[self.XMIN], self._range[self.XMAX])
+        self.axes.set_ylim(self._range[self.YMIN], self._range[self.YMAX])
+        self.axes.set_aspect('equal')
+
 
     def _add_obstacles(self, centers, radii):
         for c, r in zip(centers, radii):
@@ -230,11 +241,16 @@ class UnicycleVisualizerMatplotlib(Visualizer):
 
     def _add_robot(self, pos, theta, robotsize):
         dx = pos[0] + math.cos(theta)* robotsize
-        dy = pos[0] + math.sin(theta)* robotsize
+        dy = pos[1] + math.sin(theta)* robotsize
 
-        arrow = FancyArrowPatch(pos, (dx, dy),
-                                mutation_scale=100)
+        arrow = FancyArrowPatch(pos, (dx, dy), mutation_scale=10)
         self.axes.add_patch(arrow)
+        self._range[self.XMIN] = min(pos[0], self._range[self.XMIN])
+        self._range[self.XMAX] = max(pos[0], self._range[self.XMAX])
+        self._range[self.YMIN] = min(pos[1], self._range[self.YMIN])
+        self._range[self.YMAX] = max(pos[1], self._range[self.YMAX])
+        self.axes.set_xlim(self._range[self.XMIN], self._range[self.XMAX])
+        self.axes.set_ylim(self._range[self.YMIN], self._range[self.YMAX])
 
     def setStateCtrl(self, x, u, t=0):
         self._add_robot(x[:2], x[2], self.robotsize)
@@ -243,10 +259,10 @@ class UnicycleVisualizerMatplotlib(Visualizer):
 
 
 def run_unicycle_control_learned(
-        robotsize=0.2,
-        obstacle_centers=[(0,0)],
-        obstacle_radii=[0.5],
-        x0=[-3, -3, math.pi/4],
+        robotsize=2.0,
+        obstacle_centers=[(0., 0.)],
+        obstacle_radii=[2.0],
+        x0=[-10., -10., math.pi/4],
         D=1000):
     """
     Run safe unicycle control with learned model

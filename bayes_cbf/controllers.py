@@ -240,24 +240,28 @@ class ControlCBFLearned(Controller):
         ]
 
     def control(self, xi, i=None):
-        tic = time.time()
         if (len(self.Xtrain) % int(self.train_every_n_steps) == 0):
             # train every n steps
             LOG.info("Training GP with dataset size {}".format(len(self.Xtrain)))
             self.train()
 
+        tic = time.time()
         u0 = self.epsilon_greedy_unsafe_control(i, xi,
                                                 min_=self.ctrl_range[0],
                                                 max_=self.ctrl_range[1])
-        y_uopt = controller_socp_cvxopt(
-            np.hstack([[1.], u0.detach().numpy()]),
-            np.hstack([[1.], np.zeros_like(u0)]),
-            self._socp_constraints(i, xi, u0, convert_out=to_numpy))
-        y_uopt = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
-        self.constraint_plotter.plot_constraints(
-            self._plottables(i, xi, u0),
-            xi, y_uopt)
-        uopt = y_uopt[1:]
+        if self._has_been_trained_once:
+            y_uopt = controller_socp_cvxopt(
+                np.hstack([[1.], u0.detach().numpy()]),
+                np.hstack([[1.], np.zeros_like(u0)]),
+                self._socp_constraints(i, xi, u0, convert_out=to_numpy))
+            y_uopt = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
+            self.constraint_plotter.plot_constraints(
+                self._plottables(i, xi, u0),
+                xi, y_uopt)
+            uopt = y_uopt[1:]
+        else:
+            uopt = u0
+
         # record the xi, ui pair
         self.Xtrain.append(xi.detach())
         self.Utrain.append(uopt.detach())

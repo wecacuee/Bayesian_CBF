@@ -13,10 +13,10 @@ from bayes_cbf.control_affine_model import ControlAffineRegressor
 from bayes_cbf.plotting import plot_2D_f_func, plot_results, plot_learned_2D_func
 from bayes_cbf.pendulum import PendulumDynamicsModel
 from bayes_cbf.sampling import sample_generator_independent, sample_generator_trajectory
-from bayes_cbf.misc import torch_kron, variable_required_grad, to_numpy
+from bayes_cbf.misc import torch_kron, variable_required_grad, to_numpy, DynamicsModel
 
 
-class RandomDynamicsModel:
+class RandomDynamicsModel(DynamicsModel):
     def __init__(self, m, n, deterministic=False, diag_cov=1e-5):
         self.n = n
         self.m = m

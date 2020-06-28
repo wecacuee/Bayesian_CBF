@@ -80,10 +80,10 @@ def test_affine_gp(dynamic_models, skip_test=False):
     true_cbf2 = RadialCBFRelDegree2(true_model)
     learned_cbf2 = RadialCBFRelDegree2(learned_model)
     f_gp = learned_model.f_func_gp()
-    l1h_v2 = DeterministicGP(learned_cbf2.grad_h2_col, xtest.shape, name="∇ h(x)").t() @ f_gp
+    l1h_v2 = DeterministicGP(learned_cbf2.grad_cbf, xtest.shape, name="∇ h(x)").t() @ f_gp
     if not skip_test:
         assert to_numpy(l1h_v2.mean(xtest)) == pytest.approx(
-            to_numpy(true_cbf2.lie_f_h2_col(xtest)), rel=0.1)
+            to_numpy(true_cbf2.lie_f_cbf(xtest)), rel=0.1)
 
     return l1h_v2
 
@@ -171,7 +171,7 @@ def test_gradient_gp(dynamic_models, skip_test=False, dist=1e-4, grad_check=True
     true_cbf2 = RadialCBFRelDegree2(true_model)
     grad_l1h = GradientGP(l1h, x_shape=xtest.shape)
     if not skip_test:
-        assert to_numpy(grad_l1h.mean(xtest)) == pytest.approx(to_numpy(true_cbf2.grad_lie_f_h2_col(xtest)), abs=0.1, rel=0.4)
+        assert to_numpy(grad_l1h.mean(xtest)) == pytest.approx(to_numpy(true_cbf2.grad_lie_f_cbf(xtest)), abs=0.1, rel=0.4)
     grad_l1h.knl(xtest, xtest)
     return grad_l1h, l1h
 
@@ -215,7 +215,7 @@ def test_lie2_gp(dynamic_models):
     f_gp = learned_model.f_func_gp()
     fu_gp = learned_model.fu_func_gp(utest)
     L2h = GradientGP(
-        DeterministicGP(cbf2.grad_h2_col, shape=xtest.shape, name="∇ h(x)").t() @ f_gp,
+        DeterministicGP(cbf2.grad_cbf, shape=xtest.shape, name="∇ h(x)").t() @ f_gp,
         x_shape=xtest.shape).t() @ fu_gp
     assert to_numpy(L2h.mean(xtest)) == pytest.approx(
         to_numpy(
@@ -229,9 +229,9 @@ def test_cbf2_gp(dynamic_models):
     learned_model, true_model, xtest, utest = dynamic_models
     true_cbf2 = RadialCBFRelDegree2(true_model)
     learned_cbf2 = RadialCBFRelDegree2(learned_model)
-    cbc2 = cbc2_gp(learned_cbf2.h2_col,
-                   learned_cbf2.grad_h2_col, learned_model, utest,
-                   k_α=learned_cbf2.cbf_col_K_alpha)
+    cbc2 = cbc2_gp(learned_cbf2.cbf,
+                   learned_cbf2.grad_cbf, learned_model, utest,
+                   k_α=learned_cbf2.k_alpha)
     assert to_numpy(cbc2.mean(xtest)) == pytest.approx(to_numpy(
         - true_cbf2.A(xtest) @ utest + true_cbf2.b(xtest)), rel=0.1, abs=0.1)
     cbc2.knl(xtest, xtest)

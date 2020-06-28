@@ -161,15 +161,17 @@ class ControlCBFLearned(Controller):
             #    axs[0,0].figure,
             #    'plots/pendulum_data_{}.pdf'.format(Xtrain.shape[0]))
             assert torch.all((Xtrain[:, 0] <= math.pi) & (-math.pi <= Xtrain[:, 0]))
-            LOG.info("Training model with datasize {}".format(XdotTrain.shape[0]))
-            if XdotTrain.shape[0] > self.max_train:
-                indices = torch.randint(XdotTrain.shape[0], (self.max_train,))
-                train_data = Xtrain[indices, :], Utrain[indices, :], XdotError[indices, :],
-            else:
-                train_data = Xtrain[:-1, :], Utrain[:-1, :], XdotError
+        LOG.info("Training model with datasize {}".format(XdotTrain.shape[0]))
+        if XdotTrain.shape[0] > self.max_train:
+            indices = torch.randint(XdotTrain.shape[0], (self.max_train,))
+            train_data = Xtrain[indices, :], Utrain[indices, :], XdotError[indices, :],
+        else:
+            train_data = Xtrain[:-1, :], Utrain[:-1, :], XdotError
 
-            self.model.fit(*train_data, training_iter=100)
+        self.model.fit(*train_data, training_iter=100)
+        self._has_been_trained_once = True
 
+        if self.x_dim == 2:
             self.axes[0] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
                                     self.model.f_func,
                                     self.true_model.f_func,
@@ -187,7 +189,6 @@ class ControlCBFLearned(Controller):
                 self.axes[1].flatten()[0].figure,
                 'plots/online_g_learned_vs_g_true_%d.pdf' % Xtrain.shape[0])
 
-        self._has_been_trained_once = True
 
     def _socp_objective(self, i, x, u0, convert_out=to_numpy):
         # s.t. ||[0, Q][y; u] - Q u_0||_2 <= [1, 0] [y; u] + 0
@@ -240,8 +241,7 @@ class ControlCBFLearned(Controller):
 
     def control(self, xi, i=None):
         tic = time.time()
-        if (not self.model.ground_truth
-            and len(self.Xtrain) % int(self.train_every_n_steps) == 0):
+        if (len(self.Xtrain) % int(self.train_every_n_steps) == 0):
             # train every n steps
             LOG.info("Training GP with dataset size {}".format(len(self.Xtrain)))
             self.train()
@@ -249,18 +249,15 @@ class ControlCBFLearned(Controller):
         u0 = self.epsilon_greedy_unsafe_control(i, xi,
                                                 min_=self.ctrl_range[0],
                                                 max_=self.ctrl_range[1])
-        if self.model.ground_truth or self._has_been_trained_once:
-            y_uopt = controller_socp_cvxopt(
-                np.hstack([[1.], u0.detach().numpy()]),
-                np.hstack([[1.], np.zeros_like(u0)]),
-                self._socp_constraints(i, xi, u0, convert_out=to_numpy))
-            y_uopt = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
-            self.constraint_plotter.plot_constraints(
-                self._plottables(i, xi, u0),
-                xi, y_uopt)
-            uopt = y_uopt[1:]
-        else:
-            uopt = u0
+        y_uopt = controller_socp_cvxopt(
+            np.hstack([[1.], u0.detach().numpy()]),
+            np.hstack([[1.], np.zeros_like(u0)]),
+            self._socp_constraints(i, xi, u0, convert_out=to_numpy))
+        y_uopt = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
+        self.constraint_plotter.plot_constraints(
+            self._plottables(i, xi, u0),
+            xi, y_uopt)
+        uopt = y_uopt[1:]
         # record the xi, ui pair
         self.Xtrain.append(xi.detach())
         self.Utrain.append(uopt.detach())

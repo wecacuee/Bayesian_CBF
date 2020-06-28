@@ -114,6 +114,7 @@ class ObstacleCBF(RelDeg1Safety, NamedAffineFunc):
 
 
 class ControllerUnicycle(ControlCBFLearned):
+    ground_truth = False,
     @store_args
     def __init__(self,
                  x_goal=[1, 1, math.pi/4],
@@ -186,7 +187,7 @@ class ControllerUnicycle(ControlCBFLearned):
             Q = λ * R + (1-λ) * Gx.T @ P @ Gx
             # Linear term - ((1-λ)Gₓ P(x_g - x - fx)  )ᵀ u
             c = (1-λ) * Gx.T @ P @ (x_g - x - fx)
-            ugreedy = torch.solve(c.unsqueeze(0), Q).solution.reshape(-1)
+            ugreedy = torch.solve(c.unsqueeze(-1), Q).solution.reshape(-1)
             assert ugreedy.shape[-1] == self.u_dim
             return ugreedy
 

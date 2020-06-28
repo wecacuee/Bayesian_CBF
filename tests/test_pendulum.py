@@ -15,7 +15,7 @@ def test_RadialCBF_grad_h_col():
     rcol = RadialCBFRelDegree2(model)
     xt = torch.rand(2)
     with torch.no_grad():
-        grad_h_x = rcol.grad_h2_col(xt)
+        grad_h_x = rcol.grad_cbf(xt)
     xt.requires_grad_(True)
-    torch_grad_h_x = torch.autograd.grad(rcol.h2_col(xt), xt)[0]
+    torch_grad_h_x = torch.autograd.grad(rcol.cbf(xt), xt)[0]
     assert torch.allclose(grad_h_x, torch_grad_h_x)

@@ -167,6 +167,42 @@ class ControllerUnicycle(ControlCBFLearned):
         self.x_goal = torch.tensor(x_goal)
         self.x_quad_goal_cost = torch.tensor(quad_goal_cost)
 
+    def fit(self, Xtrain, Utrain, XdotError, training_iter=100):
+        Xtrain[..., :2] = 0
+        super().fit(Xtrain, Utrain, XdotError, training_iter=training_iter)
+
+    def f_func_mean(self, Xtest_in):
+        Xtest_in[..., :2] = 0
+        return super().f_func_mean(Xtest_in)
+
+    def f_func_knl(self, Xtest_in, Xtestp_in, grad_check=False):
+        Xtest_in[..., :2] = 0
+        Xtestp_in[..., :2] = 0
+        return super().f_func_knl(Xtest_in, Xtestp_in)
+
+    def fu_func_mean(self, Utest_in, Xtest_in):
+        Xtest_in[..., :2] = 0
+        return super().fu_func_mean(Utest_in, Xtest_in)
+
+    def fu_func_knl(self, Utest_in, Xtest_in, Xtestp_in):
+        Xtest_in[..., :2] = 0
+        Xtestp_in[..., :2] = 0
+        return super().fu_func_knl(Utest_in, Xtest_in, Xtestp_in)
+
+    def covar_fu_f(self, Utest_in, Xtest_in, Xtestp_in):
+        Xtest_in[..., :2] = 0
+        Xtestp_in[..., :2] = 0
+        return super().covar_fu_f(Utest_in, Xtest_in, Xtestp_in)
+
+
+    def f_func(self, Xtest_in):
+        Xtestp_in[..., :2] = 0
+        return super().f_func(Xtest_in)
+
+    def g_func(self, Xtest_in):
+        Xtestp_in[..., :2] = 0
+        return super().g_func(Xtest_in)
+
 
 class UnicycleVisualizer(Visualizer):
     def __init__(self, centers, radii, x_goal):
@@ -266,13 +302,14 @@ def run_unicycle_control_learned(
         x0=[-1.5, -1.5, math.pi/4],
         x_goal=[1., 1., math.pi/4],
         D=1000,
-        controller_class=ControllerUnicycle,
+        controller_class=partial(ControllerUnicycle,
+                                 mean_dynamics_model_class=partial(
+                                     ZeroDynamicsModel, m=2, n=3)),
         visualizer_class=UnicycleVisualizerMatplotlib):
     """
     Run safe unicycle control with learned model
     """
     controller = controller_class(
-        mean_dynamics_model_class=ZeroDynamicsModel,
         obstacle_centers=obstacle_centers,
         obstacle_radii=obstacle_radii,
         x_goal=x_goal)
@@ -286,9 +323,11 @@ def run_unicycle_control_learned(
 
 def run_unicycle_control_unsafe():
     run_unicycle_control_learned(
-        controller_class=UnsafeControllerUnicycle)
+        controller_class=partial(
+            UnsafeControllerUnicycle,
+            mean_dynamics_model_class=UnicycleDynamicsModel))
 
 
 if __name__ == '__main__':
-    run_unicycle_control_unsafe()
-    #run_unicycle_control_learned()
+    #run_unicycle_control_unsafe()
+    run_unicycle_control_learned()

@@ -15,15 +15,19 @@ def plot_2D_f_func(f_func,
                    theta_range = slice(-np.pi, np.pi, np.pi/20),
                    omega_range = slice(-np.pi, np.pi,np.pi/20),
                    axtitle="f(x)[{i}]",
-                   figtitle="Learned vs True"):
+                   figtitle="Learned vs True",
+                   xsample=torch.zeros(2,)):
     # Plot true f(x)
     theta_omega_grid = np.mgrid[theta_range, omega_range]
-    D, N, M = theta_omega_grid.shape
-    FX = f_func(
-        torch.from_numpy(theta_omega_grid.transpose(1, 2, 0).reshape(-1, D)).to(torch.float32)
-    ).reshape(N, M, D)
+    _, N, M = theta_omega_grid.shape
+    D = xsample.shape[-1]
+    Xgrid = torch.empty((N * M, D), dtype=torch.float32)
+    Xgrid[:, :] = torch.from_numpy(xsample)
+    Xgrid[:, :2] = torch.from_numpy(
+        theta_omega_grid.transpose(1, 2, 0).reshape(-1, 2)).to(torch.float32)
+    FX = f_func(Xgrid).reshape(N, M, D)
     axs = axes_gen(FX)
-    for i in range(FX.shape[-1]):
+    for i in range(len(axs)):
         axs[i].clear()
         ctf0 = axs[i].contourf(theta_omega_grid[0, ...], theta_omega_grid[1, ...],
                                FX[:, :, i].detach().cpu().numpy())
@@ -89,10 +93,12 @@ def plot_learned_2D_func(Xtrain, learned_f_func, true_f_func,
                         (Xtrain[:, 1].max() - Xtrain[:, 1].min()) / 20)
     plot_2D_f_func(true_f_func, axes_gen=lambda _: axs[0, :],
                    theta_range=theta_range, omega_range=omega_range,
-                   axtitle="True " + axtitle)
+                   axtitle="True " + axtitle,
+                   xsample=Xtrain[-1, :])
     plot_2D_f_func(learned_f_func, axes_gen=lambda _: axs[1, :],
                    theta_range=theta_range, omega_range=omega_range,
-                   axtitle="Learned " + axtitle)
+                   axtitle="Learned " + axtitle,
+                   xsample=Xtrain[-1, :])
     ax = axs[2,0]
     ax.plot(Xtrain[:, 0], Xtrain[:, 1], marker='*', linestyle='')
     ax.set_ylabel(r"$\omega$")

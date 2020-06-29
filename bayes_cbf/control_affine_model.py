@@ -729,16 +729,7 @@ class ControlAffineRegressor(DynamicsModel):
         mean_fx = mean_fx.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
         return (mean_fx, cov_fx) if return_cov else mean_fx
 
-    def jac_fu_mean(self, Utest_in, Xtest_in):
-        pass
-
-    def grad_fu_knl(self, Utest_in, Xtest_in):
-        pass
-
-    def hessian_fu_knl(self, Utest_in, Xtest_in):
-        pass
-
-    def A_mat(self):
+    def _A_mat(self):
         return self.model.covar_module.task_covar_module.U.covar_matrix.evaluate()
 
     def f_func_mean(self, Xtest_in):
@@ -793,7 +784,7 @@ class ControlAffineRegressor(DynamicsModel):
         mean_f = mean_f.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
         return mean_f
 
-    def grad_fu_func_mean(self, Xtest_in, Utest_in=None):
+    def _grad_fu_func_mean(self, Xtest_in, Utest_in=None):
         Xtest = (Xtest_in.unsqueeze(0)
                  if Xtest_in.ndim == 1
                  else Xtest_in)
@@ -866,7 +857,7 @@ class ControlAffineRegressor(DynamicsModel):
         mean_gx = mean_gx.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
         return mean_gx.transpose(-2, -1)
 
-    def gu_func(self, Xtest_in, Utest_in, return_cov=False, Xtestp_in=None):
+    def _gu_func(self, Xtest_in, Utest_in, return_cov=False, Xtestp_in=None):
         Xtest = (Xtest_in.unsqueeze(0)
                  if Xtest_in.ndim == 1
                  else Xtest_in)
@@ -881,7 +872,7 @@ class ControlAffineRegressor(DynamicsModel):
             var_gu = var_gu.squeeze(0)
         return (mean_gu, var_gu * A) if return_cov else mean_gu
 
-    def cbf_func(self, Xtest, grad_htest, return_cov=False):
+    def _cbf_func(self, Xtest, grad_htest, return_cov=False):
         if return_cov:
             mean_Fx, cov_Fx = self.predict(Xtest, return_cov=True)
             cov_hFT = grad_htest.T @ cov_hFT @ grad_htest

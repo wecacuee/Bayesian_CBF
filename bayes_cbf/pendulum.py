@@ -121,7 +121,7 @@ def sampling_pendulum(dynamics_model, numSteps,
                       plot_every_n_steps=20,
                       axs=None,
                       visualizer=VisualizerZ(),
-                      plotfile='plots/pendulum_data_{i}.pdf'):
+                      plotfile='plots/pendulum_data_{t}.pdf'):
     assert controller is not None, 'Surprise !! Changed interface to make controller a required argument'
     m, g, l = (dynamics_model.mass, dynamics_model.gravity,
                dynamics_model.length)
@@ -145,15 +145,15 @@ def sampling_pendulum(dynamics_model, numSteps,
 
     # begin time-stepping
 
-    for i in range(numSteps):
-        time_vec[i] = tau*i
-        theta_vec[i] = theta
-        omega_vec[i] = omega
-        u= controller(torch.tensor((theta, omega)), i=i)
-        u_vec[i] = u
+    for t in range(numSteps):
+        time_vec[t] = tau*t
+        theta_vec[t] = theta
+        omega_vec[t] = omega
+        u= controller(torch.tensor((theta, omega)), t=t)
+        u_vec[t] = u
 
-        if 0<theta_vec[i]<math.pi/4:
-            damage_vec[i]=1
+        if 0<theta_vec[t]<math.pi/4:
+            damage_vec[t]=1
 
         omega_old = omega
         theta_old = theta
@@ -173,15 +173,15 @@ def sampling_pendulum(dynamics_model, numSteps,
         # record the values
         #record and normalize theta to be in -pi to pi range
         theta = (((theta+math.pi) % (2*math.pi)) - math.pi)
-        if i % plot_every_n_steps == 0:
-            axs = plot_results(np.arange(i+1),
-                               omega_vec[:i+1].detach().cpu().numpy(),
-                               theta_vec[:i+1].detach().cpu().numpy(),
-                               u_vec[:i+1].detach().cpu().numpy(),
+        if t % plot_every_n_steps == 0:
+            axs = plot_results(np.arange(t+1),
+                               omega_vec[:t+1].detach().cpu().numpy(),
+                               theta_vec[:t+1].detach().cpu().numpy(),
+                               u_vec[:t+1].detach().cpu().numpy(),
                                axs=axs)
-            plt_savefig_with_data(axs.flatten()[0].figure, plotfile.format(i=i))
+            plt_savefig_with_data(axs.flatten()[0].figure, plotfile.format(t=t))
             plt.pause(0.001)
-            visualizer.setStateCtrl(Xold[0], u, t=i)
+            visualizer.setStateCtrl(Xold[0], u, t=t)
 
     assert torch.all((theta_vec <= math.pi) & (-math.pi <= theta_vec))
     damge_perc=damage_vec.sum() * 100/numSteps
@@ -280,7 +280,7 @@ def run_pendulum_experiment(#parameters
         visualizer=PendulumVisualizer(length=length,
                                       unsafe_c=controller_object.cbf2.cbf_col_theta,
                                       unsafe_delta=controller_object.cbf2.cbf_col_delta),
-        plotfile=plotfile.format(suffix='_trajectory_{i}'))
+        plotfile=plotfile.format(suffix='_trajectory_{t}'))
     plot_results(time_vec, omega_vec, theta_vec, u_vec)
 
     for i in plt.get_fignums():
@@ -636,7 +636,7 @@ class PendulumCBFCLFDirect(Controller):
                  dtype=torch.get_default_dtype()
     ):
         self.set_model_params(mass=mass, length=length, gravity=gravity)
-        self.constraint_plotter = constraint_plotter_class(plotfile=plotfile.format(suffix='_constraint_{i}'))
+        self.constraint_plotter = constraint_plotter_class(plotfile=plotfile.format(suffix='_constraint_{t}'))
 
     def set_model_params(self, **kwargs):
         self.model = self.pendulum_dynamics_class(m=1, n=2, **kwargs)
@@ -679,7 +679,7 @@ class ControlPendulumCBFLearned(ControlCBFLearned):
                  gamma_sr=1,
                  delta_sr=10,
                  train_every_n_steps=10,
-                 mean_dynamics_model_class=ZeroDynamicsModel,
+                 mean_dynamics_model_class=partial(ZeroDynamicsModel, m=1, n=2),
                  egreedy_scheme=[1, 0.01],
                  iterations=100,
                  dt=0.001,

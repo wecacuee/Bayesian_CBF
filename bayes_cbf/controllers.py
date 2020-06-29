@@ -134,7 +134,7 @@ class ControlCBFLearned(Controller):
     ):
         self.Xtrain = []
         self.Utrain = []
-        self.mean_dynamics_model = mean_dynamics_model_class(m=u_dim, n=x_dim)
+        self.mean_dynamics_model = mean_dynamics_model_class()
         self.axes = [None, None]
         self.constraint_plotter = constraint_plotter_class(
             plotfile=plotfile.format(suffix='_constraints_{i}'))
@@ -152,16 +152,6 @@ class ControlCBFLearned(Controller):
         XdotMean = self.mean_dynamics_model.f_func(Xtrain) + (
             self.mean_dynamics_model.g_func(Xtrain).bmm(Utrain.unsqueeze(-1)).squeeze(-1))
         XdotError = XdotTrain - XdotMean[:-1, :]
-        if  self.x_dim == 2:
-            #self.axes = axs = plot_results(np.arange(Utrain.shape[0]),
-            #                   omega_vec=to_numpy(Xtrain[:, 0]),
-            #                   theta_vec=to_numpy(Xtrain[:, 1]),
-            #                   u_vec=to_numpy(Utrain[:, 0]),
-            #                   axs=self.axes)
-            #plt_savefig_with_data(
-            #    axs[0,0].figure,
-            #    'plots/pendulum_data_{}.pdf'.format(Xtrain.shape[0]))
-            assert torch.all((Xtrain[:, 0] <= math.pi) & (-math.pi <= Xtrain[:, 0]))
         LOG.info("Training model with datasize {}".format(XdotTrain.shape[0]))
         if XdotTrain.shape[0] > self.max_train:
             indices = torch.randint(XdotTrain.shape[0], (self.max_train,))
@@ -172,23 +162,22 @@ class ControlCBFLearned(Controller):
         self.model.fit(*train_data, training_iter=100)
         self._has_been_trained_once = True
 
-        if self.x_dim == 2:
-            self.axes[0] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
-                                    self.model.f_func,
-                                    self.true_model.f_func,
-                                    axtitle="f(x)[{i}]",
-                                    axs=self.axes[0])
-            plt_savefig_with_data(
-                self.axes[0].flatten()[0].figure,
-                'plots/online_f_learned_vs_f_true_%d.pdf' % Xtrain.shape[0])
-            self.axes[1] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
-                                    self.model.g_func,
-                                    self.true_model.g_func,
-                                    axtitle="g(x)[{i}]",
-                                    axs=self.axes[1])
-            plt_savefig_with_data(
-                self.axes[1].flatten()[0].figure,
-                'plots/online_g_learned_vs_g_true_%d.pdf' % Xtrain.shape[0])
+        self.axes[0] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
+                                self.model.f_func,
+                                self.true_model.f_func,
+                                axtitle="f(x)[{i}]",
+                                axs=self.axes[0])
+        plt_savefig_with_data(
+            self.axes[0].flatten()[0].figure,
+            'plots/online_f_learned_vs_f_true_%d.pdf' % Xtrain.shape[0])
+        self.axes[1] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
+                                lambda x: self.model.g_func(x)[..., 0],
+                                lambda x: self.true_model.g_func(x)[..., 0],
+                                axtitle="g(x)[{i}]",
+                                axs=self.axes[1])
+        plt_savefig_with_data(
+            self.axes[1].flatten()[0].figure,
+            'plots/online_g_learned_vs_g_true_%d.pdf' % Xtrain.shape[0])
 
 
     def _socp_objective(self, i, x, u0, convert_out=to_numpy):
@@ -229,15 +218,31 @@ class ControlCBFLearned(Controller):
             val = ( self.ground_truth_cbf2.A(xp) @ up[1:]
                     - self.ground_truth_cbf2.b(xp))
             return val
+
+        def scaled_variance(xp, y_uopt):
+            up = y_uopt[1:]
+            A, bfb, bfc, d = self.cbf2.as_socp(0, xp, up,
+                                               convert_out=lambda x: x)
+            return (A @ y_uopt + bfb).norm(p=2,dim=-1)
+
+        def mean(xp, y_uopt):
+            up = y_uopt[1:]
+            A, bfb, bfc, d = self.cbf2.as_socp(0, xp, up,
+                                               convert_out=lambda x: x)
+            return (bfc @ y_uopt + d)
+
         return [
-            NamedFunc(lambda _, y_u: (bfc @ y_u + d - (A @ y_u +
-                                                       bfb).norm(p=2,dim=-1)) , name)
+            NamedFunc(
+                lambda _, y_u: (bfc @ y_u + d
+                                - (A @ y_u + bfb).norm(p=2,dim=-1)) , name)
             for name, (A, bfb, bfc, d) in self._all_constraints(
                     i, x, y_u0, convert_out=lambda x: x)
         ] + [
             NamedFunc(true_cbc2,
                       r"$ \mathcal{L}_f h(x)^\top F(x) u - [h(x), \mathcal{L}_f h(x)] k_\alpha < 0$"),
             NamedFunc(true_h, r"$-h(x) < 0$"),
+            NamedFunc(scaled_variance, r"$c()\|V(x,x)[1,u]\|$"),
+            NamedFunc(mean, r"$e(x)^\top[1,u]>0$")
         ]
 
     def control(self, xi, t=None):
@@ -256,9 +261,10 @@ class ControlCBFLearned(Controller):
                 np.hstack([[1.], np.zeros_like(u0)]),
                 self._socp_constraints(t, xi, u0, convert_out=to_numpy))
             y_uopt = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
-            self.constraint_plotter.plot_constraints(
-                self._plottables(t, xi, u0),
-                xi, y_uopt)
+            if len(self.Xtrain) > 20:
+                self.constraint_plotter.plot_constraints(
+                    self._plottables(t, xi, u0),
+                    xi, y_uopt)
             uopt = y_uopt[1:]
         else:
             uopt = u0
@@ -274,7 +280,7 @@ class ControlCBFLearned(Controller):
         with torch.no_grad():
             x_g = self.x_goal
             P = self.x_quad_goal_cost
-            R = torch.eye(self.u_dim)
+            R = torch.eye(self.u_dim) * self.dt
             λ = 0.5
             fx = (self.dt * self.model.f_func(x)
                 + self.dt * self.mean_dynamics_model.f_func(x))
@@ -299,10 +305,11 @@ class ControlCBFLearned(Controller):
     def epsilon_greedy_unsafe_control(self, i, x, min_=-5., max_=5.):
         eps = epsilon(i, interpolate={0: self.egreedy_scheme[0],
                                       self.numSteps: self.egreedy_scheme[1]})
+        u0 = self.unsafe_control(x)
         randomact = torch.rand(self.u_dim) * (max_ - min_) + min_
-        uegreedy = (randomact
+        uegreedy = (u0 + randomact
                 if (random.random() < eps)
-                else self.unsafe_control(x))
+                    else u0)
         return torch.max(torch.min(uegreedy, max_), min_)
 
 class NamedAffineFunc(ABC):

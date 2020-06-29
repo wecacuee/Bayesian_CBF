@@ -74,7 +74,7 @@ class ObstacleCBF(RelDeg1Safety, NamedAffineFunc):
     ∇h(x)ᵀf(x) + ∇h(x)ᵀg(x)u + γ_c h(x) > 0
     """
     @partial(store_args, skip=["model"])
-    def __init__(self, model, center, radius, γ_c=1.0, name="obstacle_cbf",
+    def __init__(self, model, center, radius, γ_c=1e-3, name="obstacle_cbf",
                  dtype=torch.get_default_dtype(),
                  max_unsafe_prob=0.01):
         self._model = model
@@ -225,15 +225,16 @@ BBox = namedtuple('BBox', 'XMIN YMIN XMAX YMAX'.split())
 class UnicycleVisualizerMatplotlib(Visualizer):
     @store_args
     def __init__(self, robotsize, obstacle_centers, obstacle_radii, x_goal):
-        self.fig, self.axes = plt.subplots(1,1)
+        self.fig, self.axes = plt.subplots(2,2)
         self._bbox = BBox(-2.0, -2.0, 2.0, 2.0)
         self._latest_robot = None
         self._latest_history = None
-        self._history_pos = []
-        self._init_drawing()
+        self._history_state = []
+        self._history_ctrl = []
+        self._init_drawing(self.axes[0,0])
 
-    def _init_drawing(self):
-        self._add_obstacles(self.obstacle_centers, self.obstacle_radii)
+    def _init_drawing(self, ax):
+        self._add_obstacles(ax, self.obstacle_centers, self.obstacle_radii)
         obs_bbox = BBox(
             min((c[0]-r) for c, r in zip(self.obstacle_centers, self.obstacle_radii)),
             min((c[1]-r) for c, r in zip(self.obstacle_centers, self.obstacle_radii)),
@@ -243,48 +244,58 @@ class UnicycleVisualizerMatplotlib(Visualizer):
                           min(obs_bbox.YMIN, self._bbox.YMIN),
                           max(obs_bbox.XMAX, self._bbox.XMAX),
                           max(obs_bbox.YMAX, self._bbox.YMAX))
-        self.axes.set_xlim(self._bbox.XMIN, self._bbox.XMAX)
-        self.axes.set_ylim(self._bbox.YMIN, self._bbox.YMAX)
-        self.axes.set_aspect('equal')
-        self._add_goal(self.x_goal, markersize=1)
+        ax.set_xlim(self._bbox.XMIN, self._bbox.XMAX)
+        ax.set_ylim(self._bbox.YMIN, self._bbox.YMAX)
+        ax.set_aspect('equal')
+        self._add_goal(ax, self.x_goal, markersize=1)
 
 
-    def _add_obstacles(self, centers, radii):
+    def _add_obstacles(self, ax, centers, radii):
         for c, r in zip(centers, radii):
             circle = Circle(c, radius=r, fill=True, color='r')
-            self.axes.add_patch(circle)
+            ax.add_patch(circle)
 
-    def _add_goal(self, pos, markersize, color='g'):
-        self.axes.plot(pos[0], pos[1], '*', markersize=1, color=color)
+    def _add_goal(self, ax, pos, markersize, color='g'):
+        ax.plot(pos[0], pos[1], '*', markersize=1, color=color)
 
-    def _add_robot(self, pos, theta, robotsize):
+    def _add_robot(self, ax, pos, theta, robotsize):
         if self._latest_robot is not None:
             self._latest_robot.remove()
         dx = pos[0] + math.cos(theta)* robotsize
         dy = pos[1] + math.sin(theta)* robotsize
 
         arrow = FancyArrowPatch(pos, (dx, dy), mutation_scale=10)
-        self._latest_robot = self.axes.add_patch(arrow)
+        self._latest_robot = ax.add_patch(arrow)
         self._bbox = BBox(min(pos[0], self._bbox.XMIN),
                           min(pos[1], self._bbox.YMIN),
                           max(pos[0], self._bbox.XMAX),
                           max(pos[1], self._bbox.YMAX))
-        self.axes.set_xlim(self._bbox.XMIN, self._bbox.XMAX)
-        self.axes.set_ylim(self._bbox.YMIN, self._bbox.YMAX)
+        ax.set_xlim(self._bbox.XMIN, self._bbox.XMAX)
+        ax.set_ylim(self._bbox.YMIN, self._bbox.YMAX)
 
-    def _add_history_pos(self):
+    def _add_history_state(self, ax):
         if self._latest_history is not None:
             for line in self._latest_history:
                 line.remove()
 
-        if len(self._history_pos):
-            hpos = np.asarray(self._history_pos)
-            self._latest_history = self.axes.plot(hpos[:, 0], hpos[:, 1], '-')
+        if len(self._history_state):
+            hpos = np.asarray(self._history_state)
+            self._latest_history = ax.plot(hpos[:, 0], hpos[:, 1], '-')
+
+    def _plot_state_ctrl_history(self, axs):
+        hctrl = np.array(self._history_ctrl)
+        for i in range(hctrl.shape[-1]):
+            ctrlax = axs[i]
+            ctrlax.clear()
+            ctrlax.set_title("u[{i}]".format(i=i))
+            ctrlax.plot(hctrl[:, i])
 
     def setStateCtrl(self, x, u, t=0):
-        self._add_robot(x[:2], x[2], self.robotsize)
-        # self._add_history_pos()
-        # self._history_pos.append(to_numpy(x[:2]))
+        self._add_robot(self.axes[0,0], x[:2], x[2], self.robotsize)
+        self._add_history_state(self.axes[0,0])
+        self._plot_state_ctrl_history(self.axes.flatten()[1:])
+        self._history_state.append(to_numpy(x))
+        self._history_ctrl.append(to_numpy(u))
         plt.draw()
         plt.pause(0.01)
 
@@ -299,7 +310,7 @@ def run_unicycle_control_learned(
         robotsize=0.2,
         obstacle_centers=[(0., 0.)],
         obstacle_radii=[0.5],
-        x0=[-1.5, -1.5, math.pi/4],
+        x0=[-10.5, -10.5, math.pi/4],
         x_goal=[1., 1., math.pi/4],
         D=1000,
         controller_class=partial(ControllerUnicycle,

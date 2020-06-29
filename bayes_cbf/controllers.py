@@ -265,6 +265,7 @@ class ControlCBFLearned(Controller):
                 self.constraint_plotter.plot_constraints(
                     self._plottables(t, xi, u0),
                     xi, y_uopt)
+            #uopt = y_uopt[1:]
             uopt = y_uopt[1:]
         else:
             uopt = u0
@@ -310,7 +311,7 @@ class ControlCBFLearned(Controller):
         uegreedy = (u0 + randomact
                 if (random.random() < eps)
                     else u0)
-        return torch.max(torch.min(uegreedy, max_), min_)
+        return uegreedy # torch.max(torch.min(uegreedy, max_), min_)
 
 class NamedAffineFunc(ABC):
     @property

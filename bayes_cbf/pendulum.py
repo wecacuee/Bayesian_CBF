@@ -763,39 +763,6 @@ class ControlPendulumCBFLearned(ControlCBFLearned):
         print("f(x; u)[1] ∈ [{}, {}]".format(fxutrue[:, 1].min(),
                                                fxutrue[:, 1].max()))
 
-    def unsafe_control(self, x):
-        with torch.no_grad():
-            x_g = self.x_goal
-            P = self.x_quad_goal_cost
-            R = torch.eye(self.u_dim)
-            λ = 0.5
-            fx = (self.dt * self.model.f_func(x)
-                + self.dt * self.mean_dynamics_model.f_func(x))
-            Gx = (self.dt * self.model.g_func(x.unsqueeze(0)).squeeze(0)
-                + self.dt * self.mean_dynamics_model.g_func(x))
-            # xp = x + fx + Gx @ u
-            # (1-λ) (x + fx + Gx @ u - x_g)ᵀ P (x_g - (x + fx + Gx @ u)) + λ uᵀ R u
-            # Quadratic term: uᵀ (λ R + (1-λ)GₓᵀPGₓ) u
-            # Linear term   : - (2(1-λ)GₓP(x_g - x - fx)  )ᵀ u
-            # Constant term : + (1-λ)(x_g-fx)ᵀP(x_g- x - fx)
-            # Minima at u* = ((λ R + (1-λ)GₓᵀPGₓ))⁻¹ ((1-λ)GₓP(x_g - x - fx)  )
-
-
-            # Quadratic term λ R + (1-λ)Gₓᵀ P Gₓ
-            Q = λ * R + (1-λ) * Gx.T @ P @ Gx
-            # Linear term - (2λRu₀ + 2(1-λ)Gₓ P(x_g - fx)  )ᵀ u
-            c = (λ * R + (1-λ) * Gx.T @ P @ (x_g - x - fx))
-            return torch.solve(c, Q).solution.reshape(-1)
-
-    def epsilon_greedy_unsafe_control(self, i, x, min_=-5., max_=5.):
-        eps = epsilon(i, interpolate={0: self.egreedy_scheme[0],
-                                      self.numSteps: self.egreedy_scheme[1]})
-        return ((torch.rand(self.u_dim) * (max_ - min_) + min_)
-                if (random.random() < eps)
-                else self.unsafe_control(x))
-
-
-
 run_pendulum_control_trival = partial(
     run_pendulum_experiment, controller_class=ControlTrivial,
     plotfile='plots/run_pendulum_control_trival{suffix}.pdf')

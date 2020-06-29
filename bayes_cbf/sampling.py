@@ -39,11 +39,11 @@ def sample_generator_trajectory(dynamics_model, D, dt=0.01, x0=None,
     X[0, :] = torch.rand(n) if x0 is None else (torch.tensor(x0) if not isinstance(x0, torch.Tensor) else x0)
     Xdot = torch.zeros((D, n))
     # Single trajectory
-    for i in range(D):
-        U[i, :] = controller(X[i, :], m)
-        visualizer.setStateCtrl(X[i, :], U[i, :], t=i)
-        Xdot[i, :] = f(X[i, :]) + g(X[i, :]) @ U[i, :]
-        X[i+1, :] = normalize_state(X[i, :] + Xdot[i, :] * dt)
+    for t in range(D):
+        U[t, :] = controller(X[t, :], t=m)
+        visualizer.setStateCtrl(X[t, :], U[t, :], t=t)
+        Xdot[t, :] = f(X[t, :]) + g(X[t, :]) @ U[t, :]
+        X[t+1, :] = normalize_state(X[t, :] + Xdot[t, :] * dt)
     return Xdot, X, U
 
 

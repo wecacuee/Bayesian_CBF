@@ -11,7 +11,7 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
-from bayes_cbf.misc import store_args, ZeroDynamicsModel
+from bayes_cbf.misc import store_args, ZeroDynamicsModel, epsilon
 from bayes_cbf.plotting import plot_results, plot_learned_2D_func, plt_savefig_with_data
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp
 
@@ -78,7 +78,7 @@ class Controller(ABC):
     """
     needs_ground_truth = False
     @abstractmethod
-    def control(self, xi, i=None):
+    def control(self, xi, t=None):
         pass
 
 class ConstraintPlotter:
@@ -89,7 +89,7 @@ class ConstraintPlotter:
                  plotfile='plots/constraint_hists_{i}.pdf'):
         pass
 
-    def plot_constraints(self, funcs, x, u, i=None):
+    def plot_constraints(self, funcs, x, u, t=None):
         axs = self.axes
         nfuncs = len(funcs)
         if axs is None:
@@ -139,6 +139,7 @@ class ControlCBFLearned(Controller):
         self.constraint_plotter = constraint_plotter_class(
             plotfile=plotfile.format(suffix='_constraints_{i}'))
         self._has_been_trained_once = False
+        self.ctrl_range = torch.tensor(ctrl_range)
 
 
     def train(self):
@@ -236,27 +237,27 @@ class ControlCBFLearned(Controller):
         ] + [
             NamedFunc(true_cbc2,
                       r"$ \mathcal{L}_f h(x)^\top F(x) u - [h(x), \mathcal{L}_f h(x)] k_\alpha < 0$"),
-            NamedFunc(true_h, r"$-h(x) < 0$")
+            NamedFunc(true_h, r"$-h(x) < 0$"),
         ]
 
-    def control(self, xi, i=None):
+    def control(self, xi, t=None):
         if (len(self.Xtrain) % int(self.train_every_n_steps) == 0):
             # train every n steps
             LOG.info("Training GP with dataset size {}".format(len(self.Xtrain)))
             self.train()
 
         tic = time.time()
-        u0 = self.epsilon_greedy_unsafe_control(i, xi,
+        u0 = self.epsilon_greedy_unsafe_control(t, xi,
                                                 min_=self.ctrl_range[0],
                                                 max_=self.ctrl_range[1])
         if self._has_been_trained_once:
             y_uopt = controller_socp_cvxopt(
                 np.hstack([[1.], u0.detach().numpy()]),
                 np.hstack([[1.], np.zeros_like(u0)]),
-                self._socp_constraints(i, xi, u0, convert_out=to_numpy))
+                self._socp_constraints(t, xi, u0, convert_out=to_numpy))
             y_uopt = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
             self.constraint_plotter.plot_constraints(
-                self._plottables(i, xi, u0),
+                self._plottables(t, xi, u0),
                 xi, y_uopt)
             uopt = y_uopt[1:]
         else:
@@ -268,6 +269,41 @@ class ControlCBFLearned(Controller):
         assert len(self.Xtrain) == len(self.Utrain)
         print("Controller took {:.4f} sec".format(time.time()- tic))
         return uopt
+
+    def unsafe_control(self, x):
+        with torch.no_grad():
+            x_g = self.x_goal
+            P = self.x_quad_goal_cost
+            R = torch.eye(self.u_dim)
+            λ = 0.5
+            fx = (self.dt * self.model.f_func(x)
+                + self.dt * self.mean_dynamics_model.f_func(x))
+            Gx = (self.dt * self.model.g_func(x.unsqueeze(0)).squeeze(0)
+                + self.dt * self.mean_dynamics_model.g_func(x))
+            # xp = x + fx + Gx @ u
+            # (1-λ) (x + fx + Gx @ u - x_g)ᵀ P (x_g - (x + fx + Gx @ u)) + λ uᵀ R u
+            # Quadratic term: uᵀ (λ R + (1-λ)GₓᵀPGₓ) u
+            # Linear term   : - (2(1-λ)GₓP(x_g - x - fx)  )ᵀ u
+            # Constant term : + (1-λ)(x_g-fx)ᵀP(x_g- x - fx)
+            # Minima at u* = ((λ R + (1-λ)GₓᵀPGₓ))⁻¹ ((1-λ)GₓP(x_g - x - fx)  )
+
+
+            # Quadratic term λ R + (1-λ)Gₓᵀ P Gₓ
+            Q = λ * R + (1-λ) * Gx.T @ P @ Gx
+            # Linear term - ((1-λ)Gₓ P(x_g - x - fx)  )ᵀ u
+            c = (1-λ) * Gx.T @ P @ (x_g - x - fx)
+            ugreedy = torch.solve(c.unsqueeze(-1), Q).solution.reshape(-1)
+            assert ugreedy.shape[-1] == self.u_dim
+            return ugreedy
+
+    def epsilon_greedy_unsafe_control(self, i, x, min_=-5., max_=5.):
+        eps = epsilon(i, interpolate={0: self.egreedy_scheme[0],
+                                      self.numSteps: self.egreedy_scheme[1]})
+        randomact = torch.rand(self.u_dim) * (max_ - min_) + min_
+        uegreedy = (randomact
+                if (random.random() < eps)
+                else self.unsafe_control(x))
+        return torch.max(torch.min(uegreedy, max_), min_)
 
 class NamedAffineFunc(ABC):
     @property

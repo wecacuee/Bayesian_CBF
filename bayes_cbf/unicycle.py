@@ -1,9 +1,11 @@
 import random
 import math
 from functools import partial
+from collections import namedtuple
 
 from scipy.special import erfinv
 import torch
+import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, FancyArrowPatch
 
@@ -140,8 +142,8 @@ class ControllerUnicycle(ControlCBFLearned):
                  obstacle_centers=[(0, 0)],
                  obstacle_radii=[0.5],
                  numSteps=1000,
-                 ctrl_range=torch.tensor([[-1, math.pi/10],
-                                          [1, math.pi/10]])
+                 ctrl_range=[[-10, math.pi],
+                             [10, math.pi]]
     ):
         super().__init__(x_dim=x_dim,
                          u_dim=u_dim,
@@ -165,44 +167,9 @@ class ControllerUnicycle(ControlCBFLearned):
         self.x_goal = torch.tensor(x_goal)
         self.x_quad_goal_cost = torch.tensor(quad_goal_cost)
 
-    def unsafe_control(self, x):
-        with torch.no_grad():
-            x_g = self.x_goal
-            P = self.x_quad_goal_cost
-            R = torch.eye(self.u_dim)
-            λ = 0.5
-            fx = (self.dt * self.model.f_func(x)
-                + self.dt * self.mean_dynamics_model.f_func(x))
-            Gx = (self.dt * self.model.g_func(x.unsqueeze(0)).squeeze(0)
-                + self.dt * self.mean_dynamics_model.g_func(x))
-            # xp = x + fx + Gx @ u
-            # (1-λ) (x + fx + Gx @ u - x_g)ᵀ P (x_g - (x + fx + Gx @ u)) + λ uᵀ R u
-            # Quadratic term: uᵀ (λ R + (1-λ)GₓᵀPGₓ) u
-            # Linear term   : - (2(1-λ)GₓP(x_g - x - fx)  )ᵀ u
-            # Constant term : + (1-λ)(x_g-fx)ᵀP(x_g- x - fx)
-            # Minima at u* = ((λ R + (1-λ)GₓᵀPGₓ))⁻¹ ((1-λ)GₓP(x_g - x - fx)  )
-
-
-            # Quadratic term λ R + (1-λ)Gₓᵀ P Gₓ
-            Q = λ * R + (1-λ) * Gx.T @ P @ Gx
-            # Linear term - ((1-λ)Gₓ P(x_g - x - fx)  )ᵀ u
-            c = (1-λ) * Gx.T @ P @ (x_g - x - fx)
-            ugreedy = torch.solve(c.unsqueeze(-1), Q).solution.reshape(-1)
-            assert ugreedy.shape[-1] == self.u_dim
-            return ugreedy
-
-    def epsilon_greedy_unsafe_control(self, i, x, min_=-5., max_=5.):
-        eps = epsilon(i, interpolate={0: self.egreedy_scheme[0],
-                                      self.numSteps: self.egreedy_scheme[1]})
-        randomact = torch.rand(self.u_dim) * (max_ - min_) + min_
-        uegreedy = (randomact
-                if (random.random() < eps)
-                else self.unsafe_control(x))
-        return torch.max(torch.min(uegreedy, max_), min_)
-
 
 class UnicycleVisualizer(Visualizer):
-    def __init__(self, centers, radii):
+    def __init__(self, centers, radii, x_goal):
         super().__init__()
         self.carworld = CarWithObstacles()
         for c, r in zip(centers, radii):
@@ -215,24 +182,35 @@ class UnicycleVisualizer(Visualizer):
         self.carworld.setCarPose(x_, y_, theta_)
         self.carworld.show()
 
+
+BBox = namedtuple('BBox', 'XMIN YMIN XMAX YMAX'.split())
+
+
 class UnicycleVisualizerMatplotlib(Visualizer):
-    XMIN, YMIN, XMAX, YMAX = range(4)
     @store_args
-    def __init__(self, robotsize, obstacle_centers, obstacle_radii):
+    def __init__(self, robotsize, obstacle_centers, obstacle_radii, x_goal):
         self.fig, self.axes = plt.subplots(1,1)
-        self._range = [-1, -1, 1, 1]
+        self._bbox = BBox(-2.0, -2.0, 2.0, 2.0)
+        self._latest_robot = None
+        self._latest_history = None
+        self._history_pos = []
         self._init_drawing()
 
     def _init_drawing(self):
         self._add_obstacles(self.obstacle_centers, self.obstacle_radii)
-        self._range = [
+        obs_bbox = BBox(
             min((c[0]-r) for c, r in zip(self.obstacle_centers, self.obstacle_radii)),
             min((c[1]-r) for c, r in zip(self.obstacle_centers, self.obstacle_radii)),
             max((c[0]+r) for c, r in zip(self.obstacle_centers, self.obstacle_radii)),
-            max((c[1]+r) for c, r in zip(self.obstacle_centers, self.obstacle_radii))]
-        self.axes.set_xlim(self._range[self.XMIN], self._range[self.XMAX])
-        self.axes.set_ylim(self._range[self.YMIN], self._range[self.YMAX])
+            max((c[1]+r) for c, r in zip(self.obstacle_centers, self.obstacle_radii)))
+        self._bbox = BBox(min(obs_bbox.XMIN, self._bbox.XMIN),
+                          min(obs_bbox.YMIN, self._bbox.YMIN),
+                          max(obs_bbox.XMAX, self._bbox.XMAX),
+                          max(obs_bbox.YMAX, self._bbox.YMAX))
+        self.axes.set_xlim(self._bbox.XMIN, self._bbox.XMAX)
+        self.axes.set_ylim(self._bbox.YMIN, self._bbox.YMAX)
         self.axes.set_aspect('equal')
+        self._add_goal(self.x_goal, markersize=1)
 
 
     def _add_obstacles(self, centers, radii):
@@ -240,44 +218,77 @@ class UnicycleVisualizerMatplotlib(Visualizer):
             circle = Circle(c, radius=r, fill=True, color='r')
             self.axes.add_patch(circle)
 
+    def _add_goal(self, pos, markersize, color='g'):
+        self.axes.plot(pos[0], pos[1], '*', markersize=1, color=color)
+
     def _add_robot(self, pos, theta, robotsize):
+        if self._latest_robot is not None:
+            self._latest_robot.remove()
         dx = pos[0] + math.cos(theta)* robotsize
         dy = pos[1] + math.sin(theta)* robotsize
 
         arrow = FancyArrowPatch(pos, (dx, dy), mutation_scale=10)
-        self.axes.add_patch(arrow)
-        self._range[self.XMIN] = min(pos[0], self._range[self.XMIN])
-        self._range[self.XMAX] = max(pos[0], self._range[self.XMAX])
-        self._range[self.YMIN] = min(pos[1], self._range[self.YMIN])
-        self._range[self.YMAX] = max(pos[1], self._range[self.YMAX])
-        self.axes.set_xlim(self._range[self.XMIN], self._range[self.XMAX])
-        self.axes.set_ylim(self._range[self.YMIN], self._range[self.YMAX])
+        self._latest_robot = self.axes.add_patch(arrow)
+        self._bbox = BBox(min(pos[0], self._bbox.XMIN),
+                          min(pos[1], self._bbox.YMIN),
+                          max(pos[0], self._bbox.XMAX),
+                          max(pos[1], self._bbox.YMAX))
+        self.axes.set_xlim(self._bbox.XMIN, self._bbox.XMAX)
+        self.axes.set_ylim(self._bbox.YMIN, self._bbox.YMAX)
+
+    def _add_history_pos(self):
+        if self._latest_history is not None:
+            for line in self._latest_history:
+                line.remove()
+
+        if len(self._history_pos):
+            hpos = np.asarray(self._history_pos)
+            self._latest_history = self.axes.plot(hpos[:, 0], hpos[:, 1], '-')
 
     def setStateCtrl(self, x, u, t=0):
         self._add_robot(x[:2], x[2], self.robotsize)
+        # self._add_history_pos()
+        # self._history_pos.append(to_numpy(x[:2]))
         plt.draw()
-        plt.pause(0.001)
+        plt.pause(0.01)
 
+
+class UnsafeControllerUnicycle(ControllerUnicycle):
+    def control(self, xi, t=None):
+        ui = self.unsafe_control(xi)
+        print("unsafe control on {xi} is {ui}".format(xi=xi, ui=ui))
+        return ui
 
 def run_unicycle_control_learned(
-        robotsize=2.0,
+        robotsize=0.2,
         obstacle_centers=[(0., 0.)],
-        obstacle_radii=[2.0],
-        x0=[-10., -10., math.pi/4],
-        D=1000):
+        obstacle_radii=[0.5],
+        x0=[-1.5, -1.5, math.pi/4],
+        x_goal=[1., 1., math.pi/4],
+        D=1000,
+        controller_class=ControllerUnicycle,
+        visualizer_class=UnicycleVisualizerMatplotlib):
     """
     Run safe unicycle control with learned model
     """
-
-    controller = ControllerUnicycle(mean_dynamics_model_class=ZeroDynamicsModel,
-                                    obstacle_centers=obstacle_centers,
-                                    obstacle_radii=obstacle_radii)
+    controller = controller_class(
+        mean_dynamics_model_class=ZeroDynamicsModel,
+        obstacle_centers=obstacle_centers,
+        obstacle_radii=obstacle_radii,
+        x_goal=x_goal)
     return sample_generator_trajectory(
         dynamics_model=UnicycleDynamicsModel(),
         D=D,
         controller=controller.control,
-        visualizer=UnicycleVisualizerMatplotlib(robotsize, obstacle_centers, obstacle_radii),
+        visualizer=visualizer_class(robotsize, obstacle_centers,
+                                    obstacle_radii, x_goal),
         x0=x0)
 
+def run_unicycle_control_unsafe():
+    run_unicycle_control_learned(
+        controller_class=UnsafeControllerUnicycle)
+
+
 if __name__ == '__main__':
-    run_unicycle_control_learned()
+    run_unicycle_control_unsafe()
+    #run_unicycle_control_learned()

@@ -11,9 +11,10 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
-from bayes_cbf.misc import store_args, ZeroDynamicsModel, epsilon
+from bayes_cbf.misc import (store_args, ZeroDynamicsModel, epsilon, t_jac,
+                            variable_required_grad, SumDynamicModels)
 from bayes_cbf.plotting import plot_results, plot_learned_2D_func, plt_savefig_with_data
-from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp
+from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, cbc2_safety_factor
 
 
 class NamedFunc:
@@ -23,6 +24,10 @@ class NamedFunc:
 
     def __call__(self, *args, **kwargs):
         return self.func(*args, **kwargs)
+
+def identity(x):
+    return x
+
 def to_numpy(x):
     return x.detach().double().cpu().numpy() if isinstance(x, torch.Tensor) else x
 
@@ -81,6 +86,88 @@ class Controller(ABC):
     def control(self, xi, t=None):
         pass
 
+
+class LQRController(Controller):
+    def __init__(self, x_goal, model, Q, R, numSteps, dt):
+        self.x_goal = x_goal
+        self.model = model
+        self.Q = to_numpy(Q)
+        self.R = to_numpy(R)
+        self.numSteps = numSteps
+        self.dt = dt
+
+    def control(self, x, t=None):
+        from bdlqr.lqr import LinearSystem
+        with variable_required_grad(x) as xp:
+            A = t_jac(self.model.f_func(xp), xp)
+        B = self.model.g_func(x)
+        Q = self.Q
+        R = self.R
+        sys = LinearSystem(A=(np.eye(A.shape[-1]) + to_numpy(A) * self.dt),
+                           B=to_numpy(B) * self.dt,
+                           Q=Q,
+                           s=np.zeros(Q.shape[-1]),
+                           R=R,
+                           z=np.zeros(R.shape[-1]),
+                           Q_T=self.numSteps*Q,
+                           s_T=np.zeros(Q.shape[-1]),
+                           T=self.numSteps
+        )
+        xs, us = sys.solve(x, 1)
+
+        with variable_required_grad(x) as xp:
+            A = t_jac(self.model.f_func(xp)
+                      + self.model.g_func(xp) @ torch.tensor(us[0], dtype=xp.dtype),
+                      xp)
+        sys = LinearSystem(A=(np.eye(A.shape[-1]) + to_numpy(A) * self.dt),
+                           B=to_numpy(B) * self.dt,
+                           Q=Q,
+                           s=np.zeros(Q.shape[-1]),
+                           R=R,
+                           z=np.zeros(R.shape[-1]),
+                           Q_T=self.numSteps*Q,
+                           s_T=np.zeros(Q.shape[-1]),
+                           T=self.numSteps
+        )
+        xs, us = sys.solve(x, 1)
+
+        return torch.tensor(us[0], dtype=xp.dtype)
+
+
+class GreedyController(Controller):
+    def __init__(self, x_goal, model, Q, R, numSteps, dt):
+        self.x_goal = x_goal
+        self.model = model
+        self.Q = Q
+        self.R = R
+        self.numSteps = numSteps
+        self.dt = dt
+
+    def control(self, x, t=None):
+        u_dim = self.R.shape[-1]
+        with torch.no_grad():
+            x_g = self.x_goal
+            P = self.Q
+            R = self.R * self.dt
+            λ = 0.5
+            fx = (self.dt * self.model.f_func(x))
+            Gx = (self.dt * self.model.g_func(x.unsqueeze(0)).squeeze(0))
+            # xp = x + fx + Gx @ u
+            # (1-λ) (x + fx + Gx @ u - x_g)ᵀ P (x_g - (x + fx + Gx @ u)) + λ uᵀ R u
+            # Quadratic term: uᵀ (λ R + (1-λ)GₓᵀPGₓ) u
+            # Linear term   : - (2(1-λ)GₓP(x_g - x - fx)  )ᵀ u
+            # Constant term : + (1-λ)(x_g-fx)ᵀP(x_g- x - fx)
+            # Minima at u* = ((λ R + (1-λ)GₓᵀPGₓ))⁻¹ ((1-λ)GₓP(x_g - x - fx)  )
+
+
+            # Quadratic term λ R + (1-λ)Gₓᵀ P Gₓ
+            Q = λ * R + (1-λ) * Gx.T @ P @ Gx
+            # Linear term - ((1-λ)Gₓ P(x_g - x - fx)  )ᵀ u
+            c = (1-λ) * Gx.T @ P @ (x_g - x - fx)
+            ugreedy = torch.solve(c.unsqueeze(-1), Q).solution.reshape(-1)
+            assert ugreedy.shape[-1] == u_dim
+            return ugreedy
+
 class ConstraintPlotter:
     @store_args
     def __init__(self,
@@ -94,7 +181,9 @@ class ConstraintPlotter:
         nfuncs = len(funcs)
         if axs is None:
             nplots = nfuncs
-            shape = ((math.ceil(nplots / 2), 2) if nplots >= 2 else (nplots,))
+            nrows = math.ceil(math.sqrt(nplots))
+            ncols = math.ceil(nplots / nrows)
+            shape = (nrows, ncols)
             fig, axs = plt.subplots(*shape)
             fig.subplots_adjust(wspace=0.35, hspace=0.5)
             axs = self.axes = axs.flatten() if hasattr(axs, "flatten") else np.array([axs])
@@ -125,12 +214,18 @@ class ControlCBFLearned(Controller):
     def __init__(self,
                  x_dim=2,
                  u_dim=1,
+                 model=None,
                  train_every_n_steps=10,
                  mean_dynamics_model_class=ZeroDynamicsModel,
                  dt=0.001,
                  constraint_plotter_class=ConstraintPlotter,
                  plotfile='plots/ctrl_cbf_learned_{suffix}.pdf',
                  ctrl_range=[-5., 5.],
+                 x_goal=None,
+                 x_quad_goal_cost=None,
+                 u_quad_cost=None,
+                 numSteps=1000,
+                 unsafe_controller_class=GreedyController,
     ):
         self.Xtrain = []
         self.Utrain = []
@@ -140,6 +235,14 @@ class ControlCBFLearned(Controller):
             plotfile=plotfile.format(suffix='_constraints_{i}'))
         self._has_been_trained_once = False
         self.ctrl_range = torch.tensor(ctrl_range)
+        self.x_goal = torch.tensor(x_goal)
+        self.x_quad_goal_cost = torch.tensor(x_quad_goal_cost)
+        self.u_quad_cost = torch.tensor(u_quad_cost)
+        self.net_model = SumDynamicModels(self.model, self.mean_dynamics_model)
+        self.unsafe_controller = unsafe_controller_class(
+            self.x_goal, self.net_model, self.x_quad_goal_cost,
+            self.u_quad_cost, numSteps, dt
+        )
 
 
     def train(self):
@@ -180,69 +283,130 @@ class ControlCBFLearned(Controller):
             'plots/online_g_learned_vs_g_true_%d.pdf' % Xtrain.shape[0])
 
 
-    def _socp_objective(self, i, x, u0, convert_out=to_numpy):
-        # s.t. ||[0, Q][y; u] - Q u_0||_2 <= [1, 0] [y; u] + 0
-        # s.t. ||R[y; u] + h||_2 <= a' [y; u] + b
+    def _socp_objective(self, i, x, u0, yidx=0, convert_out=to_numpy):
+        # s.t. ||[0, Q][y_1; y_2; u] - Q u_0||_2 <= [1, 0, 0] [y_1; y_2; u] + 0
+        # s.t. ||R[y_1; y_2; u] + h||_2 <= a' [y_1; y_2; u] + b
         Q = torch.eye(self.u_dim)
-        R = torch.zeros(self.u_dim, self.u_dim + 1)
+        R = torch.zeros(self.u_dim, self.u_dim + 2)
         h = torch.zeros(self.u_dim)
         with torch.no_grad():
-            R[:, :1] = 0
-            R[:, 1:] = Q
+            R[:, :2] = 0
+            R[:, 2:] = Q
             h = - Q @ u0
-        a = torch.zeros((self.u_dim + 1,))
-        a[0] = 1
+        a = torch.zeros((self.u_dim + 2,))
+        a[yidx] = 1
         b = torch.tensor(0.)
-        # s.t. ||R[y, u] + h||_2 <= a' [y, u] + b
+        # s.t. ||R[y_1; y_2; u] + h||_2 <= a' [y_1; y_2; u] + b
         return list(map(convert_out, (R, h, a, b)))
 
-    def _socp_constraints(self, *args, **kw):
-        return [(r"$y - \|R u\|>0$", self._socp_objective(*args, **kw)),
-                (r"$\mathbf{e}(x)^\top u - \zeta - \frac{\rho}{1-\rho}\|V(x, x')u\|>0$", self.cbf2.as_socp(*args, **kw))]
+    def _socp_safety(self, cbc2, x, u0,
+                     safety_factor=None,
+                     convert_out=to_numpy):
+        """
+        Var(CBC2) = Au² + b' u + c
+        E(CBC2) = e' u + e
+        """
+        factor = safety_factor
+        m = u0.shape[-1]
 
+        (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(cbc2, x, u0)
+        with torch.no_grad():
+            # [1, u] Asq [1; u]
+            Asq = torch.cat(
+                (
+                    torch.cat((torch.tensor([[v]]),         (bfv / 2).reshape(1, -1)), dim=-1),
+                    torch.cat(((bfv / 2).reshape(-1, 1),    V), dim=-1)
+                ),
+                dim=-2)
 
-    def _all_constraints(self, i, x, u0, convert_out=to_numpy):
+            # [1, u] Asq [1; u] = |L[1; u]|_2 = |[0, A] [y_1; y_2; u] + b|_2
+            A = torch.zeros((m + 1, m + 2))
+            try:
+                L = torch.cholesky(Asq) # (m+1) x (m+1)
+            except RuntimeError as err:
+                if "cholesky" in str(err) and "singular" in str(err):
+                    diag_e, V = torch.symeig(Asq, eigenvectors=True)
+                    L = torch.max(torch.diag(diag_e),
+                                    torch.tensor(0.)).sqrt() @ V.t()
+                else:
+                    raise
+            A[:, 2:] = L[:, 1:]
+            b = L[:, 0] # (m+1)
+            c = torch.zeros((m+2,))
+            c[2:] = bfe
+            # # We want to return in format?
+            # (name, (A, b, c, d))
+            # s.t. factor * ||A[y_1; y_2; u] + b||_2 <= c'x + d
+            return list(map(convert_out, (factor * A, factor * b, c, e)))
+
+    def _socp_constraints(self, i, x, u_ref, u_rand, convert_out=to_numpy):
+        return [
+            (r"$y_1 - \|R (u - u_{ref})\|>0$",
+             self._socp_objective(i, x, u_ref, yidx=0, convert_out=convert_out)),
+            (r"$y_2 - \|R (u - u_{rand})\|>0$",
+             self._socp_objective(i, x, u_rand, yidx=1, convert_out=convert_out)),
+            (r"$\mbox{CBC} > 0$", self._socp_safety(
+                self.cbf2.cbc,
+                x, u_ref,
+                safety_factor=self.cbf2.safety_factor(),
+                convert_out=convert_out))
+        ]
+
+    def _all_constraints(self, i, x, u0, u_rand, convert_out=to_numpy):
         if self.model.ground_truth:
             A = self.cbf2.A(x)
             b = self.cbf2.b(x)
             return [("CBC2det", (torch.tensor([[0.]]), A, -b))]
         else:
-            return self._socp_constraints(i, x, u0, convert_out=convert_out)
+            return self._socp_constraints(i, x, u0, u_rand,
+                                          convert_out=convert_out)
 
-    def _plottables(self, i, x, y_u0):
-        def true_h(xp, up):
+    def _plottables(self, i, x, u_ref, u_rand, y_uopt):
+        def true_h(xp, y_uopt):
             val = - self.ground_truth_cbf2.cbf(xp)
             return val
 
-        def true_cbc2(xp, up):
-            val = ( self.ground_truth_cbf2.A(xp) @ up[1:]
+        def true_cbc2(xp, y_uopt):
+            val = ( self.ground_truth_cbf2.A(xp) @ y_uopt[2:]
                     - self.ground_truth_cbf2.b(xp))
             return val
 
         def scaled_variance(xp, y_uopt):
-            up = y_uopt[1:]
-            A, bfb, bfc, d = self.cbf2.as_socp(0, xp, up,
-                                               convert_out=lambda x: x)
+            up = y_uopt[2:]
+            A, bfb, bfc, d = self._socp_safety(self.cbf2.cbc, xp, u_ref,
+                                               safety_factor=self.cbf2.safety_factor(),
+                                               convert_out=identity)
             return (A @ y_uopt + bfb).norm(p=2,dim=-1)
 
         def mean(xp, y_uopt):
-            up = y_uopt[1:]
-            A, bfb, bfc, d = self.cbf2.as_socp(0, xp, up,
-                                               convert_out=lambda x: x)
+            A, bfb, bfc, d = self._socp_safety(self.cbf2.cbc, xp, u_ref,
+                                               safety_factor=self.cbf2.safety_factor(),
+                                               convert_out=identity)
             return (bfc @ y_uopt + d)
+
+        def ref_diff(xp, y_uopt):
+            R, h, a, b = self._socp_objective(0, xp, u_ref,
+                                              convert_out=identity)
+            return (R @ y_uopt + h).norm(p=2, dim=-1)
+
+        def true_dot_h(xp, y_uopt):
+            return self.cbf2.grad_cbf(xp) @ (
+                self.true_model.f_func(xp) +  self.true_model.g_func(xp) @ y_uopt[2:])
 
         return [
             NamedFunc(
                 lambda _, y_u: (bfc @ y_u + d
                                 - (A @ y_u + bfb).norm(p=2,dim=-1)) , name)
             for name, (A, bfb, bfc, d) in self._all_constraints(
-                    i, x, y_u0, convert_out=lambda x: x)
+                    i, x, u_ref, u_rand, convert_out=identity)
         ] + [
             NamedFunc(true_cbc2,
-                      r"$ \mathcal{L}_f h(x)^\top F(x) u - [h(x), \mathcal{L}_f h(x)] k_\alpha < 0$"),
-            NamedFunc(true_h, r"$-h(x) < 0$"),
-            NamedFunc(scaled_variance, r"$c()\|V(x,x)[1,u]\|$"),
-            NamedFunc(mean, r"$e(x)^\top[1,u]>0$")
+                      r"$ \mbox{CBC}_{true} < 0$"),
+            NamedFunc(true_h, r"$-h_{true}(x) < 0$"),
+            NamedFunc(true_dot_h, r"$\dot{h}_{true}(x)$"),
+            NamedFunc(scaled_variance, r"$c(\tilde{p}_k)\|V(x,x)[1;u]\|$"),
+            NamedFunc(mean, r"$e(x)^\top[1;u]>0$"),
+            NamedFunc(ref_diff, r"$\|Q (u - u0)\|$")
         ]
 
     def control(self, xi, t=None):
@@ -252,23 +416,26 @@ class ControlCBFLearned(Controller):
             self.train()
 
         tic = time.time()
-        u0 = self.epsilon_greedy_unsafe_control(t, xi,
+        u_ref = self.epsilon_greedy_unsafe_control(t, xi,
                                                 min_=self.ctrl_range[0],
                                                 max_=self.ctrl_range[1])
+        u_rand = self.random_unsafe_control(t, xi,
+                                            min_=self.ctrl_range[0],
+                                            max_=self.ctrl_range[1])
         if self._has_been_trained_once:
             y_uopt = controller_socp_cvxopt(
-                np.hstack([[1.], u0.detach().numpy()]),
-                np.hstack([[1.], np.zeros_like(u0)]),
-                self._socp_constraints(t, xi, u0, convert_out=to_numpy))
+                np.hstack([[0., 0.], u_ref.detach().numpy()]),
+                np.hstack([[1., 1.], np.zeros_like(u_ref)]),
+                self._socp_constraints(t, xi, u_ref, u_rand,
+                                       convert_out=to_numpy))
             y_uopt = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
             if len(self.Xtrain) > 20:
                 self.constraint_plotter.plot_constraints(
-                    self._plottables(t, xi, u0),
+                    self._plottables(t, xi, u_ref, u_rand, y_uopt),
                     xi, y_uopt)
-            #uopt = y_uopt[1:]
-            uopt = y_uopt[1:]
+            uopt = y_uopt[2:]
         else:
-            uopt = u0
+            uopt = u_ref
 
         # record the xi, ui pair
         self.Xtrain.append(xi.detach())
@@ -278,36 +445,17 @@ class ControlCBFLearned(Controller):
         return uopt
 
     def unsafe_control(self, x):
-        with torch.no_grad():
-            x_g = self.x_goal
-            P = self.x_quad_goal_cost
-            R = torch.eye(self.u_dim) * self.dt
-            λ = 0.5
-            fx = (self.dt * self.model.f_func(x)
-                + self.dt * self.mean_dynamics_model.f_func(x))
-            Gx = (self.dt * self.model.g_func(x.unsqueeze(0)).squeeze(0)
-                + self.dt * self.mean_dynamics_model.g_func(x))
-            # xp = x + fx + Gx @ u
-            # (1-λ) (x + fx + Gx @ u - x_g)ᵀ P (x_g - (x + fx + Gx @ u)) + λ uᵀ R u
-            # Quadratic term: uᵀ (λ R + (1-λ)GₓᵀPGₓ) u
-            # Linear term   : - (2(1-λ)GₓP(x_g - x - fx)  )ᵀ u
-            # Constant term : + (1-λ)(x_g-fx)ᵀP(x_g- x - fx)
-            # Minima at u* = ((λ R + (1-λ)GₓᵀPGₓ))⁻¹ ((1-λ)GₓP(x_g - x - fx)  )
+        return self.unsafe_controller.control(x)
 
-
-            # Quadratic term λ R + (1-λ)Gₓᵀ P Gₓ
-            Q = λ * R + (1-λ) * Gx.T @ P @ Gx
-            # Linear term - ((1-λ)Gₓ P(x_g - x - fx)  )ᵀ u
-            c = (1-λ) * Gx.T @ P @ (x_g - x - fx)
-            ugreedy = torch.solve(c.unsqueeze(-1), Q).solution.reshape(-1)
-            assert ugreedy.shape[-1] == self.u_dim
-            return ugreedy
+    def random_unsafe_control(self, i, x, min_=None, max_=None):
+        randomact = torch.rand(self.u_dim) * (max_ - min_) + min_
+        return randomact
 
     def epsilon_greedy_unsafe_control(self, i, x, min_=-5., max_=5.):
         eps = epsilon(i, interpolate={0: self.egreedy_scheme[0],
                                       self.numSteps: self.egreedy_scheme[1]})
         u0 = self.unsafe_control(x)
-        randomact = torch.rand(self.u_dim) * (max_ - min_) + min_
+        randomact = self.random_unsafe_control(i, x, min_=min_, max_=max_)
         uegreedy = (u0 + randomact
                 if (random.random() < eps)
                     else u0)

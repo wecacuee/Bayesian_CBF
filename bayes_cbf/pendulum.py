@@ -32,7 +32,7 @@ from bayes_cbf.controllers import (Controller, ControlCBFLearned,
                                    NamedAffineFunc, NamedFunc, ConstraintPlotter)
 from bayes_cbf.misc import (t_vstack, t_hstack, to_numpy, store_args,
                             DynamicsModel, ZeroDynamicsModel, variable_required_grad,
-                            epsilon)
+                            epsilon, SumDynamicModels)
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, RelDeg2Safety
 
 
@@ -504,8 +504,8 @@ class RadialCBF(NamedAffineFunc):
 
 
 class RadialCBFRelDegree2(RelDeg2Safety, NamedAffineFunc):
-    @store_args
-    def __init__(self, _model,
+    @partial(store_args, skip=["model", "max_unsafe_prob"])
+    def __init__(self, model,
                  cbf_col_gamma=1,
                  _k_alpha=[1., 3.],
                  cbf_col_delta=math.pi/8,
@@ -516,7 +516,8 @@ class RadialCBFRelDegree2(RelDeg2Safety, NamedAffineFunc):
                  delta_col=math.pi/8,
                  name="cbf-r2",
                  dtype=torch.get_default_dtype()):
-        self._model = _model
+        self._model = model
+        self._max_unsafe_prob = max_unsafe_prob
 
     @property
     def k_alpha(self):
@@ -525,6 +526,10 @@ class RadialCBFRelDegree2(RelDeg2Safety, NamedAffineFunc):
     @property
     def model(self):
         return self._model
+
+    @property
+    def max_unsafe_prob(self):
+        return self._max_unsafe_prob
 
     def to(self, dtype):
         self.dtype = dtype
@@ -693,6 +698,7 @@ class ControlPendulumCBFLearned(ControlCBFLearned):
                  use_ground_truth_model=False,
                  numSteps=1000,
                  ctrl_range=[-5., 5.],
+                 u_quad_cost=[[1.]],
     ):
         super().__init__(x_dim=x_dim,
                          u_dim=u_dim,
@@ -701,7 +707,11 @@ class ControlPendulumCBFLearned(ControlCBFLearned):
                          dt=dt,
                          constraint_plotter_class=constraint_plotter_class,
                          plotfile=plotfile,
-                         ctrl_range=ctrl_range)
+                         ctrl_range=ctrl_range,
+                         x_goal = [theta_goal, omega_goal],
+                         x_quad_goal_cost = quad_goal_cost,
+                         u_quad_cost = u_quad_cost,
+                         numSteps = numSteps)
         if self.use_ground_truth_model:
             self.model = self.true_model
         else:
@@ -713,8 +723,6 @@ class ControlPendulumCBFLearned(ControlCBFLearned):
         self.cbf2 = RadialCBFRelDegree2(self.model, dtype=dtype)
         self.ground_truth_cbf2 = RadialCBFRelDegree2(self.true_model, dtype=dtype)
         # These are used in the optimizer hence numpy
-        self.x_goal = torch.tensor([theta_goal, omega_goal])
-        self.x_quad_goal_cost = torch.tensor(quad_goal_cost)
         self.axes = [None, None]
 
     def debug_train(self, Xtrain, Utrain, XdotError):

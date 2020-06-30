@@ -19,7 +19,7 @@ from bayes_cbf.sampling import sample_generator_trajectory, Visualizer
 from bayes_cbf.plotting import plot_learned_2D_func, plot_results
 from bayes_cbf.control_affine_model import ControlAffineRegressor
 from bayes_cbf.controllers import (ControlCBFLearned, NamedAffineFunc,
-                                   ConstraintPlotter)
+                                   ConstraintPlotter, LQRController)
 
 
 class UnicycleDynamicsModel(DynamicsModel):
@@ -48,7 +48,7 @@ class UnicycleDynamicsModel(DynamicsModel):
          f(x) = [ 0   ]
                 [ 0   ]
         """
-        return X_in.new_zeros(X_in.shape)
+        return X_in.new_zeros(X_in.shape) * X_in
 
     def g_func(self, X_in):
         """
@@ -58,10 +58,14 @@ class UnicycleDynamicsModel(DynamicsModel):
         """
         X = X_in.unsqueeze(0) if X_in.dim() <= 1 else X_in
         gX = torch.zeros((*X.shape, self.m))
-        θ = X[..., 2]
-        gX[..., 0, 0] = θ.cos()
-        gX[..., 1, 0] = θ.cos()
-        gX[..., 2, 1] = 1
+        θ = X[..., 2:3]
+        θ = θ.unsqueeze(-1)
+        zero = θ.new_zeros((*X.shape[:-1], 1, 1))
+        ones = θ.new_zeros((*X.shape[:-1], 1, 1))
+        gX = torch.cat([torch.cat([θ.cos(), zero], dim=-1),
+                        torch.cat([θ.sin(), zero], dim=-1),
+                        torch.cat([zero, ones], dim=-1)],
+                       dim=-2)
         return gX.squeeze(0) if X_in.dim() <= 1 else gX
 
     def normalize_state(self, X_in):
@@ -73,11 +77,12 @@ class ObstacleCBF(RelDeg1Safety, NamedAffineFunc):
     """
     ∇h(x)ᵀf(x) + ∇h(x)ᵀg(x)u + γ_c h(x) > 0
     """
-    @partial(store_args, skip=["model"])
-    def __init__(self, model, center, radius, γ_c=1e-3, name="obstacle_cbf",
+    @partial(store_args, skip=["model", "max_unsafe_prob"])
+    def __init__(self, model, center, radius, γ_c=40, name="obstacle_cbf",
                  dtype=torch.get_default_dtype(),
                  max_unsafe_prob=0.01):
         self._model = model
+        self._max_unsafe_prob = max_unsafe_prob
         self.center = torch.tensor(center, dtype=dtype)
         self.radius = torch.tensor(radius, dtype=dtype)
 
@@ -85,9 +90,9 @@ class ObstacleCBF(RelDeg1Safety, NamedAffineFunc):
     def model(self):
         return self._model
 
-    @model.setter
-    def set_model(self, model):
-        self._model = model
+    @property
+    def max_unsafe_prob(self):
+        return self._max_unsafe_prob
 
     @property
     def gamma(self):
@@ -142,9 +147,18 @@ class ControllerUnicycle(ControlCBFLearned):
                  obstacle_centers=[(0, 0)],
                  obstacle_radii=[0.5],
                  numSteps=1000,
-                 ctrl_range=[[-10, math.pi],
-                             [10, math.pi]]
+                 ctrl_range=[[-10, 10*math.pi],
+                             [10, 10*math.pi]],
+                 u_quad_cost=[[1., 0.],
+                              [0., 1.]],
+                 unsafe_controller_class = LQRController
     ):
+        if self.use_ground_truth_model:
+            model = self.true_model
+        else:
+            model = ControlAffineRegressor(
+                x_dim, u_dim,
+                gamma_length_scale_prior=gamma_length_scale_prior)
         super().__init__(x_dim=x_dim,
                          u_dim=u_dim,
                          train_every_n_steps=train_every_n_steps,
@@ -152,13 +166,14 @@ class ControllerUnicycle(ControlCBFLearned):
                          dt=dt,
                          constraint_plotter_class=constraint_plotter_class,
                          plotfile=plotfile,
-                         ctrl_range=ctrl_range)
-        if self.use_ground_truth_model:
-            self.model = self.true_model
-        else:
-            self.model = ControlAffineRegressor(
-                x_dim, u_dim,
-                gamma_length_scale_prior=gamma_length_scale_prior)
+                         ctrl_range=ctrl_range,
+                         x_goal = x_goal,
+                         x_quad_goal_cost = quad_goal_cost,
+                         u_quad_cost = u_quad_cost,
+                         numSteps = numSteps,
+                         model = model,
+                         unsafe_controller_class=unsafe_controller_class,
+        )
         self.cbf2 = cbc_class(self.model, obstacle_centers[0],
                               obstacle_radii[0], dtype=dtype)
         self.ground_truth_cbf2 = cbc_class(self.true_model,
@@ -225,13 +240,14 @@ BBox = namedtuple('BBox', 'XMIN YMIN XMAX YMAX'.split())
 class UnicycleVisualizerMatplotlib(Visualizer):
     @store_args
     def __init__(self, robotsize, obstacle_centers, obstacle_radii, x_goal):
-        self.fig, self.axes = plt.subplots(2,2)
+        self.fig, self.axes = plt.subplots(1,1)
+        self.fig2, self.axes2 = plt.subplots(2,1)
         self._bbox = BBox(-2.0, -2.0, 2.0, 2.0)
         self._latest_robot = None
         self._latest_history = None
         self._history_state = []
         self._history_ctrl = []
-        self._init_drawing(self.axes[0,0])
+        self._init_drawing(self.axes)
 
     def _init_drawing(self, ax):
         self._add_obstacles(ax, self.obstacle_centers, self.obstacle_radii)
@@ -290,10 +306,16 @@ class UnicycleVisualizerMatplotlib(Visualizer):
             ctrlax.set_title("u[{i}]".format(i=i))
             ctrlax.plot(hctrl[:, i])
 
+    def _add_straight_line_path(self, ax, x_goal, x0):
+        ax.plot(np.array((x0[0], x_goal[0])),
+                np.array((x0[1], x_goal[1])), 'g')
+
     def setStateCtrl(self, x, u, t=0):
-        self._add_robot(self.axes[0,0], x[:2], x[2], self.robotsize)
-        self._add_history_state(self.axes[0,0])
-        self._plot_state_ctrl_history(self.axes.flatten()[1:])
+        self._add_robot(self.axes, x[:2], x[2], self.robotsize)
+        self._add_history_state(self.axes)
+        self._plot_state_ctrl_history(self.axes2.flatten())
+        if not len(self._history_state):
+            self._add_straight_line_path(self.axes, self.x_goal, to_numpy(x))
         self._history_state.append(to_numpy(x))
         self._history_ctrl.append(to_numpy(u))
         plt.draw()
@@ -308,9 +330,9 @@ class UnsafeControllerUnicycle(ControllerUnicycle):
 
 def run_unicycle_control_learned(
         robotsize=0.2,
-        obstacle_centers=[(0., 0.)],
+        obstacle_centers=[(0.35, -0.35)],
         obstacle_radii=[0.5],
-        x0=[-10.5, -10.5, math.pi/4],
+        x0=[-1.5, -1.5, 3*math.pi/8],
         x_goal=[1., 1., math.pi/4],
         D=1000,
         controller_class=partial(ControllerUnicycle,
@@ -340,5 +362,5 @@ def run_unicycle_control_unsafe():
 
 
 if __name__ == '__main__':
-    #run_unicycle_control_unsafe()
-    run_unicycle_control_learned()
+    run_unicycle_control_unsafe()
+    #run_unicycle_control_learned()

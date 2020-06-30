@@ -25,13 +25,13 @@ def to_numpy(x):
     return x.detach().cpu().double().numpy()
 
 
-def t_jac(f_x, x, retain_graph=False):
+def t_jac(f_x, x, retain_graph=False, **kw):
     if f_x.ndim:
         return torch.cat(
-            [torch.autograd.grad(f_x[i], x, retain_graph=True)[0].unsqueeze(0)
+            [torch.autograd.grad(f_x[i], x, retain_graph=True, **kw)[0].unsqueeze(0)
              for i in range(f_x.shape[0])], dim=0)
     else:
-        return torch.autograd.grad(f_x, x, retain_graph=retain_graph)[0]
+        return torch.autograd.grad(f_x, x, retain_graph=retain_graph, **kw)[0]
 
 
 def store_args(method, skip=[]):
@@ -118,6 +118,29 @@ class DynamicsModel(ABC):
     def normalize_state(self, X_in):
         return X_in
 
+
+class SumDynamicModels(DynamicsModel):
+    def __init__(self, *models):
+        assert len(models) >= 2
+        self.models = models
+
+    @property
+    def ctrl_size(self):
+        return self.models[0].ctrl_size
+
+    @property
+    def state_size(self):
+        return self.models[0].state_size
+
+    def f_func(self, x):
+        return sum(m.f_func(x) for m in self.models)
+
+    def g_func(self, x):
+        return sum(m.g_func(x) for m in self.models)
+
+    def __getattr__(self, n):
+        return getattr(self.models[0], n)
+
 class ZeroDynamicsModel(DynamicsModel):
     def __init__(self, m, n):
         self.m = m
@@ -146,8 +169,7 @@ def variable_required_grad(x):
     """
     old_x_requires_grad = x.requires_grad
     try:
-        x.requires_grad_(True)
-        yield x
+        yield x.requires_grad_(True)
     finally:
         x.requires_grad_(old_x_requires_grad)
 

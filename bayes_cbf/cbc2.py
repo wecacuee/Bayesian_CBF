@@ -39,54 +39,16 @@ def cbc2_safety_factor(δ):
     assert factor > 1
     return factor
 
-
-def cbc2_safety_socp(cbc2, x, u0,
-                     max_unsafe_prob=0.01,
-                     safety_factor=cbc2_safety_factor):
-    """
-    Var(CBC2) = Au² + b' u + c
-    E(CBC2) = e' u + e
-    """
-    δ = max_unsafe_prob
-    factor = safety_factor(δ)
-    m = u0.shape[-1]
-
-    (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(cbc2, x, u0)
-    with torch.no_grad():
-        # [1, u] Asq [1; u]
-        Asq = torch.cat(
-            (
-                torch.cat((torch.tensor([[v]]),         (bfv / 2).reshape(1, -1)), dim=-1),
-                torch.cat(((bfv / 2).reshape(-1, 1),    V), dim=-1)
-            ),
-            dim=-2)
-
-        # [1, u] Asq [1; u] = |L[1; u]|_2 = |A [y; u] + b|_2
-        A = torch.zeros((m + 1, m + 1))
-        try:
-            L = torch.cholesky(Asq) # (m+1) x (m+1)
-        except RuntimeError as err:
-            if "cholesky" in str(err) and "singular" in str(err):
-                diag_e, V = torch.symeig(Asq, eigenvectors=True)
-                L = torch.max(torch.diag(diag_e),
-                                torch.tensor(0.)).sqrt() @ V.t()
-            else:
-                raise
-        A[:, 1:] = L[:, 1:]
-        b = L[:, 0] # (m+1)
-        c = torch.zeros((m+1,))
-        c[1:] = bfe
-        # # We want to return in format?
-        # (name, (A, b, c, d))
-        # s.t. factor * ||A[y, u] + b||_2 <= c'x + d
-        return (factor * A, factor * b, c, e)
-
 class RelDeg2Safety(ABC):
     @abstractproperty
     def k_alpha(self):
         pass
     @abstractproperty
     def model(self):
+        pass
+
+    @abstractproperty
+    def max_unsafe_prob(self):
         pass
 
     @abstractmethod
@@ -97,10 +59,9 @@ class RelDeg2Safety(ABC):
     def grad_cbf(self, x):
         pass
 
-    def cbc2(self, u0):
+    def cbc(self, u0):
         return cbc2_gp(self.cbf, self.grad_cbf, self.model, u0, self.k_alpha)
 
-    def as_socp(self, i, xi, u0, convert_out=to_numpy):
-        return list(map(convert_out, cbc2_safety_socp(self.cbc2, xi, u0,
-                        max_unsafe_prob=self.max_unsafe_prob)))
+    def safety_factor(self):
+        return cbc2_safety_factor(self.max_unsafe_prob)
 

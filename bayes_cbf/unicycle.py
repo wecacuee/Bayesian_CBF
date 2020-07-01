@@ -19,7 +19,7 @@ from bayes_cbf.sampling import sample_generator_trajectory, Visualizer
 from bayes_cbf.plotting import plot_learned_2D_func, plot_results
 from bayes_cbf.control_affine_model import ControlAffineRegressor
 from bayes_cbf.controllers import (ControlCBFLearned, NamedAffineFunc,
-                                   ConstraintPlotter, LQRController)
+                                   ConstraintPlotter, LQRController, GreedyController)
 
 
 class UnicycleDynamicsModel(DynamicsModel):
@@ -61,7 +61,7 @@ class UnicycleDynamicsModel(DynamicsModel):
         θ = X[..., 2:3]
         θ = θ.unsqueeze(-1)
         zero = θ.new_zeros((*X.shape[:-1], 1, 1))
-        ones = θ.new_zeros((*X.shape[:-1], 1, 1))
+        ones = θ.new_ones((*X.shape[:-1], 1, 1))
         gX = torch.cat([torch.cat([θ.cos(), zero], dim=-1),
                         torch.cat([θ.sin(), zero], dim=-1),
                         torch.cat([zero, ones], dim=-1)],
@@ -147,7 +147,7 @@ class ControllerUnicycle(ControlCBFLearned):
                  obstacle_centers=[(0, 0)],
                  obstacle_radii=[0.5],
                  numSteps=1000,
-                 ctrl_range=[[-10, 10*math.pi],
+                 ctrl_range=[[-10, -10*math.pi],
                              [10, 10*math.pi]],
                  u_quad_cost=[[1., 0.],
                               [0., 1.]],
@@ -324,20 +324,27 @@ class UnicycleVisualizerMatplotlib(Visualizer):
 
 class UnsafeControllerUnicycle(ControllerUnicycle):
     def control(self, xi, t=None):
-        ui = self.unsafe_control(xi)
+        if (len(self.Xtrain) % int(self.train_every_n_steps) == 0):
+            # train every n steps
+            self.train()
+        ui = self.unsafe_control(xi, t=t) + torch.rand(self.u_dim) * (self.ctrl_range[1] - self.ctrl_range[0]) + self.ctrl_range[0]
         print("unsafe control on {xi} is {ui}".format(xi=xi, ui=ui))
+        self.Xtrain.append(xi)
+        self.Utrain.append(ui)
         return ui
 
 def run_unicycle_control_learned(
         robotsize=0.2,
         obstacle_centers=[(0.35, -0.35)],
         obstacle_radii=[0.5],
-        x0=[-1.5, -1.5, 3*math.pi/8],
+        x0=[-1.5, -1.5, 1*math.pi/8],
         x_goal=[1., 1., math.pi/4],
-        D=1000,
+        D=200,
+        dt=0.01,
         controller_class=partial(ControllerUnicycle,
                                  mean_dynamics_model_class=partial(
                                      ZeroDynamicsModel, m=2, n=3)),
+                                 # mean_dynamics_model_class=UnicycleDynamicsModel),
         visualizer_class=UnicycleVisualizerMatplotlib):
     """
     Run safe unicycle control with learned model
@@ -345,22 +352,26 @@ def run_unicycle_control_learned(
     controller = controller_class(
         obstacle_centers=obstacle_centers,
         obstacle_radii=obstacle_radii,
-        x_goal=x_goal)
+        x_goal=x_goal,
+        numSteps=D,
+        dt=dt)
     return sample_generator_trajectory(
         dynamics_model=UnicycleDynamicsModel(),
         D=D,
         controller=controller.control,
         visualizer=visualizer_class(robotsize, obstacle_centers,
                                     obstacle_radii, x_goal),
-        x0=x0)
+        x0=x0,
+        dt=dt)
 
 def run_unicycle_control_unsafe():
     run_unicycle_control_learned(
         controller_class=partial(
             UnsafeControllerUnicycle,
-            mean_dynamics_model_class=UnicycleDynamicsModel))
+            mean_dynamics_model_class=partial(ZeroDynamicsModel, m=2, n=3)),
+        D=1000)
 
 
 if __name__ == '__main__':
-    run_unicycle_control_unsafe()
-    #run_unicycle_control_learned()
+    #run_unicycle_control_unsafe()
+    run_unicycle_control_learned()

@@ -157,10 +157,10 @@ class ZeroDynamicsModel(DynamicsModel):
     def f_func(self, X):
         return (torch.zeros((self.n,))
                 if X.dim() <= 1
-                else torch.zeros(X.shape))
+                else torch.zeros(X.shape)) * X
 
     def g_func(self, X):
-        return torch.zeros((*X.shape, self.m))
+        return torch.zeros((*X.shape, self.m)) * X.unsqueeze(-1)
 
 @contextmanager
 def variable_required_grad(x):
@@ -224,3 +224,6 @@ def get_quadratic_terms(func, x):
         linear = linear_more - 2 * quad @ x
         const = f_x - x.T @ quad @ x - linear @ x
     return quad, linear, const
+
+def clip(x, min_, max_):
+    return torch.max(torch.min(x, max_), min_)

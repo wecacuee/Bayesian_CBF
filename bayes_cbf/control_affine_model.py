@@ -336,7 +336,7 @@ class ControlAffineRegressor(DynamicsModel):
                 if p.grad is not None:
                     assert not torch.isnan(p.grad).any()
 
-            LOG.info('Iter %d/%d - Loss: %.3f, lr: %.3g' % (i + 1, training_iter,
+            LOG.debug('Iter %d/%d - Loss: %.3f, lr: %.3g' % (i + 1, training_iter,
                                                             loss.item(),
                                                             scheduler.get_lr()[0]))
             optimizer.step()

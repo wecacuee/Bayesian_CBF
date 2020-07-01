@@ -12,7 +12,7 @@ import torch
 import matplotlib.pyplot as plt
 
 from bayes_cbf.misc import (store_args, ZeroDynamicsModel, epsilon, t_jac,
-                            variable_required_grad, SumDynamicModels)
+                            variable_required_grad, SumDynamicModels, clip)
 from bayes_cbf.plotting import plot_results, plot_learned_2D_func, plt_savefig_with_data
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, cbc2_safety_factor
 
@@ -98,6 +98,8 @@ class LQRController(Controller):
 
     def control(self, x, t=None):
         from bdlqr.lqr import LinearSystem
+        if t > 30:
+            pass # import pdb; pdb.set_trace()
         with variable_required_grad(x) as xp:
             A = t_jac(self.model.f_func(xp), xp)
         B = self.model.g_func(x)
@@ -113,7 +115,7 @@ class LQRController(Controller):
                            s_T=np.zeros(Q.shape[-1]),
                            T=self.numSteps
         )
-        xs, us = sys.solve(x, 1)
+        xs, us = sys.solve(x - self.x_goal, 1)
 
         with variable_required_grad(x) as xp:
             A = t_jac(self.model.f_func(xp)
@@ -129,7 +131,7 @@ class LQRController(Controller):
                            s_T=np.zeros(Q.shape[-1]),
                            T=self.numSteps
         )
-        xs, us = sys.solve(x, 1)
+        xs, us = sys.solve(x - self.x_goal, 1)
 
         return torch.tensor(us[0], dtype=xp.dtype)
 
@@ -283,18 +285,18 @@ class ControlCBFLearned(Controller):
             'plots/online_g_learned_vs_g_true_%d.pdf' % Xtrain.shape[0])
 
 
-    def _socp_objective(self, i, x, u0, yidx=0, convert_out=to_numpy):
-        # s.t. ||[0, Q][y_1; y_2; u] - Q u_0||_2 <= [1, 0, 0] [y_1; y_2; u] + 0
-        # s.t. ||R[y_1; y_2; u] + h||_2 <= a' [y_1; y_2; u] + b
+    def _socp_objective(self, i, x, u0, convert_out=to_numpy):
+        # s.t. ||[0, Q][y_1; u] - Q u_0||_2 <= [1, 0, 0] [y_1; u] + 0
+        # s.t. ||R[y_1; u] + h||_2 <= a' [y_1; u] + b
         Q = torch.eye(self.u_dim)
-        R = torch.zeros(self.u_dim, self.u_dim + 2)
+        R = torch.zeros(self.u_dim, self.u_dim + 1)
         h = torch.zeros(self.u_dim)
         with torch.no_grad():
-            R[:, :2] = 0
-            R[:, 2:] = Q
+            R[:, :1] = 0
+            R[:, 1:] = Q
             h = - Q @ u0
-        a = torch.zeros((self.u_dim + 2,))
-        a[yidx] = 1
+        a = torch.zeros((self.u_dim + 1,))
+        a[0] = 1
         b = torch.tensor(0.)
         # s.t. ||R[y_1; y_2; u] + h||_2 <= a' [y_1; y_2; u] + b
         return list(map(convert_out, (R, h, a, b)))
@@ -319,8 +321,8 @@ class ControlCBFLearned(Controller):
                 ),
                 dim=-2)
 
-            # [1, u] Asq [1; u] = |L[1; u]|_2 = |[0, A] [y_1; y_2; u] + b|_2
-            A = torch.zeros((m + 1, m + 2))
+            # [1, u] Asq [1; u] = |L[1; u]|_2 = |[0, A] [y_1; u] + b|_2
+            A = torch.zeros((m + 1, m + 1))
             try:
                 L = torch.cholesky(Asq) # (m+1) x (m+1)
             except RuntimeError as err:
@@ -330,21 +332,19 @@ class ControlCBFLearned(Controller):
                                     torch.tensor(0.)).sqrt() @ V.t()
                 else:
                     raise
-            A[:, 2:] = L[:, 1:]
+            A[:, 1:] = L[:, 1:]
             b = L[:, 0] # (m+1)
-            c = torch.zeros((m+2,))
-            c[2:] = bfe
+            c = torch.zeros((m+1,))
+            c[1:] = bfe
             # # We want to return in format?
             # (name, (A, b, c, d))
-            # s.t. factor * ||A[y_1; y_2; u] + b||_2 <= c'x + d
+            # s.t. factor * ||A[y_1; u] + b||_2 <= c'x + d
             return list(map(convert_out, (factor * A, factor * b, c, e)))
 
-    def _socp_constraints(self, i, x, u_ref, u_rand, convert_out=to_numpy):
+    def _socp_constraints(self, i, x, u_ref, convert_out=to_numpy):
         return [
             (r"$y_1 - \|R (u - u_{ref})\|>0$",
-             self._socp_objective(i, x, u_ref, yidx=0, convert_out=convert_out)),
-            (r"$y_2 - \|R (u - u_{rand})\|>0$",
-             self._socp_objective(i, x, u_rand, yidx=1, convert_out=convert_out)),
+             self._socp_objective(i, x, u_ref, convert_out=convert_out)),
             (r"$\mbox{CBC} > 0$", self._socp_safety(
                 self.cbf2.cbc,
                 x, u_ref,
@@ -352,27 +352,26 @@ class ControlCBFLearned(Controller):
                 convert_out=convert_out))
         ]
 
-    def _all_constraints(self, i, x, u0, u_rand, convert_out=to_numpy):
+    def _all_constraints(self, i, x, u0, convert_out=to_numpy):
         if self.model.ground_truth:
             A = self.cbf2.A(x)
             b = self.cbf2.b(x)
             return [("CBC2det", (torch.tensor([[0.]]), A, -b))]
         else:
-            return self._socp_constraints(i, x, u0, u_rand,
-                                          convert_out=convert_out)
+            return self._socp_constraints(i, x, u0, convert_out=convert_out)
 
-    def _plottables(self, i, x, u_ref, u_rand, y_uopt):
+    def _plottables(self, i, x, u_ref, y_uopt):
         def true_h(xp, y_uopt):
             val = - self.ground_truth_cbf2.cbf(xp)
             return val
 
         def true_cbc2(xp, y_uopt):
-            val = ( self.ground_truth_cbf2.A(xp) @ y_uopt[2:]
+            val = ( self.ground_truth_cbf2.A(xp) @ y_uopt[1:]
                     - self.ground_truth_cbf2.b(xp))
             return val
 
         def scaled_variance(xp, y_uopt):
-            up = y_uopt[2:]
+            up = y_uopt[1:]
             A, bfb, bfc, d = self._socp_safety(self.cbf2.cbc, xp, u_ref,
                                                safety_factor=self.cbf2.safety_factor(),
                                                convert_out=identity)
@@ -391,14 +390,14 @@ class ControlCBFLearned(Controller):
 
         def true_dot_h(xp, y_uopt):
             return self.cbf2.grad_cbf(xp) @ (
-                self.true_model.f_func(xp) +  self.true_model.g_func(xp) @ y_uopt[2:])
+                self.true_model.f_func(xp) +  self.true_model.g_func(xp) @ y_uopt[1:])
 
         return [
             NamedFunc(
                 lambda _, y_u: (bfc @ y_u + d
                                 - (A @ y_u + bfb).norm(p=2,dim=-1)) , name)
             for name, (A, bfb, bfc, d) in self._all_constraints(
-                    i, x, u_ref, u_rand, convert_out=identity)
+                    i, x, u_ref, convert_out=identity)
         ] + [
             NamedFunc(true_cbc2,
                       r"$ \mbox{CBC}_{true} < 0$"),
@@ -419,21 +418,20 @@ class ControlCBFLearned(Controller):
         u_ref = self.epsilon_greedy_unsafe_control(t, xi,
                                                 min_=self.ctrl_range[0],
                                                 max_=self.ctrl_range[1])
-        u_rand = self.random_unsafe_control(t, xi,
-                                            min_=self.ctrl_range[0],
-                                            max_=self.ctrl_range[1])
+        # u_rand = self.random_unsafe_control(t, xi,
+        #                                     min_=self.ctrl_range[0],
+        #                                     max_=self.ctrl_range[1])
         if self._has_been_trained_once:
             y_uopt = controller_socp_cvxopt(
-                np.hstack([[0., 0.], u_ref.detach().numpy()]),
-                np.hstack([[1., 1.], np.zeros_like(u_ref)]),
-                self._socp_constraints(t, xi, u_ref, u_rand,
-                                       convert_out=to_numpy))
+                np.hstack([[0.], u_ref.detach().numpy()]),
+                np.hstack([[1.], np.zeros_like(u_ref)]),
+                self._socp_constraints(t, xi, u_ref, convert_out=to_numpy))
             y_uopt = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
             if len(self.Xtrain) > 20:
                 self.constraint_plotter.plot_constraints(
-                    self._plottables(t, xi, u_ref, u_rand, y_uopt),
+                    self._plottables(t, xi, u_ref, y_uopt),
                     xi, y_uopt)
-            uopt = y_uopt[2:]
+            uopt = y_uopt[1:]
         else:
             uopt = u_ref
 
@@ -444,22 +442,24 @@ class ControlCBFLearned(Controller):
         print("Controller took {:.4f} sec".format(time.time()- tic))
         return uopt
 
-    def unsafe_control(self, x):
-        return self.unsafe_controller.control(x)
+    def unsafe_control(self, x, t=None):
+        return self.unsafe_controller.control(x, t=t)
 
     def random_unsafe_control(self, i, x, min_=None, max_=None):
         randomact = torch.rand(self.u_dim) * (max_ - min_) + min_
         return randomact
 
-    def epsilon_greedy_unsafe_control(self, i, x, min_=-5., max_=5.):
-        eps = epsilon(i, interpolate={0: self.egreedy_scheme[0],
+    def epsilon_greedy_unsafe_control(self, t, x, min_=-5., max_=5.):
+        eps = epsilon(t, interpolate={0: self.egreedy_scheme[0],
                                       self.numSteps: self.egreedy_scheme[1]})
-        u0 = self.unsafe_control(x)
-        randomact = self.random_unsafe_control(i, x, min_=min_, max_=max_)
+        if t > 30:
+            pass # import pdb; pdb.set_trace()
+        u0 = self.unsafe_control(x, t=t)
+        randomact = self.random_unsafe_control(t, x, min_=min_, max_=max_)
         uegreedy = (u0 + randomact
                 if (random.random() < eps)
                     else u0)
-        return uegreedy # torch.max(torch.min(uegreedy, max_), min_)
+        return clip(uegreedy, min_, max_)
 
 class NamedAffineFunc(ABC):
     @property

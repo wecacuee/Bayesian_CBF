@@ -246,6 +246,7 @@ class ControlAffineRegressor(DynamicsModel):
     ground_truth = False
     def __init__(self, x_dim, u_dim, device=None, default_device=default_device,
                  gamma_length_scale_prior=None):
+        super().__init__()
         self.device = device or default_device()
         self.x_dim = x_dim
         self.u_dim = u_dim

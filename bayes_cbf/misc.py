@@ -77,12 +77,15 @@ def torch_kron(A, B):
     return (A.reshape(b, *A_shape) * B.reshape(b, *B_shape)).reshape(b, *kron_shape)
 
 
-class DynamicsModel(ABC):
+class DynamicsModel(ABC, torch.nn.Module):
     """
     Represents mode of the form:
 
     ẋ = f(x) + g(x)u
     """
+    def __init__(self):
+        torch.nn.Module.__init__(self)
+
     @property
     @abstractmethod
     def ctrl_size(self):
@@ -117,6 +120,9 @@ class DynamicsModel(ABC):
 
     def normalize_state(self, X_in):
         return X_in
+
+    def forward(self, x, u):
+        return self.f_func(x) + self.g_func(x).bmm(u.unsqueeze(-1)).squeeze(-1)
 
 
 class SumDynamicModels(DynamicsModel):

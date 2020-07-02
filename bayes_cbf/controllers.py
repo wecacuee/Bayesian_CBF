@@ -15,6 +15,7 @@ from bayes_cbf.misc import (store_args, ZeroDynamicsModel, epsilon, t_jac,
                             variable_required_grad, SumDynamicModels, clip)
 from bayes_cbf.plotting import plot_results, plot_learned_2D_func, plt_savefig_with_data
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, cbc2_safety_factor
+from bayes_cbf.ilqr import ILQR
 
 
 class NamedFunc:
@@ -88,32 +89,37 @@ class Controller(ABC):
 
 
 class LQRController(Controller):
-    def __init__(self, x_goal, model, Q, R, numSteps, dt):
+    def __init__(self, x_goal, model, x_quad_goal_cost, u_quad_cost, numSteps,
+                 dt, ctrl_range):
         self.x_goal = x_goal
         self.model = model
-        self.Q = to_numpy(Q)
-        self.R = to_numpy(R)
+        self.Q = to_numpy(x_quad_goal_cost)
+        self.R = to_numpy(u_quad_cost)
         self.numSteps = numSteps
         self.dt = dt
+        self.ctrl_range = ctrl_range
 
     def control(self, x, t=None):
         from bdlqr.lqr import LinearSystem
-        if t > 30:
-            pass # import pdb; pdb.set_trace()
         with variable_required_grad(x) as xp:
             A = t_jac(self.model.f_func(xp), xp)
-        B = self.model.g_func(x)
+        B = to_numpy(self.model.g_func(x)) * self.dt
         Q = self.Q
         R = self.R
+        s=(- Q @ to_numpy(self.x_goal))
+        Q_T=(self.numSteps-t)*Q
+        s_T=(- (self.numSteps-t) * Q @ to_numpy(self.x_goal))
+        z=np.zeros(R.shape[-1])
+        T=(self.numSteps-t)
         sys = LinearSystem(A=(np.eye(A.shape[-1]) + to_numpy(A) * self.dt),
-                           B=to_numpy(B) * self.dt,
+                           B=B,
                            Q=Q,
-                           s=np.zeros(Q.shape[-1]),
                            R=R,
-                           z=np.zeros(R.shape[-1]),
-                           Q_T=self.numSteps*Q,
-                           s_T=np.zeros(Q.shape[-1]),
-                           T=self.numSteps
+                           s=s,
+                           Q_T=Q_T,
+                           s_T=s_T,
+                           z=z,
+                           T=T
         )
         xs, us = sys.solve(x - self.x_goal, 1)
 
@@ -122,28 +128,77 @@ class LQRController(Controller):
                       + self.model.g_func(xp) @ torch.tensor(us[0], dtype=xp.dtype),
                       xp)
         sys = LinearSystem(A=(np.eye(A.shape[-1]) + to_numpy(A) * self.dt),
-                           B=to_numpy(B) * self.dt,
+                           B=B,
                            Q=Q,
-                           s=np.zeros(Q.shape[-1]),
                            R=R,
-                           z=np.zeros(R.shape[-1]),
-                           Q_T=self.numSteps*Q,
-                           s_T=np.zeros(Q.shape[-1]),
-                           T=self.numSteps
+                           s=s,
+                           Q_T=Q_T,
+                           s_T=s_T,
+                           z=z,
+                           T=T
         )
-        xs, us = sys.solve(x - self.x_goal, 1)
+        xs, us = sys.solve(x, 1)
 
         return torch.tensor(us[0], dtype=xp.dtype)
 
 
+class ILQRController(Controller):
+    def __init__(self, x_goal, model, x_quad_goal_cost, u_quad_cost, numSteps,
+                 dt, ctrl_range):
+        self.x_goal = x_goal
+        self.model = model
+        self.Q = x_quad_goal_cost
+        self.R = u_quad_cost
+        self.numSteps = numSteps
+        self.dt = dt
+        self.ctrl_range = ctrl_range
+        self.u_init = None
+
+    def control(self, x, t=None):
+        # https://github.com/locuslab/mpc.pytorch
+        from mpc import mpc
+        nx = x.shape[-1]
+        nu = self.R.shape[-1]
+        TIMESTEPS = self.numSteps
+        ACTION_LOW = self.ctrl_range[0].repeat(TIMESTEPS, 1, 1)
+        ACTION_HIGH = self.ctrl_range[1].repeat(TIMESTEPS, 1, 1)
+        LQR_ITER = 5
+        N_BATCH = 1
+        u_init = self.u_init
+
+        QR = torch.cat((
+            torch.cat((self.Q, self.Q.new_zeros((nx, nu))), dim=-1),
+            torch.cat((self.R.new_zeros((nu, nx)), self.R), dim=-1)),
+                       dim=-2)
+        qr = torch.cat((- self.Q @ self.x_goal,
+                        self.Q.new_zeros(nu)), dim=-1)
+        # T x B x nx+nu (linear component of cost)
+        cost = mpc.QuadCost(QR.repeat(TIMESTEPS, N_BATCH, 1, 1),
+                            qr.repeat(TIMESTEPS, N_BATCH, 1))
+
+        ctrl = mpc.MPC(nx, nu, TIMESTEPS, u_lower=ACTION_LOW,
+                       u_upper=ACTION_HIGH, lqr_iter=LQR_ITER,
+                       exit_unconverged=False, eps=1e-2, n_batch=N_BATCH,
+                       backprop=False, verbose=0, u_init=u_init,
+                       grad_method=mpc.GradMethods.AUTO_DIFF)
+
+        # compute action based on current state, dynamics, and cost
+        nominal_states, nominal_actions, nominal_objs = ctrl(
+            x.unsqueeze(0), cost, self.model)
+        action = nominal_actions[0]  # take first planned action
+        self.u_init = torch.cat((nominal_actions[1:], torch.zeros(1, N_BATCH, nu)), dim=0)
+        return action
+
+
 class GreedyController(Controller):
-    def __init__(self, x_goal, model, Q, R, numSteps, dt):
+    def __init__(self, x_goal, model, Q, R, numSteps, dt, ctrl_range):
         self.x_goal = x_goal
         self.model = model
         self.Q = Q
         self.R = R
         self.numSteps = numSteps
         self.dt = dt
+        self.ctrl_range = ctrl_range
 
     def control(self, x, t=None):
         u_dim = self.R.shape[-1]
@@ -227,7 +282,7 @@ class ControlCBFLearned(Controller):
                  x_quad_goal_cost=None,
                  u_quad_cost=None,
                  numSteps=1000,
-                 unsafe_controller_class=GreedyController,
+                 unsafe_controller_class=ILQR,
     ):
         self.Xtrain = []
         self.Utrain = []
@@ -242,8 +297,9 @@ class ControlCBFLearned(Controller):
         self.u_quad_cost = torch.tensor(u_quad_cost)
         self.net_model = SumDynamicModels(self.model, self.mean_dynamics_model)
         self.unsafe_controller = unsafe_controller_class(
-            self.x_goal, self.net_model, self.x_quad_goal_cost,
-            self.u_quad_cost, numSteps, dt
+            self.net_model, self.x_quad_goal_cost,
+            self.u_quad_cost, self.x_goal, numSteps, dt,
+            torch.tensor(ctrl_range)
         )
 
 
@@ -285,25 +341,27 @@ class ControlCBFLearned(Controller):
             'plots/online_g_learned_vs_g_true_%d.pdf' % Xtrain.shape[0])
 
 
-    def _socp_objective(self, i, x, u0, convert_out=to_numpy):
-        # s.t. ||[0, Q][y_1; u] - Q u_0||_2 <= [1, 0, 0] [y_1; u] + 0
-        # s.t. ||R[y_1; u] + h||_2 <= a' [y_1; u] + b
+    def _socp_objective(self, i, x, u0, yidx=0, convert_out=to_numpy, extravars=2):
+        # s.t. ||[0, Q][y_1; y_2; u] - Q u_0||_2 <= [1, 0, 0] [y_1; y_2; u] + 0
+        # s.t. ||R[y_1; y_2; u] + h||_2 <= a' [y_1; y_2; u] + b
+        assert yidx < extravars
         Q = torch.eye(self.u_dim)
-        R = torch.zeros(self.u_dim, self.u_dim + 1)
+        R = torch.zeros(self.u_dim, self.u_dim + extravars)
         h = torch.zeros(self.u_dim)
         with torch.no_grad():
-            R[:, :1] = 0
-            R[:, 1:] = Q
+            R[:, :extravars] = 0
+            R[:, extravars:] = Q
             h = - Q @ u0
-        a = torch.zeros((self.u_dim + 1,))
-        a[0] = 1
+        a = torch.zeros((self.u_dim + extravars,))
+        a[yidx] = 1
         b = torch.tensor(0.)
         # s.t. ||R[y_1; y_2; u] + h||_2 <= a' [y_1; y_2; u] + b
         return list(map(convert_out, (R, h, a, b)))
 
     def _socp_safety(self, cbc2, x, u0,
                      safety_factor=None,
-                     convert_out=to_numpy):
+                     convert_out=to_numpy,
+                     extravars=2):
         """
         Var(CBC2) = Au² + b' u + c
         E(CBC2) = e' u + e
@@ -321,8 +379,8 @@ class ControlCBFLearned(Controller):
                 ),
                 dim=-2)
 
-            # [1, u] Asq [1; u] = |L[1; u]|_2 = |[0, A] [y_1; u] + b|_2
-            A = torch.zeros((m + 1, m + 1))
+            # [1, u] Asq [1; u] = |L[1; u]|_2 = |[0, A] [y_1; y_2; u] + b|_2
+            A = torch.zeros((m + 1, m + extravars))
             try:
                 L = torch.cholesky(Asq) # (m+1) x (m+1)
             except RuntimeError as err:
@@ -332,46 +390,43 @@ class ControlCBFLearned(Controller):
                                     torch.tensor(0.)).sqrt() @ V.t()
                 else:
                     raise
-            A[:, 1:] = L[:, 1:]
+            A[:, extravars:] = L[:, 1:]
             b = L[:, 0] # (m+1)
-            c = torch.zeros((m+1,))
-            c[1:] = bfe
+            c = torch.zeros((m+extravars,))
+            c[extravars:] = bfe
             # # We want to return in format?
             # (name, (A, b, c, d))
             # s.t. factor * ||A[y_1; u] + b||_2 <= c'x + d
             return list(map(convert_out, (factor * A, factor * b, c, e)))
 
-    def _socp_constraints(self, i, x, u_ref, convert_out=to_numpy):
+    def _socp_constraints(self, i, x, u_ref, u_rand, convert_out=to_numpy, extravars=2):
         return [
             (r"$y_1 - \|R (u - u_{ref})\|>0$",
-             self._socp_objective(i, x, u_ref, convert_out=convert_out)),
+             self._socp_objective(i, x, u_ref, yidx=0, convert_out=convert_out,
+                                  extravars=extravars)),
+            (r"$y_2 - \|R (u - u_{rand})\|>0$",
+             self._socp_objective(i, x, u_rand, yidx=1, convert_out=convert_out,
+                                  extravars=extravars)),
             (r"$\mbox{CBC} > 0$", self._socp_safety(
                 self.cbf2.cbc,
                 x, u_ref,
                 safety_factor=self.cbf2.safety_factor(),
-                convert_out=convert_out))
+                convert_out=convert_out,
+                extravars=extravars))
         ]
 
-    def _all_constraints(self, i, x, u0, convert_out=to_numpy):
-        if self.model.ground_truth:
-            A = self.cbf2.A(x)
-            b = self.cbf2.b(x)
-            return [("CBC2det", (torch.tensor([[0.]]), A, -b))]
-        else:
-            return self._socp_constraints(i, x, u0, convert_out=convert_out)
-
-    def _plottables(self, i, x, u_ref, y_uopt):
+    def _plottables(self, i, x, u_ref, u_rand, y_uopt, extravars=2):
         def true_h(xp, y_uopt):
-            val = - self.ground_truth_cbf2.cbf(xp)
+            val = self.ground_truth_cbf2.cbf(xp)
             return val
 
         def true_cbc2(xp, y_uopt):
-            val = ( self.ground_truth_cbf2.A(xp) @ y_uopt[1:]
-                    - self.ground_truth_cbf2.b(xp))
+            val = (- self.ground_truth_cbf2.A(xp) @ y_uopt[extravars:]
+                    + self.ground_truth_cbf2.b(xp))
             return val
 
         def scaled_variance(xp, y_uopt):
-            up = y_uopt[1:]
+            up = y_uopt[extravars:]
             A, bfb, bfc, d = self._socp_safety(self.cbf2.cbc, xp, u_ref,
                                                safety_factor=self.cbf2.safety_factor(),
                                                convert_out=identity)
@@ -385,31 +440,40 @@ class ControlCBFLearned(Controller):
 
         def ref_diff(xp, y_uopt):
             R, h, a, b = self._socp_objective(0, xp, u_ref,
+                                              yidx=0,
+                                              convert_out=identity)
+            return (R @ y_uopt + h).norm(p=2, dim=-1)
+
+        def rand_diff(xp, y_uopt):
+            R, h, a, b = self._socp_objective(0, xp, u_rand,
+                                              yidx=1,
                                               convert_out=identity)
             return (R @ y_uopt + h).norm(p=2, dim=-1)
 
         def true_dot_h(xp, y_uopt):
             return self.cbf2.grad_cbf(xp) @ (
-                self.true_model.f_func(xp) +  self.true_model.g_func(xp) @ y_uopt[1:])
+                self.true_model.f_func(xp) +  self.true_model.g_func(xp) @ y_uopt[extravars:])
 
         return [
             NamedFunc(
                 lambda _, y_u: (bfc @ y_u + d
                                 - (A @ y_u + bfb).norm(p=2,dim=-1)) , name)
-            for name, (A, bfb, bfc, d) in self._all_constraints(
-                    i, x, u_ref, convert_out=identity)
+            for name, (A, bfb, bfc, d) in self._socp_constraints(
+                    i, x, u_ref, u_rand, convert_out=identity, extravars=extravars)
         ] + [
             NamedFunc(true_cbc2,
-                      r"$ \mbox{CBC}_{true} < 0$"),
-            NamedFunc(true_h, r"$-h_{true}(x) < 0$"),
+                      r"$ \mbox{CBC}_{true} > 0$"),
+            NamedFunc(true_h, r"$h_{true}(x)> 0$"),
             NamedFunc(true_dot_h, r"$\dot{h}_{true}(x)$"),
             NamedFunc(scaled_variance, r"$c(\tilde{p}_k)\|V(x,x)[1;u]\|$"),
             NamedFunc(mean, r"$e(x)^\top[1;u]>0$"),
-            NamedFunc(ref_diff, r"$\|Q (u - u0)\|$")
+            NamedFunc(ref_diff, r"$\|Q (u - u_{ref})\|$"),
+            NamedFunc(rand_diff, r"$\|Q (u - u_{rand})\|$")
         ]
 
-    def control(self, xi, t=None):
-        if (len(self.Xtrain) % int(self.train_every_n_steps) == 0):
+    def control(self, xi, t=None, extravars=2):
+        if (len(self.Xtrain) > 0
+            and len(self.Xtrain) % int(self.train_every_n_steps) == 0):
             # train every n steps
             LOG.info("Training GP with dataset size {}".format(len(self.Xtrain)))
             self.train()
@@ -418,20 +482,21 @@ class ControlCBFLearned(Controller):
         u_ref = self.epsilon_greedy_unsafe_control(t, xi,
                                                 min_=self.ctrl_range[0],
                                                 max_=self.ctrl_range[1])
-        # u_rand = self.random_unsafe_control(t, xi,
-        #                                     min_=self.ctrl_range[0],
-        #                                     max_=self.ctrl_range[1])
+        u_rand = self.random_unsafe_control(t, xi,
+                                            min_=self.ctrl_range[0],
+                                            max_=self.ctrl_range[1])
         if self._has_been_trained_once:
             y_uopt = controller_socp_cvxopt(
-                np.hstack([[0.], u_ref.detach().numpy()]),
-                np.hstack([[1.], np.zeros_like(u_ref)]),
-                self._socp_constraints(t, xi, u_ref, convert_out=to_numpy))
+                np.hstack([[0., 0.], u_ref.detach().numpy()]),
+                np.hstack([[1., 0.05], np.zeros_like(u_ref)]),
+                self._socp_constraints(t, xi, u_ref, u_rand,
+                                       convert_out=to_numpy, extravars=extravars))
             y_uopt = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
             if len(self.Xtrain) > 20:
                 self.constraint_plotter.plot_constraints(
-                    self._plottables(t, xi, u_ref, y_uopt),
+                    self._plottables(t, xi, u_ref, u_rand, y_uopt, extravars=extravars),
                     xi, y_uopt)
-            uopt = y_uopt[1:]
+            uopt = y_uopt[extravars:]
         else:
             uopt = u_ref
 

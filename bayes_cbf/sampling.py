@@ -16,6 +16,18 @@ class VisualizerZ(Visualizer):
     def setStateCtrl(self, x, u, t=0):
         pass
 
+def uncertainity_vis_kwargs(controller, x, u, dt):
+    if (hasattr(controller, "__self__")
+        and hasattr(controller.__self__, "model")
+        and hasattr(controller.__self__.model, "fu_func_gp")):
+        xtp1_gp = controller.__self__.model.fu_func_gp(u)
+        xtp1 = xtp1_gp.mean(x) * dt + x
+        xtp1_var = xtp1_gp.knl(x, x) * dt * dt
+        vis_kwargs = dict(xtp1=xtp1, xtp1_var=xtp1_var)
+    else:
+        vis_kwargs = dict()
+    return vis_kwargs
+
 def sample_generator_trajectory(dynamics_model, D, dt=0.01, x0=None,
                                 true_model=None,
                                 controller=controller_sine,
@@ -41,7 +53,8 @@ def sample_generator_trajectory(dynamics_model, D, dt=0.01, x0=None,
     # Single trajectory
     for t in range(D):
         U[t, :] = controller(X[t, :], t=t)
-        visualizer.setStateCtrl(X[t, :], U[t, :], t=t)
+        visualizer.setStateCtrl(X[t, :], U[t, :], t=t,
+                                **uncertainity_vis_kwargs(controller, X[t, :], U[t, :], dt))
         Xdot[t, :] = f(X[t, :]) + g(X[t, :]) @ U[t, :]
         X[t+1, :] = normalize_state(X[t, :] + Xdot[t, :] * dt)
     return Xdot, X, U

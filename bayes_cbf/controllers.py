@@ -89,7 +89,7 @@ class Controller(ABC):
 
 
 class LQRController(Controller):
-    def __init__(self, x_goal, model, x_quad_goal_cost, u_quad_cost, numSteps,
+    def __init__(self, model, x_quad_goal_cost, u_quad_cost, x_goal, numSteps,
                  dt, ctrl_range):
         self.x_goal = x_goal
         self.model = model
@@ -107,8 +107,8 @@ class LQRController(Controller):
         Q = self.Q
         R = self.R
         s=(- Q @ to_numpy(self.x_goal))
-        Q_T=(self.numSteps-t)*Q
-        s_T=(- (self.numSteps-t) * Q @ to_numpy(self.x_goal))
+        Q_T=Q
+        s_T=(-  Q @ to_numpy(self.x_goal))
         z=np.zeros(R.shape[-1])
         T=(self.numSteps-t)
         sys = LinearSystem(A=(np.eye(A.shape[-1]) + to_numpy(A) * self.dt),
@@ -121,7 +121,7 @@ class LQRController(Controller):
                            z=z,
                            T=T
         )
-        xs, us = sys.solve(x - self.x_goal, 1)
+        xs, us = sys.solve(to_numpy(x), 1)
 
         with variable_required_grad(x) as xp:
             A = t_jac(self.model.f_func(xp)
@@ -137,7 +137,7 @@ class LQRController(Controller):
                            z=z,
                            T=T
         )
-        xs, us = sys.solve(x, 1)
+        xs, us = sys.solve(to_numpy(x), 1)
 
         return torch.tensor(us[0], dtype=xp.dtype)
 
@@ -191,7 +191,7 @@ class ILQRController(Controller):
 
 
 class GreedyController(Controller):
-    def __init__(self, x_goal, model, Q, R, numSteps, dt, ctrl_range):
+    def __init__(self, model, Q, R, x_goal, numSteps, dt, ctrl_range):
         self.x_goal = x_goal
         self.model = model
         self.Q = Q
@@ -282,7 +282,9 @@ class ControlCBFLearned(Controller):
                  x_quad_goal_cost=None,
                  u_quad_cost=None,
                  numSteps=1000,
-                 unsafe_controller_class=ILQR,
+                 unsafe_controller_class=LQRController,
+                 cbfs=[],
+                 ground_truth_cbfs=[]
     ):
         self.Xtrain = []
         self.Utrain = []
@@ -295,12 +297,14 @@ class ControlCBFLearned(Controller):
         self.x_goal = torch.tensor(x_goal)
         self.x_quad_goal_cost = torch.tensor(x_quad_goal_cost)
         self.u_quad_cost = torch.tensor(u_quad_cost)
-        self.net_model = SumDynamicModels(self.model, self.mean_dynamics_model)
+        self.net_model = SumDynamicModels(model, self.mean_dynamics_model)
         self.unsafe_controller = unsafe_controller_class(
             self.net_model, self.x_quad_goal_cost,
             self.u_quad_cost, self.x_goal, numSteps, dt,
             torch.tensor(ctrl_range)
         )
+        self.cbfs = cbfs
+        self.ground_truth_cbfs = ground_truth_cbfs
 
 
     def train(self):
@@ -323,25 +327,26 @@ class ControlCBFLearned(Controller):
         self.model.fit(*train_data, training_iter=100)
         self._has_been_trained_once = True
 
-        self.axes[0] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
-                                self.model.f_func,
-                                self.true_model.f_func,
-                                axtitle="f(x)[{i}]",
-                                axs=self.axes[0])
-        plt_savefig_with_data(
-            self.axes[0].flatten()[0].figure,
-            'plots/online_f_learned_vs_f_true_%d.pdf' % Xtrain.shape[0])
-        self.axes[1] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
-                                lambda x: self.model.g_func(x)[..., 0],
-                                lambda x: self.true_model.g_func(x)[..., 0],
-                                axtitle="g(x)[{i}]",
-                                axs=self.axes[1])
-        plt_savefig_with_data(
-            self.axes[1].flatten()[0].figure,
-            'plots/online_g_learned_vs_g_true_%d.pdf' % Xtrain.shape[0])
+        if False:
+            self.axes[0] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
+                                    self.model.f_func,
+                                    self.true_model.f_func,
+                                    axtitle="f(x)[{i}]",
+                                    axs=self.axes[0])
+            plt_savefig_with_data(
+                self.axes[0].flatten()[0].figure,
+                'plots/online_f_learned_vs_f_true_%d.pdf' % Xtrain.shape[0])
+            self.axes[1] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
+                                    lambda x: self.model.g_func(x)[..., 0],
+                                    lambda x: self.true_model.g_func(x)[..., 0],
+                                    axtitle="g(x)[{i}]",
+                                    axs=self.axes[1])
+            plt_savefig_with_data(
+                self.axes[1].flatten()[0].figure,
+                'plots/online_g_learned_vs_g_true_%d.pdf' % Xtrain.shape[0])
 
 
-    def _socp_objective(self, i, x, u0, yidx=0, convert_out=to_numpy, extravars=2):
+    def _socp_objective(self, i, x, u0, yidx=0, convert_out=to_numpy, extravars=1):
         # s.t. ||[0, Q][y_1; y_2; u] - Q u_0||_2 <= [1, 0, 0] [y_1; y_2; u] + 0
         # s.t. ||R[y_1; y_2; u] + h||_2 <= a' [y_1; y_2; u] + b
         assert yidx < extravars
@@ -361,7 +366,7 @@ class ControlCBFLearned(Controller):
     def _socp_safety(self, cbc2, x, u0,
                      safety_factor=None,
                      convert_out=to_numpy,
-                     extravars=2):
+                     extravars=1):
         """
         Var(CBC2) = Au² + b' u + c
         E(CBC2) = e' u + e
@@ -399,43 +404,42 @@ class ControlCBFLearned(Controller):
             # s.t. factor * ||A[y_1; u] + b||_2 <= c'x + d
             return list(map(convert_out, (factor * A, factor * b, c, e)))
 
-    def _socp_constraints(self, i, x, u_ref, u_rand, convert_out=to_numpy, extravars=2):
+    def _socp_constraints(self, t, x, u_ref, convert_out=to_numpy, extravars=1):
         return [
             (r"$y_1 - \|R (u - u_{ref})\|>0$",
-             self._socp_objective(i, x, u_ref, yidx=0, convert_out=convert_out,
+             self._socp_objective(t, x, u_ref, yidx=0, convert_out=convert_out,
                                   extravars=extravars)),
-            (r"$y_2 - \|R (u - u_{rand})\|>0$",
-             self._socp_objective(i, x, u_rand, yidx=1, convert_out=convert_out,
-                                  extravars=extravars)),
-            (r"$\mbox{CBC} > 0$", self._socp_safety(
-                self.cbf2.cbc,
-                x, u_ref,
-                safety_factor=self.cbf2.safety_factor(),
-                convert_out=convert_out,
-                extravars=extravars))
-        ]
+        ] + [(r"$\mbox{CBC}_%d > 0$" % i,
+              self._socp_safety(
+                  cbf.cbc,
+                  x, u_ref,
+                  safety_factor=cbf.safety_factor(),
+                  convert_out=convert_out,
+                  extravars=extravars))
+             for i, cbf in enumerate(self.cbfs)]
 
-    def _plottables(self, i, x, u_ref, u_rand, y_uopt, extravars=2):
-        def true_h(xp, y_uopt):
-            val = self.ground_truth_cbf2.cbf(xp)
+    def _plottables(self, i, x, u_ref, y_uopt, extravars=1):
+        def true_h(gcbf, xp, y_uoptp):
+            val = gcbf.cbf(xp)
             return val
 
-        def true_cbc2(xp, y_uopt):
-            val = (- self.ground_truth_cbf2.A(xp) @ y_uopt[extravars:]
-                    + self.ground_truth_cbf2.b(xp))
+        def true_cbc2(gcbf, xp, y_uopt):
+            val = (- gcbf.A(xp) @ y_uopt[extravars:]
+                    + gcbf.b(xp))
             return val
 
-        def scaled_variance(xp, y_uopt):
+        def scaled_variance(cbf, xp, y_uopt):
             up = y_uopt[extravars:]
-            A, bfb, bfc, d = self._socp_safety(self.cbf2.cbc, xp, u_ref,
-                                               safety_factor=self.cbf2.safety_factor(),
+            A, bfb, bfc, d = self._socp_safety(cbf.cbc, xp, u_ref,
+                                               safety_factor=cbf.safety_factor(),
                                                convert_out=identity)
             return (A @ y_uopt + bfb).norm(p=2,dim=-1)
 
-        def mean(xp, y_uopt):
-            A, bfb, bfc, d = self._socp_safety(self.cbf2.cbc, xp, u_ref,
-                                               safety_factor=self.cbf2.safety_factor(),
-                                               convert_out=identity)
+        def mean(cbf, xp, y_uopt):
+            A, bfb, bfc, d = self._socp_safety(
+                cbf.cbc, xp, u_ref,
+                safety_factor=cbf.safety_factor(),
+                convert_out=identity)
             return (bfc @ y_uopt + d)
 
         def ref_diff(xp, y_uopt):
@@ -444,34 +448,31 @@ class ControlCBFLearned(Controller):
                                               convert_out=identity)
             return (R @ y_uopt + h).norm(p=2, dim=-1)
 
-        def rand_diff(xp, y_uopt):
-            R, h, a, b = self._socp_objective(0, xp, u_rand,
-                                              yidx=1,
-                                              convert_out=identity)
-            return (R @ y_uopt + h).norm(p=2, dim=-1)
-
-        def true_dot_h(xp, y_uopt):
-            return self.cbf2.grad_cbf(xp) @ (
-                self.true_model.f_func(xp) +  self.true_model.g_func(xp) @ y_uopt[extravars:])
-
         return [
             NamedFunc(
                 lambda _, y_u: (bfc @ y_u + d
                                 - (A @ y_u + bfb).norm(p=2,dim=-1)) , name)
             for name, (A, bfb, bfc, d) in self._socp_constraints(
-                    i, x, u_ref, u_rand, convert_out=identity, extravars=extravars)
+                    i, x, u_ref, convert_out=identity, extravars=extravars)
         ] + [
-            NamedFunc(true_cbc2,
-                      r"$ \mbox{CBC}_{true} > 0$"),
-            NamedFunc(true_h, r"$h_{true}(x)> 0$"),
-            NamedFunc(true_dot_h, r"$\dot{h}_{true}(x)$"),
-            NamedFunc(scaled_variance, r"$c(\tilde{p}_k)\|V(x,x)[1;u]\|$"),
-            NamedFunc(mean, r"$e(x)^\top[1;u]>0$"),
-            NamedFunc(ref_diff, r"$\|Q (u - u_{ref})\|$"),
-            NamedFunc(rand_diff, r"$\|Q (u - u_{rand})\|$")
+            NamedFunc(partial(true_cbc2, gcbf),
+                      r"$ \mbox{CBC}_{true} > 0$")
+            for gcbf in self.ground_truth_cbfs
+        ] + [
+            NamedFunc(partial(true_h, gcbf), r"$h_{true}(x)> 0$")
+            for gcbf in self.ground_truth_cbfs
+        ] + [
+            NamedFunc(scaled_variance, r"$c(\tilde{p}_k)\|V(x,x)[1;u]\|$")
+            for cbf in self.cbfs
+        ] + [
+            NamedFunc(mean, r"$e(x)^\top[1;u]>0$")
+            for cbf in self.cbfs
+        ] + [
+            NamedFunc(lambda x, u: to_numpy(u_ref), r"$u_{ref}$"),
+            NamedFunc(ref_diff, r"$\|Q (u - u_{ref})\|$")
         ]
 
-    def control(self, xi, t=None, extravars=2):
+    def control(self, xi, t=None, extravars=1):
         if (len(self.Xtrain) > 0
             and len(self.Xtrain) % int(self.train_every_n_steps) == 0):
             # train every n steps
@@ -482,23 +483,19 @@ class ControlCBFLearned(Controller):
         u_ref = self.epsilon_greedy_unsafe_control(t, xi,
                                                 min_=self.ctrl_range[0],
                                                 max_=self.ctrl_range[1])
-        u_rand = self.random_unsafe_control(t, xi,
-                                            min_=self.ctrl_range[0],
-                                            max_=self.ctrl_range[1])
-        if self._has_been_trained_once:
-            y_uopt = controller_socp_cvxopt(
-                np.hstack([[0., 0.], u_ref.detach().numpy()]),
-                np.hstack([[1., 0.05], np.zeros_like(u_ref)]),
-                self._socp_constraints(t, xi, u_ref, u_rand,
-                                       convert_out=to_numpy, extravars=extravars))
-            y_uopt = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
-            if len(self.Xtrain) > 20:
-                self.constraint_plotter.plot_constraints(
-                    self._plottables(t, xi, u_ref, u_rand, y_uopt, extravars=extravars),
-                    xi, y_uopt)
-            uopt = y_uopt[extravars:]
-        else:
-            uopt = u_ref
+        y_uopt_init = np.hstack([np.zeros(extravars), u_ref.detach().numpy()])
+        linear_obj = np.hstack([np.ones(extravars), np.zeros_like(u_ref)])
+        y_uopt = controller_socp_cvxopt(
+            y_uopt_init,
+            linear_obj,
+            self._socp_constraints(t, xi, u_ref,
+                                    convert_out=to_numpy, extravars=extravars))
+        y_uopt = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
+        if len(self.Xtrain) > 20:
+            self.constraint_plotter.plot_constraints(
+                self._plottables(t, xi, u_ref, y_uopt, extravars=extravars),
+                xi, y_uopt)
+        uopt = y_uopt[extravars:]
 
         # record the xi, ui pair
         self.Xtrain.append(xi.detach())
@@ -517,8 +514,6 @@ class ControlCBFLearned(Controller):
     def epsilon_greedy_unsafe_control(self, t, x, min_=-5., max_=5.):
         eps = epsilon(t, interpolate={0: self.egreedy_scheme[0],
                                       self.numSteps: self.egreedy_scheme[1]})
-        if t > 30:
-            pass # import pdb; pdb.set_trace()
         u0 = self.unsafe_control(x, t=t)
         randomact = self.random_unsafe_control(t, x, min_=min_, max_=max_)
         uegreedy = (u0 + randomact

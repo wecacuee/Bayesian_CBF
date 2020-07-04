@@ -700,7 +700,14 @@ class ControlPendulumCBFLearned(ControlCBFLearned):
                  ctrl_range=[-5., 5.],
                  u_quad_cost=[[1.]],
     ):
-        super().__init__(x_dim=x_dim,
+        if self.use_ground_truth_model:
+            self.model = self.true_model
+        else:
+            self.model = ControlAffineRegressor(
+                x_dim, u_dim,
+                gamma_length_scale_prior=gamma_length_scale_prior)
+        super().__init__(model=self.model,
+                         x_dim=x_dim,
                          u_dim=u_dim,
                          train_every_n_steps=train_every_n_steps,
                          mean_dynamics_model_class=mean_dynamics_model_class,
@@ -712,12 +719,6 @@ class ControlPendulumCBFLearned(ControlCBFLearned):
                          x_quad_goal_cost = quad_goal_cost,
                          u_quad_cost = u_quad_cost,
                          numSteps = numSteps)
-        if self.use_ground_truth_model:
-            self.model = self.true_model
-        else:
-            self.model = ControlAffineRegressor(
-                x_dim, u_dim,
-                gamma_length_scale_prior=gamma_length_scale_prior)
         self.ctrl_aff_constraints=[EnergyCLF(self),
                                    RadialCBF(self)]
         self.cbf2 = RadialCBFRelDegree2(self.model, dtype=dtype)

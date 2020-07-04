@@ -1,9 +1,12 @@
 #plot the result
+from functools import partial
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
 import os.path as osp
 from matplotlib import rc as mplibrc
+from matplotlib.patches import Ellipse
+import matplotlib.transforms as transforms
 mplibrc('text', usetex=True)
 
 def rad2deg(rad):
@@ -146,3 +149,69 @@ def plt_savefig_with_data(fig, filename):
     npz_filename = osp.splitext(filename)[0] + ".npz"
     LinePlotSerialization.serialize(npz_filename, fig.get_axes())
     fig.savefig(filename)
+
+def draw_ellipse(ax, scale, theta, x0, **kwargs):
+    ellipse = Ellipse((0,0),
+                      width=2*scale[0],
+                      height=2*scale[1],
+                      fill=False,
+                      **kwargs)
+
+    transf = transforms.Affine2D() \
+        .rotate_deg(theta * 180/np.pi) \
+        .translate(x0[0], x0[1])
+
+    ellipse.set_transform(transf + ax.transData)
+    return ax.add_patch(ellipse)
+
+def demo_plot_ellipse():
+    V = np.asarray([[1., 0.7],
+                    [0.7, 1.]])
+    mean = np.array([0.5, 0.3])
+    fig, ax = plt.subplots()
+    ax.set_ylim(-5, 5)
+    ax.set_xlim(-5, 5)
+    ax.set_aspect('equal')
+    ax.plot(mean[0], mean[1], '.')
+    draw_ellipse(ax, *var_to_scale_theta(V), mean)
+    plt.show()
+
+
+def rotmat2D(theta):
+    return np.array([[np.cos(theta), -np.sin(theta)],
+                     [np.sin(theta), np.cos(theta)]])
+
+def angle_from_rotmat(R):
+    """
+    >>> theta = np.random.rand() * 2*np.pi - np.pi
+    >>> thetae = angle_from_rotmat(rotmat2D(theta))
+    >>> np.allclose(thetae, theta)
+    True
+    """
+    return np.arctan2(R[1, 0], R[0, 0])
+
+def scale_theta_to_var(scale, theta):
+    R = rotmat2D(theta)
+    return R @ np.diag(scale/3) @ R.T
+
+def var_to_scale_theta(V):
+    """
+    >>> scale = np.abs(np.random.rand(2)) * 10
+    >>> theta = np.random.rand() * (2*np.pi) - np.pi
+    >>> s, t = var_to_scale_theta(scale_theta_to_var(scale, theta))
+    >>> allclose = partial(np.allclose, rtol=1e-2, atol=1e-5)
+    >>> allclose(s, scale)
+    True
+    >>> allclose(t, theta)
+    True
+    """
+    w, E = np.linalg.eig(V)
+    scale = 3*w
+    theta = angle_from_rotmat(E)
+    return scale, theta
+
+if __name__ == '__main__':
+    import doctest
+    doctest.testmod()
+    demo_plot_ellipse()
+

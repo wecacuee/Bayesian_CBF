@@ -77,14 +77,14 @@ def torch_kron(A, B):
     return (A.reshape(b, *A_shape) * B.reshape(b, *B_shape)).reshape(b, *kron_shape)
 
 
-class DynamicsModel(ABC, torch.nn.Module):
+class DynamicsModel(ABC):
     """
     Represents mode of the form:
 
     ẋ = f(x) + g(x)u
     """
     def __init__(self):
-        torch.nn.Module.__init__(self)
+        pass
 
     @property
     @abstractmethod
@@ -168,16 +168,24 @@ class ZeroDynamicsModel(DynamicsModel):
     def g_func(self, X):
         return torch.zeros((*X.shape, self.m)) * X.unsqueeze(-1)
 
+def isleaf(x):
+    return x.grad_fn is None
+
 @contextmanager
 def variable_required_grad(x):
     """
     creates context for x requiring gradient
     """
     old_x_requires_grad = x.requires_grad
+    if isleaf(x):
+        xleaf = x
+    else:
+        xleaf = x.detach().clone()
     try:
-        yield x.requires_grad_(True)
+        yield xleaf.requires_grad_(True)
     finally:
-        x.requires_grad_(old_x_requires_grad)
+        if isleaf(x):
+            x.requires_grad_(old_x_requires_grad)
 
 
 def t_hessian(f, x, xp, grad_check=True):

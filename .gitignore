@@ -7,3 +7,7 @@
 bayes_cbf.egg-info/
 plots/*.pdf
 plots/*.npz
+.cache
+data
+nohup.out
+tests/__init__.py

@@ -12,7 +12,8 @@ from matplotlib.patches import Circle, FancyArrowPatch
 from bayes_cbf.misc import (t_hstack, store_args, DynamicsModel,
                             ZeroDynamicsModel, epsilon, to_numpy,
                             get_affine_terms, get_quadratic_terms, t_jac,
-                            variable_required_grad)
+                            variable_required_grad,
+                            create_summary_writer, plot_to_image)
 from bayes_cbf.gp_algebra import (DeterministicGP,)
 from bayes_cbf.cbc1 import RelDeg1Safety
 from bayes_cbf.car.vis import CarWithObstacles
@@ -21,8 +22,8 @@ from bayes_cbf.plotting import (plot_learned_2D_func, plot_results,
                                 draw_ellipse, var_to_scale_theta)
 from bayes_cbf.control_affine_model import ControlAffineRegressor
 from bayes_cbf.controllers import (ControlCBFLearned, NamedAffineFunc,
-                                   ConstraintPlotter, LQRController, GreedyController,
-                                   ILQRController)
+                                   TensorboardPlotter, LQRController, GreedyController,
+                                   ILQRController, Planner)
 from bayes_cbf.ilqr import ILQR
 
 
@@ -124,6 +125,29 @@ class ObstacleCBF(RelDeg1Safety, NamedAffineFunc):
     def b(self, x):
         return self.grad_cbf(x) @ self.model.f_func(x) + self.gamma * self.cbf(x)
 
+class RelDeg1CLF:
+    def __init__(self, model, gamma=1):
+        self._gamma = gamma
+        self.model = model
+
+    def clf(self, x, x_d):
+        xdiff = x - x_d
+        return xdiff @ xdiff
+
+    def grad_clf(self, x, x_d):
+        xdiff = x - x_d
+        return 2 * xdiff
+
+    @property
+    def gamma(self):
+        return self._gamma
+
+    def get_affine_terms(self, x, x_d):
+        return (self.model.g_func(x).t() @ self.grad_clf(x, x_d),
+                self.grad_clf(x, x_d) @ self.model.f_func(x)
+                + self.gamma * self.clf(x, x_d))
+
+
 class ShiftInvariantModel(ControlAffineRegressor):
     def __init__(self,  *args, invariate_slice=slice(0,2,1), **kw):
         super().__init__(*args, **kw)
@@ -160,6 +184,18 @@ class ShiftInvariantModel(ControlAffineRegressor):
         return super().g_func(self._filter_state(Xtest_in))
 
 
+class LinearPlanner(Planner):
+    def __init__(self, x0, x_goal, numSteps):
+        self.x0 = x0
+        self.x_goal = x_goal
+        self.numSteps = numSteps
+
+    def plan(self, x, t):
+        dx = (self.x_goal - self.x0) / self.numSteps
+        x_d =  dx * t  + self.x0
+        return x_d
+
+
 class ControllerUnicycle(ControlCBFLearned):
     ground_truth = False,
     @store_args
@@ -176,7 +212,8 @@ class ControllerUnicycle(ControlCBFLearned):
                  #gamma_length_scale_prior=[1/deg2rad(0.1), 1],
                  gamma_length_scale_prior=None,
                  true_model=UnicycleDynamicsModel(),
-                 plotfile='plots/ctrl_cbf_learned_{suffix}.pdf',
+                 plots_dir='data/runs',
+                 exp_tags=[],
                  dtype=torch.get_default_dtype(),
                  use_ground_truth_model=False,
                  x_dim=3,
@@ -184,14 +221,18 @@ class ControllerUnicycle(ControlCBFLearned):
                  train_every_n_steps=10,
                  mean_dynamics_model_class=ZeroDynamicsModel,
                  dt=0.001,
-                 constraint_plotter_class=ConstraintPlotter,
+                 constraint_plotter_class=TensorboardPlotter,
                  cbc_class=ObstacleCBF,
                  obstacle_centers=[(0, 0)],
                  obstacle_radii=[0.5],
                  numSteps=1000,
                  ctrl_range=[[-10, -10*math.pi],
                              [10, 10*math.pi]],
-                 unsafe_controller_class = LQRController
+                 unsafe_controller_class = GreedyController,
+                 clf_class=RelDeg1CLF,
+                 planner_class=LinearPlanner,
+                 summary_writer=None,
+                 x0=[-3, 0, math.pi/4],
     ):
         if self.use_ground_truth_model:
             model = self.true_model
@@ -205,13 +246,16 @@ class ControllerUnicycle(ControlCBFLearned):
             cbfs.append( cbc_class(model, obsc, obsr, dtype=dtype) )
             ground_truth_cbfs.append( cbc_class(true_model, obsc, obsr,
                                                dtype=dtype) )
+
+        clf = clf_class(model)
         super().__init__(x_dim=x_dim,
                          u_dim=u_dim,
                          train_every_n_steps=train_every_n_steps,
                          mean_dynamics_model_class=mean_dynamics_model_class,
                          dt=dt,
                          constraint_plotter_class=constraint_plotter_class,
-                         plotfile=plotfile,
+                         plots_dir=plots_dir,
+                         exp_tags=exp_tags + ['unicycle'],
                          ctrl_range=ctrl_range,
                          x_goal = x_goal,
                          x_quad_goal_cost = quad_goal_cost,
@@ -220,7 +264,12 @@ class ControllerUnicycle(ControlCBFLearned):
                          model = model,
                          unsafe_controller_class=unsafe_controller_class,
                          cbfs=cbfs,
-                         ground_truth_cbfs=ground_truth_cbfs
+                         ground_truth_cbfs=ground_truth_cbfs,
+                         egreedy_scheme=egreedy_scheme,
+                         summary_writer=summary_writer,
+                         clf=clf,
+                         planner_class=planner_class,
+                         x0=x0
         )
         self.x_goal = torch.tensor(x_goal)
         self.x_quad_goal_cost = torch.tensor(quad_goal_cost)
@@ -250,9 +299,10 @@ BBox = namedtuple('BBox', 'XMIN YMIN XMAX YMAX'.split())
 
 class UnicycleVisualizerMatplotlib(Visualizer):
     @store_args
-    def __init__(self, robotsize, obstacle_centers, obstacle_radii, x_goal):
+    def __init__(self, robotsize, obstacle_centers, obstacle_radii, x_goal,
+                 summary_writer):
         self.fig, self.axes = plt.subplots(1,1)
-        self.fig2, self.axes2 = plt.subplots(2,1)
+        self.summary_writer = summary_writer
         self._bbox = BBox(-2.0, -2.0, 2.0, 2.0)
         self._latest_robot = None
         self._latest_history = None
@@ -340,7 +390,9 @@ class UnicycleVisualizerMatplotlib(Visualizer):
     def setStateCtrl(self, x, u, t=0, xtp1=None, xtp1_var=None):
         self._add_robot(self.axes, x[:2], x[2], self.robotsize)
         self._add_history_state(self.axes)
-        self._plot_state_ctrl_history(self.axes2.flatten())
+        for i in range(u.shape[-1]):
+            self.summary_writer.add_scalar('u_%d' % i, u[i], t)
+        #self._plot_state_ctrl_history(self.axes2.flatten())
         if not len(self._history_state):
             self._add_straight_line_path(self.axes, self.x_goal, to_numpy(x))
         self._history_state.append(to_numpy(x))
@@ -348,46 +400,64 @@ class UnicycleVisualizerMatplotlib(Visualizer):
 
         if xtp1 is not None and xtp1_var is not None:
             self._draw_next_step_var(self.axes, xtp1, xtp1_var)
-        plt.draw()
-        plt.pause(0.01)
+        #self.fig.savefig(self.plotfile.format(t=t))
+        #plt.draw()
+        img = plot_to_image(self.fig)
+        self.summary_writer.add_image('vis', img, t, dataformats='HWC')
+        #plt.pause(0.01)
 
 
 class UnsafeControllerUnicycle(ControllerUnicycle):
     def control(self, xi, t=None):
+        ui = self.epsilon_greedy_unsafe_control(t, xi,
+                                                min_=self.ctrl_range[0],
+                                                max_=self.ctrl_range[1])
         ui = self.unsafe_control(xi, t=t)
         return ui
 
 def run_unicycle_control_learned(
         robotsize=0.2,
+        # obstacle_centers=[(0.00,  -1.00),
+        #                   (0.00,  1.00)],
+        # obstacle_radii=[0.8, 0.8],
         obstacle_centers=[],
-                          #[(0.00,  -1.00),
-                          #(0.00,  1.00)],
-        obstacle_radii=[],#[0.8, 0.8],
-        x0=[-3.0,  0.0, 0],
+        obstacle_radii=[],
+        x0=[-3.0,  0.5, 0],
         x_goal=[1., 0., math.pi/4],
-        D=250,
-        dt=0.01,
-        egreedy_scheme=[1e-8, 1e-8],
+        D=300,
+        dt=0.002,
+        egreedy_scheme=[0.01, 0.01],
         controller_class=partial(ControllerUnicycle,
                                  # mean_dynamics_model_class=partial(
-                                 #    ZeroDynamicsModel, m=2, n=3)),
+                                 #     ZeroDynamicsModel, m=2, n=3)),
                                  mean_dynamics_model_class=UnicycleDynamicsModel),
-        visualizer_class=UnicycleVisualizerMatplotlib):
+        unsafe_controller_class = GreedyController,
+        # unsafe_controller_class=ILQR,
+        visualizer_class=UnicycleVisualizerMatplotlib,
+        summary_writer=None,
+        plots_dir='data/runs/',
+        exp_tags=[]):
     """
     Run safe unicycle control with learned model
     """
+    if summary_writer is None:
+        summary_writer = create_summary_writer(
+            run_dir=plots_dir,
+            exp_tags=exp_tags + ['unicycle', 'learned', 'true_mean'])
     controller = controller_class(
         obstacle_centers=obstacle_centers,
         obstacle_radii=obstacle_radii,
         x_goal=x_goal,
         numSteps=D,
-        dt=dt)
+        unsafe_controller_class=unsafe_controller_class,
+        dt=dt,
+        summary_writer=summary_writer)
     return sample_generator_trajectory(
         dynamics_model=UnicycleDynamicsModel(),
         D=D,
         controller=controller.control,
         visualizer=visualizer_class(robotsize, obstacle_centers,
-                                    obstacle_radii, x_goal),
+                                    obstacle_radii, x_goal, summary_writer),
         x0=x0,
         dt=dt)
 
@@ -425,7 +495,8 @@ def run_unicycle_ilqr(
         x_goal=torch.tensor(x_goal),
         numSteps=D,
         dt=dt,
-        ctrl_range=ctrl_range)
+        ctrl_range=ctrl_range,
+        x0=x0)
     return sample_generator_trajectory(
         dynamics_model=UnicycleDynamicsModel(),
         D=D,
@@ -436,7 +507,70 @@ def run_unicycle_ilqr(
         dt=dt)
 
 
+class RRTPlanner:
+    def __init__(self, cbfs, x_goal, rng=np.random.default_rng, max_iter=1000,
+                 dx=0.1):
+        self.cbfs = cbfs
+        self.x_goal = x_goal
+        self._rng = rng
+        self.max_iter= max_iter
+        self.dx = dx
+        self._space = None
+        self._ss = None
+        self._make_rrt()
+
+    @staticmethod
+    def isStateValid(state):
+        # "state" is of type SE2StateInternal, so we don't need to use the "()"
+        # operator.
+        #
+        # Some arbitrary condition on the state (note that thanks to
+        # dynamic type checking we can just call getX() and do not need
+        # to convert state to an SE2State.)
+        x = torch.tensor([state.getX(), state.getY(), state.getTheta()])
+        return all((cbf(x) > 0 for cbf in self.cbfs))
+
+    def _make_rrt(self):
+        # create an SE2 state space
+        self._space = ob.SE2StateSpace()
+
+        # create a simple setup object
+        self._ss = og.SimpleSetup(space)
+        self._ss.setStateValidityChecker(ob.StateValidityCheckerFn(self.isStateValid))
+
+
+    def plan(self, x):
+        start = ob.State(self._space)
+        start().setX(x[0])
+        start().setY(x[1])
+        start().setYaw(x[2])
+        goal = ob.State(self._space)
+        goal().setX(self.x_goal[0])
+        goal().setY(self.x_goal[1])
+        goal().setYaw(self.x_goal[2])
+        self._ss.setStartAndGoalStates(start, goal)
+        solved = self._ss.solve(1.0)
+        self._ss.simplifySolution()
+        print(ss.getSolutionPath())
+
+
+def plan_unicycle_path(x0=[-3.0, 0.1, np.pi/18],
+                       cbc_class=ObstacleCBF,
+                       obstacle_centers=[(0.00,  -1.00),
+                                         (0.00,  1.00)],
+                       obstacle_radii=[0.8, 0.8],
+                       model=UnicycleDynamicsModel(),
+                       x_goal=[1.0, 0, np.pi/4],
+):
+    cbfs = []
+    for obsc, obsr in zip(obstacle_centers, obstacle_radii):
+        cbfs.append( cbc_class(model, obsc, obsr, dtype=dtype) )
+    planner = RRTPlanner(cbfs, x_goal)
+    planner.plan(x=x0)
+
+
 if __name__ == '__main__':
     # run_unicycle_control_unsafe()
     run_unicycle_control_learned()
     # run_unicycle_ilqr()
+    # plan_unicycle_path()

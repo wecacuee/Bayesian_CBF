@@ -1,3 +1,4 @@
+from datetime import datetime
 import time
 import logging
 LOG = logging.getLogger(__name__)
@@ -10,9 +11,11 @@ import random
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+from torch.utils.tensorboard import SummaryWriter
 
 from bayes_cbf.misc import (store_args, ZeroDynamicsModel, epsilon, t_jac,
-                            variable_required_grad, SumDynamicModels, clip)
+                            variable_required_grad, SumDynamicModels, clip,
+                            create_summary_writer)
 from bayes_cbf.plotting import plot_results, plot_learned_2D_func, plt_savefig_with_data
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, cbc2_safety_factor
 from bayes_cbf.ilqr import ILQR
@@ -32,6 +35,9 @@ def identity(x):
 def to_numpy(x):
     return x.detach().double().cpu().numpy() if isinstance(x, torch.Tensor) else x
 
+class InfeasibleProblemError(ValueError):
+    pass
+
 def controller_socp_cvxopt(u0, linear_objective, socp_constraints):
     """
     Solve the optimization problem
@@ -46,8 +52,8 @@ def controller_socp_cvxopt(u0, linear_objective, socp_constraints):
     from cvxopt.solvers import socp
     m = u0.shape[0]
     c = matrix(linear_objective, (m, 1))
-    Gq = []
-    hq = []
+    Gqs = []
+    hqs = []
     for name, (A, bfb, bfc, d) in socp_constraints:
         # (name, (A, b, c, d))
         # |Au + bfb| < bfc' u + d
@@ -58,17 +64,23 @@ def controller_socp_cvxopt(u0, linear_objective, socp_constraints):
         Gqi = matrix(0.0, (A.shape[0]+1, m))
         Gqi[0, :] = -bfc
         Gqi[1:, :] = -A
-        Gq.append(Gqi)
+        Gqs.append(Gqi)
         hqi = matrix(0.0, (A.shape[0]+1, 1))
         hqi[0, 0] = d.reshape(1,1)
         hqi[1:, 0] = bfb
-        hq.append(hqi)
+        hqs.append(hqi)
 
-    sol = socp(c, Gq = Gq, hq = hq)
+    sol = socp(c, Gq = Gqs, hq = hqs)
     if sol['status'] != 'optimal':
+        if sol['status'] == 'primal infeasible':
+            y_uopt = sol['z']
         print("{c}.T [y, u]\n".format(c=c)
-              + "s.t. sq = {hq} - {Gq} [y, u]\n".format(hq=hq, Gq=Gq))
-        raise ValueError("Infeasible problem: %s" % sol['status'])
+              + "s.t. "
+              + sum((" sq = {hq} - {Gq} [{y_uopt}]\n".format(hq=np.asarray(hq),
+                                                             Gq=np.asarray(Gq),
+                                                             y_uopt=np.asarray(y_uopt))
+                     for Gq, hq in zip(Gqs, hqs)), ""))
+        raise InfeasibleProblemError("Infeasible problem: %s" % sol['status'])
 
     return np.asarray(sol['x']).astype(u0.dtype).reshape(-1)
 
@@ -190,6 +202,14 @@ class ILQRController(Controller):
         return action
 
 
+class ZeroController(Controller):
+    def __init__(self, model, Q, R, x_goal, numSteps, dt, ctrl_range):
+        self.u_dim = R.shape[-1]
+
+    def control(self, x, t=None):
+        return x.new_zeros(self.u_dim)
+
+
 class GreedyController(Controller):
     def __init__(self, model, Q, R, x_goal, numSteps, dt, ctrl_range):
         self.x_goal = x_goal
@@ -199,6 +219,12 @@ class GreedyController(Controller):
         self.numSteps = numSteps
         self.dt = dt
         self.ctrl_range = ctrl_range
+
+    def clf(self, x):
+        return (x - self.x_goal)**2
+
+    def grad_clf(self, x):
+        return 2*(x - self.x_goal)
 
     def control(self, x, t=None):
         u_dim = self.R.shape[-1]
@@ -225,6 +251,19 @@ class GreedyController(Controller):
             assert ugreedy.shape[-1] == u_dim
             return ugreedy
 
+class TensorboardPlotter:
+    @store_args
+    def __init__(self, run_dir='data/runs/', exp_tags=[], summary_writer=None):
+        if summary_writer is None:
+            self.summary_writer = create_summary_writer(run_dir, exp_tags)
+        else:
+            self.summary_writer = summary_writer
+
+    def plot(self, funcs, x, u, t):
+        for i, af in enumerate(funcs):
+            self.summary_writer.add_scalar(af.__name__, af(x, u), t)
+
+
 class ConstraintPlotter:
     @store_args
     def __init__(self,
@@ -233,7 +272,7 @@ class ConstraintPlotter:
                  plotfile='plots/constraint_hists_{i}.pdf'):
         pass
 
-    def plot_constraints(self, funcs, x, u, t=None):
+    def plot(self, funcs, x, u, t=None):
         axs = self.axes
         nfuncs = len(funcs)
         if axs is None:
@@ -265,6 +304,34 @@ class ConstraintPlotter:
         return axs
 
 
+class Planner(ABC):
+    @abstractmethod
+    def plan(self, x, t):
+        pass
+
+class EpsilonGreedyController(ABC):
+    def __init__(self, base_controller, u_dim, numSteps, egreedy_scheme, ctrl_range):
+        self.base_controller = base_controller
+        self.u_dim = u_dim
+        self.numSteps = numSteps
+        self.egreedy_scheme = egreedy_scheme
+        self.ctrl_range = ctrl_range
+
+    def random_unsafe_control(self, i, x, min_=None, max_=None):
+        return randomact
+
+    def control(self, x, t=None):
+        min_, max_ = self.ctrl_range
+        eps = epsilon(t, interpolate={0: self.egreedy_scheme[0],
+                                      self.numSteps: self.egreedy_scheme[1]})
+        u0 = self.base_controller.control(x, t=t)
+        randomact = torch.rand(self.u_dim) * (max_ - min_) + min_
+        uegreedy = (randomact
+                if (random.random() < eps)
+                    else u0)
+        return clip(uegreedy, min_, max_)
+
+
 class ControlCBFLearned(Controller):
     needs_ground_truth = False
     @store_args
@@ -275,36 +342,53 @@ class ControlCBFLearned(Controller):
                  train_every_n_steps=10,
                  mean_dynamics_model_class=ZeroDynamicsModel,
                  dt=0.001,
-                 constraint_plotter_class=ConstraintPlotter,
-                 plotfile='plots/ctrl_cbf_learned_{suffix}.pdf',
+                 constraint_plotter_class=TensorboardPlotter,
+                 plots_dir='data/runs/',
                  ctrl_range=[-5., 5.],
                  x_goal=None,
                  x_quad_goal_cost=None,
                  u_quad_cost=None,
                  numSteps=1000,
                  unsafe_controller_class=LQRController,
+                 planner_class=Planner,
                  cbfs=[],
-                 ground_truth_cbfs=[]
+                 ground_truth_cbfs=[],
+                 exp_tags=[],
+                 exploration_controller_class=EpsilonGreedyController,
+                 clf=None,
+                 egreedy_scheme=[1, 0.1],
+                 summary_writer=None,
+                 x0=None,
     ):
         self.Xtrain = []
         self.Utrain = []
         self.mean_dynamics_model = mean_dynamics_model_class()
         self.axes = [None, None]
         self.constraint_plotter = constraint_plotter_class(
-            plotfile=plotfile.format(suffix='_constraints_{i}'))
+            summary_writer=summary_writer,
+            run_dir=plots_dir,
+            exp_tags=exp_tags)
         self._has_been_trained_once = False
         self.ctrl_range = torch.tensor(ctrl_range)
         self.x_goal = torch.tensor(x_goal)
         self.x_quad_goal_cost = torch.tensor(x_quad_goal_cost)
         self.u_quad_cost = torch.tensor(u_quad_cost)
         self.net_model = SumDynamicModels(model, self.mean_dynamics_model)
-        self.unsafe_controller = unsafe_controller_class(
-            self.net_model, self.x_quad_goal_cost,
-            self.u_quad_cost, self.x_goal, numSteps, dt,
-            torch.tensor(ctrl_range)
+        self.unsafe_controller = exploration_controller_class(
+            unsafe_controller_class(
+                self.net_model, self.x_quad_goal_cost,
+                self.u_quad_cost, self.x_goal, numSteps, dt,
+                self.ctrl_range
+            ),
+            u_dim,
+            numSteps,
+            egreedy_scheme,
+            self.ctrl_range
         )
         self.cbfs = cbfs
         self.ground_truth_cbfs = ground_truth_cbfs
+        self.planner = planner_class(torch.tensor(x0), self.x_goal, numSteps)
+        self.clf = clf
 
 
     def train(self):
@@ -363,6 +447,27 @@ class ControlCBFLearned(Controller):
         # s.t. ||R[y_1; y_2; u] + h||_2 <= a' [y_1; y_2; u] + b
         return list(map(convert_out, (R, h, a, b)))
 
+    def _socp_stability(self, clf, x, u0, t, extravars=1, convert_out=to_numpy):
+        """
+        SOCP compatible representation of condition
+
+        d clf(x) / dt + gamma * clf(x) < 0
+        """
+        # grad_clf(x) @ f(x) + grad_clf(x) @ g(x) @ u + gamma * clf(x) < 0
+        # ||[0] [y_1; u] + [0]||_2 <= - [grad_clf(x) @ g(x)] u - grad_clf(x) @ ||f(x) - gamma * clf(x)
+        m = u0.shape[-1]
+        x_d = self.planner.plan(x, t)
+        bfc = x.new_zeros((m+extravars))
+        q, p = clf.get_affine_terms(x, x_d)
+        bfc[extravars:] = - q
+        d = - p
+        A = x.new_zeros((1, m + extravars))
+        bfb = x.new_zeros((1,1))
+        # # We want to return in format?
+        # (name, (A, b, c, d))
+        # s.t. factor * ||A[y_1; u] + b||_2 <= c'u + d
+        return list(map(convert_out, (A, bfb, bfc, d)))
+
     def _socp_safety(self, cbc2, x, u0,
                      safety_factor=None,
                      convert_out=to_numpy,
@@ -405,11 +510,13 @@ class ControlCBFLearned(Controller):
             return list(map(convert_out, (factor * A, factor * b, c, e)))
 
     def _socp_constraints(self, t, x, u_ref, convert_out=to_numpy, extravars=1):
-        return [
-            (r"$y_1 - \|R (u - u_{ref})\|>0$",
+        constraints =  [
+            (#r"$y_1 - \|R (u - u_{ref})\|>0$",
+                "CtrlCost",
              self._socp_objective(t, x, u_ref, yidx=0, convert_out=convert_out,
                                   extravars=extravars)),
-        ] + [(r"$\mbox{CBC}_%d > 0$" % i,
+        ] +  [(#r"$\mbox{CBC}_%d > 0$" % i,
+            "SafetyConstraint",
               self._socp_safety(
                   cbf.cbc,
                   x, u_ref,
@@ -417,8 +524,15 @@ class ControlCBFLearned(Controller):
                   convert_out=convert_out,
                   extravars=extravars))
              for i, cbf in enumerate(self.cbfs)]
+        if self.clf is not None:
+            constraints += [ (#r"$\mbox{CLF} < 0$",
+                "StabilityConstraint",
+                self._socp_stability( self.clf, x, u_ref, t,
+                                        convert_out=convert_out, extravars=extravars))
+            ]
+        return constraints
 
-    def _plottables(self, i, x, u_ref, y_uopt, extravars=1):
+    def _plottables(self, t, x, u_ref, y_uopt, extravars=1):
         def true_h(gcbf, xp, y_uoptp):
             val = gcbf.cbf(xp)
             return val
@@ -448,28 +562,43 @@ class ControlCBFLearned(Controller):
                                               convert_out=identity)
             return (R @ y_uopt + h).norm(p=2, dim=-1)
 
+        def planned_diff(xp, y_uopt):
+            return (self.planner.plan(xp, t) - xp).norm(p=2, dim=-1)
+
+        def clf(xp, y_uopt):
+            x_d = self.planner.plan(xp, t)
+            return self.clf.clf(xp, x_d)
+
         return [
             NamedFunc(
                 lambda _, y_u: (bfc @ y_u + d
                                 - (A @ y_u + bfb).norm(p=2,dim=-1)) , name)
             for name, (A, bfb, bfc, d) in self._socp_constraints(
-                    i, x, u_ref, convert_out=identity, extravars=extravars)
+                    t, x, u_ref, convert_out=identity, extravars=extravars)
         ] + [
             NamedFunc(partial(true_cbc2, gcbf),
-                      r"$ \mbox{CBC}_{true} > 0$")
+                      #r"$ \mbox{CBC}_{true} > 0$")
+                      "CBCₜᵣᵤₑ")
             for gcbf in self.ground_truth_cbfs
         ] + [
-            NamedFunc(partial(true_h, gcbf), r"$h_{true}(x)> 0$")
+            NamedFunc(partial(true_h, gcbf),
+                      #r"$h_{true}(x)> 0$")
+                      "hₜᵣᵤₑ")
             for gcbf in self.ground_truth_cbfs
         ] + [
-            NamedFunc(scaled_variance, r"$c(\tilde{p}_k)\|V(x,x)[1;u]\|$")
+            NamedFunc(partial(scaled_variance, cbf),
+                      "ScaledVariance")
             for cbf in self.cbfs
         ] + [
-            NamedFunc(mean, r"$e(x)^\top[1;u]>0$")
+            NamedFunc(partial(mean, cbf), "ExpectedCBC")
             for cbf in self.cbfs
         ] + [
-            NamedFunc(lambda x, u: to_numpy(u_ref), r"$u_{ref}$"),
-            NamedFunc(ref_diff, r"$\|Q (u - u_{ref})\|$")
+            NamedFunc(lambda x, u: to_numpy(u_ref)[i], "uᵣₑ_%d" % i)
+            for i in range(u_ref.shape[-1])
+        ] + [
+            NamedFunc(ref_diff, "RefTrackingLoss"),
+            NamedFunc(planned_diff, "PlannerLoss"),
+            NamedFunc(clf, "ExpectedCLF"),
         ]
 
     def control(self, xi, t=None, extravars=1):
@@ -480,22 +609,31 @@ class ControlCBFLearned(Controller):
             self.train()
 
         tic = time.time()
-        u_ref = self.epsilon_greedy_unsafe_control(t, xi,
-                                                min_=self.ctrl_range[0],
-                                                max_=self.ctrl_range[1])
-        y_uopt_init = np.hstack([np.zeros(extravars), u_ref.detach().numpy()])
-        linear_obj = np.hstack([np.ones(extravars), np.zeros_like(u_ref)])
-        y_uopt = controller_socp_cvxopt(
-            y_uopt_init,
-            linear_obj,
-            self._socp_constraints(t, xi, u_ref,
-                                    convert_out=to_numpy, extravars=extravars))
-        y_uopt = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
-        if len(self.Xtrain) > 20:
-            self.constraint_plotter.plot_constraints(
-                self._plottables(t, xi, u_ref, y_uopt, extravars=extravars),
-                xi, y_uopt)
-        uopt = y_uopt[extravars:]
+        u_ref = self.unsafe_control(xi, t=t)
+        if self._has_been_trained_once:
+            y_uopt_init = np.hstack([np.zeros(extravars), u_ref.detach().numpy()])
+            linear_obj = np.hstack([np.ones(extravars), np.zeros_like(u_ref)])
+            try:
+                y_uopt = controller_socp_cvxopt(
+                    y_uopt_init,
+                    linear_obj,
+                    self._socp_constraints(t, xi, u_ref,
+                                            convert_out=to_numpy, extravars=extravars))
+            except InfeasibleProblemError as e:
+                y_uopt = torch.from_numpy(y_uopt_init).to(dtype=xi.dtype,
+                                                          device=xi.device)
+                self.constraint_plotter.plot(
+                    self._plottables(t, xi, u_ref, y_uopt, extravars=extravars),
+                    xi, y_uopt, t)
+                raise
+            y_uopt = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
+            if len(self.Xtrain) > 20:
+                self.constraint_plotter.plot(
+                    self._plottables(t, xi, u_ref, y_uopt, extravars=extravars),
+                    xi, y_uopt, t)
+            uopt = y_uopt[extravars:]
+        else:
+            uopt = u_ref
 
         # record the xi, ui pair
         self.Xtrain.append(xi.detach())
@@ -506,20 +644,6 @@ class ControlCBFLearned(Controller):
 
     def unsafe_control(self, x, t=None):
         return self.unsafe_controller.control(x, t=t)
-
-    def random_unsafe_control(self, i, x, min_=None, max_=None):
-        randomact = torch.rand(self.u_dim) * (max_ - min_) + min_
-        return randomact
-
-    def epsilon_greedy_unsafe_control(self, t, x, min_=-5., max_=5.):
-        eps = epsilon(t, interpolate={0: self.egreedy_scheme[0],
-                                      self.numSteps: self.egreedy_scheme[1]})
-        u0 = self.unsafe_control(x, t=t)
-        randomact = self.random_unsafe_control(t, x, min_=min_, max_=max_)
-        uegreedy = (u0 + randomact
-                if (random.random() < eps)
-                    else u0)
-        return clip(uegreedy, min_, max_)
 
 class NamedAffineFunc(ABC):
     @property

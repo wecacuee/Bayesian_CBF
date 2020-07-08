@@ -1,13 +1,19 @@
 """
 Home for functions/classes that haven't find a home of their own
 """
+from datetime import datetime
 import math
 from functools import wraps, partial
 from itertools import zip_longest
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 import inspect
+import io
+from PIL import Image
+import matplotlib.pyplot as plt
+from torch.utils.tensorboard import SummaryWriter
 
+import numpy as np
 import torch
 
 t_hstack = partial(torch.cat, dim=-1)
@@ -84,7 +90,7 @@ class DynamicsModel(ABC):
     ẋ = f(x) + g(x)u
     """
     def __init__(self):
-        pass
+        self._state = None
 
     @property
     @abstractmethod
@@ -122,7 +128,35 @@ class DynamicsModel(ABC):
         return X_in
 
     def forward(self, x, u):
-        return self.f_func(x) + self.g_func(x).bmm(u.unsqueeze(-1)).squeeze(-1)
+        if x.ndim == 1:
+            X_b = x.unsqueeze(0)
+        else:
+            X_b = x
+
+        if u.ndim == 1:
+            U_b = u.unsqueeze(0).unsqueeze(-1)
+        elif u.ndim == 2:
+            U_b = u.unsqueeze(0)
+        else:
+            U_b = u
+
+        Xdot_b = self.f_func(X_b) + self.g_func(X_b).bmm(U_b).squeeze(-1)
+        if x.ndim == 1:
+            xdot = Xdot_b.squeeze(0)
+        else:
+            xdot = Xdot_b
+
+        return xdot
+
+    def step(self, u, dt):
+        x = self._state
+        xdot = self.forward(x, u)
+        xtp1 = self.normalize_state(x + xdot * dt)
+        self._state = xtp1
+        return dict(x=xtp1, xdot=xdot)
+
+    def set_init_state(self, x0):
+        self._state = x0
 
 
 class SumDynamicModels(DynamicsModel):
@@ -241,3 +275,24 @@ def get_quadratic_terms(func, x):
 
 def clip(x, min_, max_):
     return torch.max(torch.min(x, max_), min_)
+
+def plot_to_image(figure):
+    """Converts the matplotlib plot specified by 'figure' to a PNG image and
+    returns it. The supplied figure is closed and inaccessible after this call."""
+    # Save the plot to a PNG in memory.
+    buf = io.BytesIO()
+    figure.savefig(buf, format='png')
+    # Closing the figure prevents it from being displayed directly inside
+    # the notebook.
+    plt.close(figure)
+    buf.seek(0)
+    # Convert PNG buffer to TF image
+    image = Image.open(buf)
+    # Add the batch dimension
+    return torch.from_numpy(np.asarray(image))
+
+def create_summary_writer(run_dir='data/runs/', exp_tags=[]):
+    timestamp_tag = datetime.now().strftime("%m%d-%H%M")
+    return SummaryWriter(run_dir + '/'
+                         + '_'.join(
+                             exp_tags + [timestamp_tag]))

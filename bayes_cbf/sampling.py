@@ -41,9 +41,6 @@ def sample_generator_trajectory(dynamics_model, D, dt=0.01, x0=None,
         ).control
 
 
-    f = dynamics_model.f_func
-    g = dynamics_model.g_func
-    normalize_state = dynamics_model.normalize_state
     m = dynamics_model.ctrl_size
     n = dynamics_model.state_size
     U = torch.empty((D, m))
@@ -51,12 +48,14 @@ def sample_generator_trajectory(dynamics_model, D, dt=0.01, x0=None,
     X[0, :] = torch.rand(n) if x0 is None else (torch.tensor(x0) if not isinstance(x0, torch.Tensor) else x0)
     Xdot = torch.zeros((D, n))
     # Single trajectory
+    dynamics_model.set_init_state(X[0, :])
     for t in range(D):
         U[t, :] = controller(X[t, :], t=t)
         visualizer.setStateCtrl(X[t, :], U[t, :], t=t,
                                 **uncertainity_vis_kwargs(controller, X[t, :], U[t, :], dt))
-        Xdot[t, :] = f(X[t, :]) + g(X[t, :]) @ U[t, :]
-        X[t+1, :] = normalize_state(X[t, :] + Xdot[t, :] * dt)
+        obs = dynamics_model.step(U[t, :], dt)
+        Xdot[t, :] = obs['xdot'] # f(X[t, :]) + g(X[t, :]) @ U[t, :]
+        X[t+1, :] = obs['x'] # normalize_state(X[t, :] + Xdot[t, :] * dt)
     return Xdot, X, U
 
 

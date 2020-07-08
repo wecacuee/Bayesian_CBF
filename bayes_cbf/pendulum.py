@@ -27,7 +27,7 @@ CALOG.setLevel(logging.WARNING)
 
 from bayes_cbf.plotting import plot_results, plot_learned_2D_func, plt_savefig_with_data
 from bayes_cbf.sampling import (sample_generator_trajectory, controller_sine,
-                                Visualizer, VisualizerZ)
+                                Visualizer, VisualizerZ, uncertainity_vis_kwargs)
 from bayes_cbf.controllers import (Controller, ControlCBFLearned,
                                    NamedAffineFunc, NamedFunc, ConstraintPlotter)
 from bayes_cbf.misc import (t_vstack, t_hstack, to_numpy, store_args,
@@ -181,7 +181,9 @@ def sampling_pendulum(dynamics_model, numSteps,
                                axs=axs)
             plt_savefig_with_data(axs.flatten()[0].figure, plotfile.format(t=t))
             plt.pause(0.001)
-            visualizer.setStateCtrl(Xold[0], u, t=t)
+            visualizer.setStateCtrl(
+                Xold[0], u, t=t,
+                **uncertainity_vis_kwargs(controller, Xold[0], u, tau))
 
     assert torch.all((theta_vec <= math.pi) & (-math.pi <= theta_vec))
     damge_perc=damage_vec.sum() * 100/numSteps
@@ -222,7 +224,7 @@ class PendulumVisualizer(Visualizer):
         self.fig.suptitle('Pendulum')
         self.count = 0
 
-    def setStateCtrl(self, x, u, t=0):
+    def setStateCtrl(self, x, u, t=0, xtp1=None, xtp1_var=None):
         ax = self.axes
         ax.clear()
         ax.set_aspect('equal')
@@ -237,6 +239,15 @@ class PendulumVisualizer(Visualizer):
                 [0, l*math.sin(θ)], 'b-o', linewidth=2, markersize=10)
         ax.fill([0, l*math.cos(c + Δ), l*math.cos(c - Δ)],
                 [0, l*math.sin(c + Δ), l*math.sin(c - Δ)], 'r')
+        if xtp1 is not None and xtp1_var is not None:
+            xtp1_theta = xtp1[0] - np.pi/2
+            xtp1_theta_var = xtp1_var[0,0]
+            ax.plot([0, l*math.cos(xtp1_theta)],
+                    [0, l*math.sin(xtp1_theta)], 'b-o', linewidth=1, markersize=5)
+            ax.fill([0, l*math.cos(xtp1_theta + xtp1_theta_var), l*math.cos(xtp1_theta - xtp1_theta_var)],
+                    [0, l*math.sin(xtp1_theta + xtp1_theta_var), l*math.sin(xtp1_theta - xtp1_theta_var)],
+                    'g--')
+
         self.fig.savefig(self.plotfile.format(t=self.count))
         self.count += 1
         plt.draw()
@@ -690,14 +701,14 @@ class ControlPendulumCBFLearned(ControlCBFLearned):
                  dt=0.001,
                  max_train=200,
                  #gamma_length_scale_prior=[1/deg2rad(0.1), 1],
-                 gamma_length_scale_prior=None,
+                 gamma_length_scale_prior=[np.pi/100, np.pi/100],
                  constraint_plotter_class=ConstraintPlotter,
                  true_model=None,
                  plotfile='plots/ctrl_cbf_learned_{suffix}.pdf',
                  dtype=torch.get_default_dtype(),
                  use_ground_truth_model=False,
                  numSteps=1000,
-                 ctrl_range=[-5., 5.],
+                 ctrl_range=[-15., 15.],
                  u_quad_cost=[[1.]],
     ):
         if self.use_ground_truth_model:
@@ -706,6 +717,10 @@ class ControlPendulumCBFLearned(ControlCBFLearned):
             self.model = ControlAffineRegressor(
                 x_dim, u_dim,
                 gamma_length_scale_prior=gamma_length_scale_prior)
+        self.ctrl_aff_constraints=[EnergyCLF(self),
+                                   RadialCBF(self)]
+        self.cbf2 = RadialCBFRelDegree2(self.model, dtype=dtype)
+        self.ground_truth_cbf2 = RadialCBFRelDegree2(self.true_model, dtype=dtype)
         super().__init__(model=self.model,
                          x_dim=x_dim,
                          u_dim=u_dim,
@@ -718,11 +733,9 @@ class ControlPendulumCBFLearned(ControlCBFLearned):
                          x_goal = [theta_goal, omega_goal],
                          x_quad_goal_cost = quad_goal_cost,
                          u_quad_cost = u_quad_cost,
-                         numSteps = numSteps)
-        self.ctrl_aff_constraints=[EnergyCLF(self),
-                                   RadialCBF(self)]
-        self.cbf2 = RadialCBFRelDegree2(self.model, dtype=dtype)
-        self.ground_truth_cbf2 = RadialCBFRelDegree2(self.true_model, dtype=dtype)
+                         numSteps = numSteps,
+                         cbfs = [self.cbf2],
+                         ground_truth_cbfs = [self.ground_truth_cbf2])
         # These are used in the optimizer hence numpy
         self.axes = [None, None]
 
@@ -806,7 +819,7 @@ run_pendulum_control_online_learning = partial(
     run_pendulum_experiment,
     plotfile='plots/run_pendulum_control_online_learning{suffix}.pdf',
     controller_class=ControlPendulumCBFLearned,
-    numSteps=1000,
+    numSteps=250,
     theta0=7*math.pi/12,
     tau=0.002,
     dtype=torch.float64)

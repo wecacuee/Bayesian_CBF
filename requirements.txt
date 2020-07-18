@@ -10,3 +10,4 @@ vtkPlotter
 k3d
 # Probabilistic programming
 pyro-ppl
+tensorboard

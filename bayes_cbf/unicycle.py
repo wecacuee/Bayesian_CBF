@@ -1,5 +1,8 @@
 import random
 import math
+import logging
+LOG = logging.getLogger(__name__)
+LOG.setLevel(logging.INFO)
 from functools import partial
 from collections import namedtuple
 
@@ -193,6 +196,8 @@ class LinearPlanner(Planner):
     def plan(self, x, t):
         dx = (self.x_goal - self.x0) / self.numSteps
         x_d =  dx * t  + self.x0
+        x_d[2] = x[2]
+        # LOG.info("t={t}, dx={dx}, x={x}, x_d={x_d}".format(t=t, dx=dx, x=x, x_d=x_d))
         return x_d
 
 
@@ -267,7 +272,7 @@ class ControllerUnicycle(ControlCBFLearned):
                          ground_truth_cbfs=ground_truth_cbfs,
                          egreedy_scheme=egreedy_scheme,
                          summary_writer=summary_writer,
-                         clf=clf,
+                         clf_class=clf_class,
                          planner_class=planner_class,
                          x0=x0
         )
@@ -424,9 +429,9 @@ def run_unicycle_control_learned(
         obstacle_radii=[],
         x0=[-3.0,  0.5, 0],
         x_goal=[1., 0., math.pi/4],
-        D=300,
+        D=1000,
         dt=0.002,
-        egreedy_scheme=[0.01, 0.01],
+        egreedy_scheme=[1, 0.01],
         controller_class=partial(ControllerUnicycle,
                                  # mean_dynamics_model_class=partial(
                                  #     ZeroDynamicsModel, m=2, n=3)),

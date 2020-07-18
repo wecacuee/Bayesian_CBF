@@ -355,7 +355,7 @@ class ControlCBFLearned(Controller):
                  ground_truth_cbfs=[],
                  exp_tags=[],
                  exploration_controller_class=EpsilonGreedyController,
-                 clf=None,
+                 clf_class=None,
                  egreedy_scheme=[1, 0.1],
                  summary_writer=None,
                  x0=None,
@@ -373,7 +373,8 @@ class ControlCBFLearned(Controller):
         self.x_goal = torch.tensor(x_goal)
         self.x_quad_goal_cost = torch.tensor(x_quad_goal_cost)
         self.u_quad_cost = torch.tensor(u_quad_cost)
-        self.net_model = SumDynamicModels(model, self.mean_dynamics_model)
+        #self.net_model = SumDynamicModels(model, self.mean_dynamics_model)
+        self.net_model = self.mean_dynamics_model
         self.unsafe_controller = exploration_controller_class(
             unsafe_controller_class(
                 self.net_model, self.x_quad_goal_cost,
@@ -388,7 +389,7 @@ class ControlCBFLearned(Controller):
         self.cbfs = cbfs
         self.ground_truth_cbfs = ground_truth_cbfs
         self.planner = planner_class(torch.tensor(x0), self.x_goal, numSteps)
-        self.clf = clf
+        self.clf = clf_class(self.net_model)
 
 
     def train(self):
@@ -435,11 +436,13 @@ class ControlCBFLearned(Controller):
         # s.t. ||R[y_1; y_2; u] + h||_2 <= a' [y_1; y_2; u] + b
         assert yidx < extravars
         Q = torch.eye(self.u_dim)
-        R = torch.zeros(self.u_dim, self.u_dim + extravars)
-        h = torch.zeros(self.u_dim)
+        assert extravars >= 2
+        R = torch.zeros(self.u_dim + extravars, self.u_dim + extravars)
+        h = torch.zeros(self.u_dim + extravars)
         with torch.no_grad():
-            R[:, :extravars] = 0
-            R[:, extravars:] = Q
+            assert extravars >= 2
+            R[extravars-1, extravars-1] = 1 # for δ
+            R[extravars:, extravars:] = Q
             h = - Q @ u0
         a = torch.zeros((self.u_dim + extravars,))
         a[yidx] = 1
@@ -458,11 +461,26 @@ class ControlCBFLearned(Controller):
         m = u0.shape[-1]
         x_d = self.planner.plan(x, t)
         bfc = x.new_zeros((m+extravars))
-        q, p = clf.get_affine_terms(x, x_d)
-        bfc[extravars:] = - q
-        d = - p
-        A = x.new_zeros((1, m + extravars))
-        bfb = x.new_zeros((1,1))
+        (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(
+            lambda x: clf(x, x_d), x, u0)
+        with torch.no_grad():
+            # [1, u] Asq [1; u]
+            Asq = torch.cat(
+                (
+                    torch.cat((torch.tensor([[v]]),         (bfv / 2).reshape(1, -1)), dim=-1),
+                    torch.cat(((bfv / 2).reshape(-1, 1),    V), dim=-1)
+                ),
+                dim=-2)
+
+            # [1, u] Asq [1; u] = |L[1; u]|_2 = |[0, A] [y_1; y_2; u] + b|_2
+            A = torch.zeros((m + 1, m + extravars))
+
+        A[:, extravars:] = L[:, 1:]
+        b = L[:, 0] # (m+1)
+        assert extravars > 2, "I assumeed atleast y and δ "
+        bfc[extravars-1] = 1 # For delta the relaxation factor
+        bfc[extravars:] = - bfe
+        d = - e
         # # We want to return in format?
         # (name, (A, b, c, d))
         # s.t. factor * ||A[y_1; u] + b||_2 <= c'u + d
@@ -569,6 +587,13 @@ class ControlCBFLearned(Controller):
             x_d = self.planner.plan(xp, t)
             return self.clf.clf(xp, x_d)
 
+        def dot_clf(xp, y_uopt):
+            x_d = self.planner.plan(xp, t)
+            uopt = y_uopt[extravars:]
+            return self.clf.grad_clf(xp, x_d) @ (
+                self.net_model.f_func(xp)
+                + self.net_model.g_func(xp) @ uopt)
+
         return [
             NamedFunc(
                 lambda _, y_u: (bfc @ y_u + d
@@ -593,15 +618,16 @@ class ControlCBFLearned(Controller):
             NamedFunc(partial(mean, cbf), "ExpectedCBC")
             for cbf in self.cbfs
         ] + [
-            NamedFunc(lambda x, u: to_numpy(u_ref)[i], "uᵣₑ_%d" % i)
-            for i in range(u_ref.shape[-1])
+            NamedFunc(lambda x, u: to_numpy(u_ref)[j], "uᵣₑ_%d" % j)
+            for j in range(u_ref.shape[-1])
         ] + [
             NamedFunc(ref_diff, "RefTrackingLoss"),
             NamedFunc(planned_diff, "PlannerLoss"),
             NamedFunc(clf, "ExpectedCLF"),
+            NamedFunc(dot_clf, "ExpectedDotCLF"),
         ]
 
-    def control(self, xi, t=None, extravars=1):
+    def control(self, xi, t=None, extravars=2):
         if (len(self.Xtrain) > 0
             and len(self.Xtrain) % int(self.train_every_n_steps) == 0):
             # train every n steps
@@ -612,7 +638,8 @@ class ControlCBFLearned(Controller):
         u_ref = self.unsafe_control(xi, t=t)
         if self._has_been_trained_once:
             y_uopt_init = np.hstack([np.zeros(extravars), u_ref.detach().numpy()])
-            linear_obj = np.hstack([np.ones(extravars), np.zeros_like(u_ref)])
+            assert extravars == 2, "I assumed extrvars to be y and δ"
+            linear_obj = np.hstack([np.array([1., 0.]), np.zeros_like(u_ref)])
             try:
                 y_uopt = controller_socp_cvxopt(
                     y_uopt_init,

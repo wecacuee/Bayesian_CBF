@@ -129,9 +129,22 @@ class ObstacleCBF(RelDeg1Safety, NamedAffineFunc):
         return self.grad_cbf(x) @ self.model.f_func(x) + self.gamma * self.cbf(x)
 
 class RelDeg1CLF:
-    def __init__(self, model, gamma=1):
+    def __init__(self, model, gamma=1, max_unstable_prop=0.01):
         self._gamma = gamma
-        self.model = model
+        self._model = model
+        self._max_unsafe_prob = max_unstable_prop
+
+    @property
+    def model(self):
+        return self._model
+
+    @property
+    def gamma(self):
+        return self._gamma
+
+    @property
+    def max_unsafe_prob(self):
+        return self._max_unsafe_prob
 
     def clf(self, x, x_d):
         xdiff = x - x_d
@@ -141,9 +154,16 @@ class RelDeg1CLF:
         xdiff = x - x_d
         return 2 * xdiff
 
-    @property
-    def gamma(self):
-        return self._gamma
+    def clc(self, x_d, u0):
+        V_gp = DeterministicGP(lambda x: self.gamma * self.clf(x, x_d),
+                               shape=(1,), name="V(x)")
+        grad_V_gp = DeterministicGP(lambda x: self.grad_clf(x, x_d),
+                                    shape=(self.model.state_size,),
+                                    name="∇ V(x)")
+        fu_gp = self.model.fu_func_gp(u0)
+        clc = grad_V_gp.t() @ fu_gp + V_gp
+        return clc
+
 
     def get_affine_terms(self, x, x_d):
         return (self.model.g_func(x).t() @ self.grad_clf(x, x_d),
@@ -252,7 +272,6 @@ class ControllerUnicycle(ControlCBFLearned):
             ground_truth_cbfs.append( cbc_class(true_model, obsc, obsr,
                                                dtype=dtype) )
 
-        clf = clf_class(model)
         super().__init__(x_dim=x_dim,
                          u_dim=u_dim,
                          train_every_n_steps=train_every_n_steps,

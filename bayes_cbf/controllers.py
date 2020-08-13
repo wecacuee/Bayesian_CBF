@@ -373,8 +373,7 @@ class ControlCBFLearned(Controller):
         self.x_goal = torch.tensor(x_goal)
         self.x_quad_goal_cost = torch.tensor(x_quad_goal_cost)
         self.u_quad_cost = torch.tensor(u_quad_cost)
-        #self.net_model = SumDynamicModels(model, self.mean_dynamics_model)
-        self.net_model = self.mean_dynamics_model
+        self.net_model = SumDynamicModels(model, self.mean_dynamics_model)
         self.unsafe_controller = exploration_controller_class(
             unsafe_controller_class(
                 self.net_model, self.x_quad_goal_cost,
@@ -432,29 +431,29 @@ class ControlCBFLearned(Controller):
 
 
     def _socp_objective(self, i, x, u0, yidx=0, convert_out=to_numpy, extravars=1):
-        # s.t. ||[0, Q][y_1; y_2; u] - Q u_0||_2 <= [1, 0, 0] [y_1; y_2; u] + 0
+        # s.t. ||[0, 1, Q][y_1; y_2; u] - Q u_0||_2 <= [1, 0, 0] [y_1; y_2; u] + 0
         # s.t. ||R[y_1; y_2; u] + h||_2 <= a' [y_1; y_2; u] + b
         assert yidx < extravars
         Q = torch.eye(self.u_dim)
         assert extravars >= 2
-        R = torch.zeros(self.u_dim + extravars, self.u_dim + extravars)
-        h = torch.zeros(self.u_dim + extravars)
+        R = torch.zeros(self.u_dim + 1, self.u_dim + extravars)
+        h = torch.zeros(self.u_dim + 1)
         with torch.no_grad():
             assert extravars >= 2
-            R[extravars-1, extravars-1] = 1 # for δ
-            R[extravars:, extravars:] = Q
-            h = - Q @ u0
+            R[1, extravars-1] = 1 # for δ
+            R[1:, extravars:] = Q
+            h[1:] = - Q @ u0
         a = torch.zeros((self.u_dim + extravars,))
         a[yidx] = 1
         b = torch.tensor(0.)
         # s.t. ||R[y_1; y_2; u] + h||_2 <= a' [y_1; y_2; u] + b
         return list(map(convert_out, (R, h, a, b)))
 
-    def _socp_stability(self, clf, x, u0, t, extravars=1, convert_out=to_numpy):
+    def _socp_stability(self, clc, x, u0, t, extravars=1, convert_out=to_numpy):
         """
         SOCP compatible representation of condition
 
-        d clf(x) / dt + gamma * clf(x) < 0
+        d clf(x) / dt + gamma * clf(x) < rho
         """
         # grad_clf(x) @ f(x) + grad_clf(x) @ g(x) @ u + gamma * clf(x) < 0
         # ||[0] [y_1; u] + [0]||_2 <= - [grad_clf(x) @ g(x)] u - grad_clf(x) @ ||f(x) - gamma * clf(x)
@@ -462,7 +461,7 @@ class ControlCBFLearned(Controller):
         x_d = self.planner.plan(x, t)
         bfc = x.new_zeros((m+extravars))
         (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(
-            lambda x: clf(x, x_d), x, u0)
+            lambda u: clc(x_d, u), x, u0)
         with torch.no_grad():
             # [1, u] Asq [1; u]
             Asq = torch.cat(
@@ -474,12 +473,21 @@ class ControlCBFLearned(Controller):
 
             # [1, u] Asq [1; u] = |L[1; u]|_2 = |[0, A] [y_1; y_2; u] + b|_2
             A = torch.zeros((m + 1, m + extravars))
+            try:
+                L = torch.cholesky(Asq) # (m+1) x (m+1)
+            except RuntimeError as err:
+                if "cholesky" in str(err) and "singular" in str(err):
+                    diag_e, V = torch.symeig(Asq, eigenvectors=True)
+                    L = torch.max(torch.diag(diag_e),
+                                    torch.tensor(0.)).sqrt() @ V.t()
+                else:
+                    raise
 
         A[:, extravars:] = L[:, 1:]
-        b = L[:, 0] # (m+1)
-        assert extravars > 2, "I assumeed atleast y and δ "
+        bfb = L[:, 0] # (m+1)
+        assert extravars >= 2, "I assumed atleast y and δ "
         bfc[extravars-1] = 1 # For delta the relaxation factor
-        bfc[extravars:] = - bfe
+        bfc[extravars:] = - bfe # only affine terms need to be negative?
         d = - e
         # # We want to return in format?
         # (name, (A, b, c, d))
@@ -545,8 +553,8 @@ class ControlCBFLearned(Controller):
         if self.clf is not None:
             constraints += [ (#r"$\mbox{CLF} < 0$",
                 "StabilityConstraint",
-                self._socp_stability( self.clf, x, u_ref, t,
-                                        convert_out=convert_out, extravars=extravars))
+                self._socp_stability( self.clf.clc, x, u_ref, t,
+                                      convert_out=convert_out, extravars=extravars))
             ]
         return constraints
 
@@ -564,7 +572,8 @@ class ControlCBFLearned(Controller):
             up = y_uopt[extravars:]
             A, bfb, bfc, d = self._socp_safety(cbf.cbc, xp, u_ref,
                                                safety_factor=cbf.safety_factor(),
-                                               convert_out=identity)
+                                               convert_out=identity,
+                                               extravars=extravars)
             return (A @ y_uopt + bfb).norm(p=2,dim=-1)
 
         def mean(cbf, xp, y_uopt):
@@ -577,7 +586,8 @@ class ControlCBFLearned(Controller):
         def ref_diff(xp, y_uopt):
             R, h, a, b = self._socp_objective(0, xp, u_ref,
                                               yidx=0,
-                                              convert_out=identity)
+                                              convert_out=identity,
+                                              extravars=extravars)
             return (R @ y_uopt + h).norm(p=2, dim=-1)
 
         def planned_diff(xp, y_uopt):
@@ -645,7 +655,7 @@ class ControlCBFLearned(Controller):
                     y_uopt_init,
                     linear_obj,
                     self._socp_constraints(t, xi, u_ref,
-                                            convert_out=to_numpy, extravars=extravars))
+                                           convert_out=to_numpy, extravars=extravars))
             except InfeasibleProblemError as e:
                 y_uopt = torch.from_numpy(y_uopt_init).to(dtype=xi.dtype,
                                                           device=xi.device)

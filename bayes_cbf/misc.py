@@ -296,3 +296,8 @@ def create_summary_writer(run_dir='data/runs/', exp_tags=[]):
     return SummaryWriter(run_dir + '/'
                          + '_'.join(
                              exp_tags + [timestamp_tag]))
+
+
+def random_psd(m):
+    M =  torch.rand(m, m)
+    return M @ M.T

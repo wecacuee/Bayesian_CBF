@@ -4,7 +4,8 @@ import numpy as np
 import torch
 
 
-def controller_sine(xi, m):
+def controller_sine(xi, t=1):
+    m = 1
     return torch.sin(xi[0]) * torch.abs(torch.rand(m)) + 0.2 * torch.rand(1)
 
 class Visualizer(ABC):

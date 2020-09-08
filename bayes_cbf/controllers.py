@@ -332,6 +332,57 @@ class EpsilonGreedyController(ABC):
         return clip(uegreedy, min_, max_)
 
 
+def convert_cbc_terms_to_socp_terms(bfe, e, V, bfv, v, extravars,
+                                    testing=False):
+    m = bfe.shape[-1]
+    bfc = bfe.new_zeros((m+extravars))
+    if testing:
+        u0 = torch.zeros((m,))
+        u0_hom = torch.cat((torch.tensor([1.]), u0))
+    with torch.no_grad():
+        # [1, u] Asq [1; u]
+        Asq = torch.cat(
+            (
+                torch.cat((torch.tensor([[v]]),         (bfv / 2).reshape(1, -1)), dim=-1),
+                torch.cat(((bfv / 2).reshape(-1, 1),    V), dim=-1)
+            ),
+            dim=-2)
+        if testing:
+            np.testing.assert_allclose(u0_hom @ Asq @ u0_hom,
+                                    u0 @ V @ u0 + bfv @ u0 + v)
+
+        # [1, u] Asq [1; u] = |L[1; u]|_2 = |[0, A] [y_1; y_2; u] + b|_2
+        A = torch.zeros((m + 1, m + extravars))
+        try:
+            L = torch.cholesky(Asq) # (m+1) x (m+1)
+        except RuntimeError as err:
+            if "cholesky" in str(err) and "singular" in str(err):
+                if torch.allclose(v, 0) and torch.allclose(bfv, 0):
+                    L = torch.zeros((m+1, m+1))
+                    L[1:, 1:] = torch.cholesky(V)
+                else:
+                    diag_e, U = torch.symeig(Asq, eigenvectors=True)
+                    L = torch.max(torch.diag(diag_e),
+                                    torch.tensor(0.)).sqrt() @ U.t()
+            else:
+                raise
+
+    if testing:
+        np.testing.assert_allclose(L @ L.T, Asq, rtol=1e-2, atol=1e-3)
+
+    A[:, extravars:] = L.T[:, 1:]
+    bfb = L.T[:, 0] # (m+1)
+    if testing:
+        y_u0 = torch.cat((torch.zeros(extravars), u0))
+        np.testing.assert_allclose(A @ y_u0 + bfb, L.T @ u0_hom)
+        np.testing.assert_allclose(u0_hom @ Asq @ u0_hom, u0_hom @ L @ L.T @ u0_hom, rtol=1e-2, atol=1e-3)
+        np.testing.assert_allclose(u0 @ V @ u0 + bfv @ u0 + v, (A @ y_u0 + bfb) @ (A @ y_u0 + bfb), rtol=1e-2, atol=1e-3)
+    assert extravars >= 2, "I assumed atleast y and δ "
+    bfc[extravars-1] = 1 # For delta the relaxation factor
+    bfc[extravars:] = - bfe # only affine terms need to be negative?
+    d = - e
+    return A, bfb, bfc, d
+
 class ControlCBFLearned(Controller):
     needs_ground_truth = False
     @store_args
@@ -392,6 +443,7 @@ class ControlCBFLearned(Controller):
 
 
     def train(self):
+        LOG.info("Training GP with dataset size {}".format(len(self.Xtrain)))
         if not len(self.Xtrain):
             return
         assert len(self.Xtrain) == len(self.Utrain), "Call train when Xtrain and Utrain are balanced"
@@ -459,36 +511,10 @@ class ControlCBFLearned(Controller):
         # ||[0] [y_1; u] + [0]||_2 <= - [grad_clf(x) @ g(x)] u - grad_clf(x) @ ||f(x) - gamma * clf(x)
         m = u0.shape[-1]
         x_d = self.planner.plan(x, t)
-        bfc = x.new_zeros((m+extravars))
         (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(
             lambda u: clc(x_d, u), x, u0)
-        with torch.no_grad():
-            # [1, u] Asq [1; u]
-            Asq = torch.cat(
-                (
-                    torch.cat((torch.tensor([[v]]),         (bfv / 2).reshape(1, -1)), dim=-1),
-                    torch.cat(((bfv / 2).reshape(-1, 1),    V), dim=-1)
-                ),
-                dim=-2)
-
-            # [1, u] Asq [1; u] = |L[1; u]|_2 = |[0, A] [y_1; y_2; u] + b|_2
-            A = torch.zeros((m + 1, m + extravars))
-            try:
-                L = torch.cholesky(Asq) # (m+1) x (m+1)
-            except RuntimeError as err:
-                if "cholesky" in str(err) and "singular" in str(err):
-                    diag_e, V = torch.symeig(Asq, eigenvectors=True)
-                    L = torch.max(torch.diag(diag_e),
-                                    torch.tensor(0.)).sqrt() @ V.t()
-                else:
-                    raise
-
-        A[:, extravars:] = L[:, 1:]
-        bfb = L[:, 0] # (m+1)
-        assert extravars >= 2, "I assumed atleast y and δ "
-        bfc[extravars-1] = 1 # For delta the relaxation factor
-        bfc[extravars:] = - bfe # only affine terms need to be negative?
-        d = - e
+        A, bfb, bfc, d = convert_cbc_terms_to_socp_terms(
+            bfe, e, V, bfv, v)
         # # We want to return in format?
         # (name, (A, b, c, d))
         # s.t. factor * ||A[y_1; u] + b||_2 <= c'u + d
@@ -611,6 +637,16 @@ class ControlCBFLearned(Controller):
             for name, (A, bfb, bfc, d) in self._socp_constraints(
                     t, x, u_ref, convert_out=identity, extravars=extravars)
         ] + [
+            NamedFunc(
+                lambda _, y_u: (bfc @ y_u + d) , name + "_affine")
+            for name, (A, bfb, bfc, d) in self._socp_constraints(
+                    t, x, u_ref, convert_out=identity, extravars=extravars)
+        ] + [
+            NamedFunc(
+                lambda _, y_u: (A @ y_u + bfb).norm(p=2,dim=-1), name + "_norm")
+            for name, (A, bfb, bfc, d) in self._socp_constraints(
+                    t, x, u_ref, convert_out=identity, extravars=extravars)
+        ] + [
             NamedFunc(partial(true_cbc2, gcbf),
                       #r"$ \mbox{CBC}_{true} > 0$")
                       "CBCₜᵣᵤₑ")
@@ -641,12 +677,11 @@ class ControlCBFLearned(Controller):
         if (len(self.Xtrain) > 0
             and len(self.Xtrain) % int(self.train_every_n_steps) == 0):
             # train every n steps
-            LOG.info("Training GP with dataset size {}".format(len(self.Xtrain)))
-            self.train()
+            pass #self.train()
 
         tic = time.time()
         u_ref = self.unsafe_control(xi, t=t)
-        if self._has_been_trained_once:
+        if True or self._has_been_trained_once:
             y_uopt_init = np.hstack([np.zeros(extravars), u_ref.detach().numpy()])
             assert extravars == 2, "I assumed extrvars to be y and δ"
             linear_obj = np.hstack([np.array([1., 0.]), np.zeros_like(u_ref)])

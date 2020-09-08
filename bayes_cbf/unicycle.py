@@ -324,7 +324,7 @@ BBox = namedtuple('BBox', 'XMIN YMIN XMAX YMAX'.split())
 class UnicycleVisualizerMatplotlib(Visualizer):
     @store_args
     def __init__(self, robotsize, obstacle_centers, obstacle_radii, x_goal,
-                 summary_writer):
+                 summary_writer, every_n_steps=10):
         self.fig, self.axes = plt.subplots(1,1)
         self.summary_writer = summary_writer
         self._bbox = BBox(-2.0, -2.0, 2.0, 2.0)
@@ -334,6 +334,7 @@ class UnicycleVisualizerMatplotlib(Visualizer):
         self._history_state = []
         self._history_ctrl = []
         self._init_drawing(self.axes)
+        self.every_n_steps = every_n_steps
 
     def _init_drawing(self, ax):
         self._add_obstacles(ax, self.obstacle_centers, self.obstacle_radii)
@@ -412,6 +413,8 @@ class UnicycleVisualizerMatplotlib(Visualizer):
         )
 
     def setStateCtrl(self, x, u, t=0, xtp1=None, xtp1_var=None):
+        if t % self.every_n_steps != 0:
+            return
         self._add_robot(self.axes, x[:2], x[2], self.robotsize)
         self._add_history_state(self.axes)
         for i in range(u.shape[-1]):
@@ -450,7 +453,7 @@ def run_unicycle_control_learned(
         x_goal=[1., 0., math.pi/4],
         D=1000,
         dt=0.002,
-        egreedy_scheme=[1, 0.01],
+        egreedy_scheme=[0.02, 0.01],
         controller_class=partial(ControllerUnicycle,
                                  # mean_dynamics_model_class=partial(
                                  #     ZeroDynamicsModel, m=2, n=3)),

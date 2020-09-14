@@ -73,13 +73,13 @@ def controller_socp_cvxopt(u0, linear_objective, socp_constraints):
     sol = socp(c, Gq = Gqs, hq = hqs)
     if sol['status'] != 'optimal':
         if sol['status'] == 'primal infeasible':
-            y_uopt = sol['z']
+            y_uopt = sol.get('z', u0)
         print("{c}.T [y, u]\n".format(c=c)
               + "s.t. "
-              + sum((" sq = {hq} - {Gq} [{y_uopt}]\n".format(hq=np.asarray(hq),
+              + "".join((" sq = {hq} - {Gq} [{y_uopt}]\n".format(hq=np.asarray(hq),
                                                              Gq=np.asarray(Gq),
                                                              y_uopt=np.asarray(y_uopt))
-                     for Gq, hq in zip(Gqs, hqs)), ""))
+                     for Gq, hq in zip(Gqs, hqs))))
         raise InfeasibleProblemError("Infeasible problem: %s" % sol['status'])
 
     return np.asarray(sol['x']).astype(u0.dtype).reshape(-1)
@@ -357,7 +357,7 @@ def convert_cbc_terms_to_socp_terms(bfe, e, V, bfv, v, extravars,
             L = torch.cholesky(Asq) # (m+1) x (m+1)
         except RuntimeError as err:
             if "cholesky" in str(err) and "singular" in str(err):
-                if torch.allclose(v, 0) and torch.allclose(bfv, 0):
+                if torch.allclose(v, torch.zeros((1,))) and torch.allclose(bfv, torch.zeros(bfv.shape[0])):
                     L = torch.zeros((m+1, m+1))
                     L[1:, 1:] = torch.cholesky(V)
                 else:
@@ -379,8 +379,8 @@ def convert_cbc_terms_to_socp_terms(bfe, e, V, bfv, v, extravars,
         np.testing.assert_allclose(u0 @ V @ u0 + bfv @ u0 + v, (A @ y_u0 + bfb) @ (A @ y_u0 + bfb), rtol=1e-2, atol=1e-3)
     assert extravars >= 2, "I assumed atleast y and δ "
     bfc[extravars-1] = 1 # For delta the relaxation factor
-    bfc[extravars:] = - bfe # only affine terms need to be negative?
-    d = - e
+    bfc[extravars:] = bfe # only affine terms need to be negative?
+    d = e
     return A, bfb, bfc, d
 
 class ControlCBFLearned(Controller):
@@ -514,7 +514,7 @@ class ControlCBFLearned(Controller):
         (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(
             lambda u: clc(x_d, u), x, u0)
         A, bfb, bfc, d = convert_cbc_terms_to_socp_terms(
-            bfe, e, V, bfv, v)
+            bfe, e, V, bfv, v, extravars)
         # # We want to return in format?
         # (name, (A, b, c, d))
         # s.t. factor * ||A[y_1; u] + b||_2 <= c'u + d
@@ -568,7 +568,7 @@ class ControlCBFLearned(Controller):
              self._socp_objective(t, x, u_ref, yidx=0, convert_out=convert_out,
                                   extravars=extravars)),
         ] +  [(#r"$\mbox{CBC}_%d > 0$" % i,
-            "SafetyConstraint",
+            "SafetyConstraint gt 0",
               self._socp_safety(
                   cbf.cbc,
                   x, u_ref,
@@ -578,7 +578,7 @@ class ControlCBFLearned(Controller):
              for i, cbf in enumerate(self.cbfs)]
         if self.clf is not None:
             constraints += [ (#r"$\mbox{CLF} < 0$",
-                "StabilityConstraint",
+                "StabilityConstraint gt 0",
                 self._socp_stability( self.clf.clc, x, u_ref, t,
                                       convert_out=convert_out, extravars=extravars))
             ]
@@ -684,7 +684,7 @@ class ControlCBFLearned(Controller):
         if True or self._has_been_trained_once:
             y_uopt_init = np.hstack([np.zeros(extravars), u_ref.detach().numpy()])
             assert extravars == 2, "I assumed extrvars to be y and δ"
-            linear_obj = np.hstack([np.array([1., 0.]), np.zeros_like(u_ref)])
+            linear_obj = np.hstack([np.array([1., 1.]), np.zeros_like(u_ref)])
             try:
                 y_uopt = controller_socp_cvxopt(
                     y_uopt_init,

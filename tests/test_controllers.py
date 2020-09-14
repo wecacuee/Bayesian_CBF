@@ -18,7 +18,7 @@ def test_convert_cbc_terms_to_socp_term(m = 2,
     std_rhs = (A @ y_u + bfb).norm()
     mean_rhs = bfc @ y_u + d
     std_lhs = torch.sqrt(u.T @ V @ u + bfv @ u + v)
-    mean_lhs = - bfe @ u - e
+    mean_lhs = bfe @ u + e
     assert to_numpy(mean_lhs ) == pytest.approx(to_numpy(mean_rhs ), abs=1e-4, rel=1e-2)
     assert to_numpy(std_lhs ) == pytest.approx(to_numpy(std_rhs ), abs=1e-4, rel=1e-2)
     assert to_numpy(mean_lhs + std_lhs) == pytest.approx(to_numpy(mean_rhs + std_rhs), abs=1e-4, rel=1e-2)

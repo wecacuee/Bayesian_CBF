@@ -129,7 +129,7 @@ class ObstacleCBF(RelDeg1Safety, NamedAffineFunc):
         return self.grad_cbf(x) @ self.model.f_func(x) + self.gamma * self.cbf(x)
 
 class RelDeg1CLF:
-    def __init__(self, model, gamma=1, max_unstable_prop=0.01):
+    def __init__(self, model, gamma=0.1, max_unstable_prop=0.01):
         self._gamma = gamma
         self._model = model
         self._max_unsafe_prob = max_unstable_prop
@@ -155,9 +155,9 @@ class RelDeg1CLF:
         return 2 * xdiff
 
     def clc(self, x_d, u0):
-        V_gp = DeterministicGP(lambda x: self.gamma * self.clf(x, x_d),
+        V_gp = DeterministicGP(lambda x: - self.gamma * self.clf(x, x_d),
                                shape=(1,), name="V(x)")
-        grad_V_gp = DeterministicGP(lambda x: self.grad_clf(x, x_d),
+        grad_V_gp = DeterministicGP(lambda x: - self.grad_clf(x, x_d),
                                     shape=(self.model.state_size,),
                                     name="∇ V(x)")
         fu_gp = self.model.fu_func_gp(u0)

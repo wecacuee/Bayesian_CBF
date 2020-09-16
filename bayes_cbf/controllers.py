@@ -74,6 +74,9 @@ def controller_socp_cvxopt(u0, linear_objective, socp_constraints):
     if sol['status'] != 'optimal':
         if sol['status'] == 'primal infeasible':
             y_uopt = sol.get('z', u0)
+        else:
+            y_uopt = u0
+
         print("{c}.T [y, u]\n".format(c=c)
               + "s.t. "
               + "".join((" sq = {hq} - {Gq} [{y_uopt}]\n".format(hq=np.asarray(hq),
@@ -404,12 +407,14 @@ class ControlCBFLearned(Controller):
                  planner_class=Planner,
                  cbfs=[],
                  ground_truth_cbfs=[],
-                 exp_tags=[],
+                 exp_tags=[], # Experiment tags for tensorboard summary writer (if None)
                  exploration_controller_class=EpsilonGreedyController,
-                 clf_class=None,
-                 egreedy_scheme=[1, 0.1],
-                 summary_writer=None,
-                 x0=None,
+                 clf_class=None, # Control Lyapunov Controller class
+                 egreedy_scheme=[1, 0.1], # Scheme for EpsilonGreedyController
+                 summary_writer=None, # tensorboard summary writer
+                 x0=None, # Initial starting point
+                 ctrl_reg=1., # Q control regularizer
+                 clf_relax_weight=5. # ρ CLF relaxation weight compared to ctrl_reg
     ):
         self.Xtrain = []
         self.Utrain = []
@@ -486,13 +491,13 @@ class ControlCBFLearned(Controller):
         # s.t. ||[0, 1, Q][y_1; y_2; u] - Q u_0||_2 <= [1, 0, 0] [y_1; y_2; u] + 0
         # s.t. ||R[y_1; y_2; u] + h||_2 <= a' [y_1; y_2; u] + b
         assert yidx < extravars
-        Q = torch.eye(self.u_dim)
+        Q = torch.eye(self.u_dim) * self.ctrl_reg
         assert extravars >= 2
         R = torch.zeros(self.u_dim + 1, self.u_dim + extravars)
         h = torch.zeros(self.u_dim + 1)
         with torch.no_grad():
             assert extravars >= 2
-            R[1, extravars-1] = 1 # for δ
+            R[1, extravars-1] = self.clf_relax_weight # for δ
             R[1:, extravars:] = Q
             h[1:] = - Q @ u0
         a = torch.zeros((self.u_dim + extravars,))
@@ -616,9 +621,6 @@ class ControlCBFLearned(Controller):
                                               extravars=extravars)
             return (R @ y_uopt + h).norm(p=2, dim=-1)
 
-        def planned_diff(xp, y_uopt):
-            return (self.planner.plan(xp, t) - xp).norm(p=2, dim=-1)
-
         def clf(xp, y_uopt):
             x_d = self.planner.plan(xp, t)
             return self.clf.clf(xp, x_d)
@@ -629,6 +631,24 @@ class ControlCBFLearned(Controller):
             return self.clf.grad_clf(xp, x_d) @ (
                 self.net_model.f_func(xp)
                 + self.net_model.g_func(xp) @ uopt)
+
+        def expected_clc(xp, y_uopt):
+            x_d = self.planner.plan(xp, t)
+            uopt = y_uopt[extravars:]
+            return self.clf.clc(x_d, uopt).mean(xp)
+
+        def clc_socp(xp, y_uopt):
+            (A, bfb, bfc, d) = self._socp_stability(self.clf.clc, x, u_ref, t,
+                                                    convert_out=identity,
+                                                    extravars=extravars)
+            return bfc[extravars:] @ y_uopt[extravars:] + d
+
+        def clc_relax(xp, y_uopt):
+            (A, bfb, bfc, d) = self._socp_stability(self.clf.clc, x, u_ref, t,
+                                                    convert_out=identity,
+                                                    extravars=extravars)
+            return bfc[extravars-1] * y_uopt[extravars-1]
+
 
         return [
             NamedFunc(
@@ -668,23 +688,25 @@ class ControlCBFLearned(Controller):
             for j in range(u_ref.shape[-1])
         ] + [
             NamedFunc(ref_diff, "RefTrackingLoss"),
-            NamedFunc(planned_diff, "PlannerLoss"),
             NamedFunc(clf, "ExpectedCLF"),
             NamedFunc(dot_clf, "ExpectedDotCLF"),
+            NamedFunc(expected_clc, "ExpectedCLC"),
+            NamedFunc(clc_socp, "ExpCLC_socp"),
+            NamedFunc(clc_relax, "ExpCLC_Relax")
         ]
 
     def control(self, xi, t=None, extravars=2):
         if (len(self.Xtrain) > 0
             and len(self.Xtrain) % int(self.train_every_n_steps) == 0):
             # train every n steps
-            pass #self.train()
+            self.train()
 
         tic = time.time()
         u_ref = self.unsafe_control(xi, t=t)
         if True or self._has_been_trained_once:
             y_uopt_init = np.hstack([np.zeros(extravars), u_ref.detach().numpy()])
             assert extravars == 2, "I assumed extrvars to be y and δ"
-            linear_obj = np.hstack([np.array([1., 1.]), np.zeros_like(u_ref)])
+            linear_obj = np.hstack([np.array([1., 0.]), np.zeros_like(u_ref)])
             try:
                 y_uopt = controller_socp_cvxopt(
                     y_uopt_init,

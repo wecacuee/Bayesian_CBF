@@ -129,10 +129,11 @@ class ObstacleCBF(RelDeg1Safety, NamedAffineFunc):
         return self.grad_cbf(x) @ self.model.f_func(x) + self.gamma * self.cbf(x)
 
 class RelDeg1CLF:
-    def __init__(self, model, gamma=0.1, max_unstable_prop=0.01):
+    def __init__(self, model, gamma=0.5, max_unstable_prop=0.01, diagP=[1., 1., 0.]):
         self._gamma = gamma
         self._model = model
         self._max_unsafe_prob = max_unstable_prop
+        self._P = torch.diag(torch.tensor(diagP))
 
     @property
     def model(self):
@@ -148,11 +149,11 @@ class RelDeg1CLF:
 
     def clf(self, x, x_d):
         xdiff = x - x_d
-        return xdiff @ xdiff
+        return xdiff @ self._P @ xdiff
 
     def grad_clf(self, x, x_d):
         xdiff = x - x_d
-        return 2 * xdiff
+        return 2 * self._P @ xdiff
 
     def clc(self, x_d, u0):
         V_gp = DeterministicGP(lambda x: - self.gamma * self.clf(x, x_d),
@@ -214,9 +215,17 @@ class LinearPlanner(Planner):
         self.numSteps = numSteps
 
     def plan(self, x, t):
-        dx = (self.x_goal - self.x0) / self.numSteps
-        x_d =  dx * t  + self.x0
-        x_d[2] = x[2]
+        replan = True
+        end_x = self.x_goal
+        end_t = self.numSteps
+        if replan:
+            start_x = x
+            start_t = t
+        else:
+            start_x = self.x0
+            start_t = 0
+        dx = (end_x - start_x) / (end_t - start_t)
+        x_d =  dx * (t+1-start_t)  + start_x
         # LOG.info("t={t}, dx={dx}, x={x}, x_d={x_d}".format(t=t, dx=dx, x=x, x_d=x_d))
         return x_d
 
@@ -324,7 +333,7 @@ BBox = namedtuple('BBox', 'XMIN YMIN XMAX YMAX'.split())
 class UnicycleVisualizerMatplotlib(Visualizer):
     @store_args
     def __init__(self, robotsize, obstacle_centers, obstacle_radii, x_goal,
-                 summary_writer, every_n_steps=10):
+                 summary_writer, every_n_steps=20):
         self.fig, self.axes = plt.subplots(1,1)
         self.summary_writer = summary_writer
         self._bbox = BBox(-2.0, -2.0, 2.0, 2.0)
@@ -384,7 +393,7 @@ class UnicycleVisualizerMatplotlib(Visualizer):
 
         if len(self._history_state):
             hpos = np.asarray(self._history_state)
-            self._latest_history = ax.plot(hpos[:, 0], hpos[:, 1], 'b--')
+            self._latest_history = ax.plot(hpos[:, 0], hpos[:, 1], 'b--*')
 
     def _plot_state_ctrl_history(self, axs):
         hctrl = np.array(self._history_ctrl)
@@ -453,7 +462,7 @@ def run_unicycle_control_learned(
         x_goal=[1., 0., math.pi/4],
         D=1000,
         dt=0.002,
-        egreedy_scheme=[0.02, 0.01],
+        egreedy_scheme=[0.5, 0.001],
         controller_class=partial(ControllerUnicycle,
                                  # mean_dynamics_model_class=partial(
                                  #     ZeroDynamicsModel, m=2, n=3)),

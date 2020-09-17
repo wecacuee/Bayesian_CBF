@@ -69,7 +69,7 @@ def controller_socp_cvxopt(u0, linear_objective, socp_constraints):
     inputs_socp = dict(c = matrix(c),
                        Gq = list(map(matrix, Gqs)),
                        hq = list(map(matrix, hqs)))
-    print("optimizers.py:72", inputs_socp)
+    #print("optimizers.py:72", inputs_socp)
     sol = solvers.socp(**inputs_socp)
     if sol['status'] != 'optimal':
         if sol['status'] == 'primal infeasible':

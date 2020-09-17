@@ -1,6 +1,6 @@
 import pytest
 import torch
-from bayes_cbf.controllers import convert_cbc_terms_to_socp_terms
+from bayes_cbf.controllers import ControlCBFLearned
 from bayes_cbf.misc import to_numpy, random_psd, SumDynamicModels
 from bayes_cbf.unicycle import RelDeg1CLF, ShiftInvariantModel, UnicycleDynamicsModel
 from bayes_cbf.cbc2 import cbc2_quadratic_terms
@@ -14,7 +14,7 @@ def test_convert_cbc_terms_to_socp_term(m = 2,
     bfv = V_hom[1:, 0] * 2
     v = V_hom[0, 0]
     u = torch.rand((m,))
-    A, bfb, bfc, d = convert_cbc_terms_to_socp_terms(
+    A, bfb, bfc, d = ControlCBFLearned.convert_cbc_terms_to_socp_terms(
         bfe, e, V, bfv, v, extravars, testing=True)
     y_u  = torch.cat((torch.zeros(extravars), u))
     std_rhs = (A @ y_u + bfb).norm()

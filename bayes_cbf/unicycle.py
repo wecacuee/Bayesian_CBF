@@ -25,8 +25,9 @@ from bayes_cbf.plotting import (plot_learned_2D_func, plot_results,
                                 draw_ellipse, var_to_scale_theta)
 from bayes_cbf.control_affine_model import ControlAffineRegressor
 from bayes_cbf.controllers import (ControlCBFLearned, NamedAffineFunc,
-                                   TensorboardPlotter, LQRController, GreedyController,
-                                   ILQRController, Planner)
+                                   TensorboardPlotter, LQRController,
+                                   GreedyController, ILQRController, Planner,
+                                   ZeroController)
 from bayes_cbf.ilqr import ILQR
 
 
@@ -214,8 +215,7 @@ class LinearPlanner(Planner):
         self.x_goal = x_goal
         self.numSteps = numSteps
 
-    def plan(self, x, t):
-        replan = True
+    def plan(self, x, t, replan = False):
         end_x = self.x_goal
         end_t = self.numSteps
         if replan:
@@ -465,9 +465,9 @@ def run_unicycle_control_learned(
         egreedy_scheme=[0.5, 0.001],
         controller_class=partial(ControllerUnicycle,
                                  # mean_dynamics_model_class=partial(
-                                 #     ZeroDynamicsModel, m=2, n=3)),
+                                 #    ZeroDynamicsModel, m=2, n=3)),
                                  mean_dynamics_model_class=UnicycleDynamicsModel),
-        unsafe_controller_class = GreedyController,
+        unsafe_controller_class = ZeroController,
         # unsafe_controller_class=ILQR,
         visualizer_class=UnicycleVisualizerMatplotlib,
         summary_writer=None,
@@ -479,7 +479,7 @@ def run_unicycle_control_learned(
     if summary_writer is None:
         summary_writer = create_summary_writer(
             run_dir=plots_dir,
-            exp_tags=exp_tags + ['unicycle', 'learned', 'true_mean'])
+            exp_tags=exp_tags + ['unicycle', 'fixed', 'true-mean'])
     controller = controller_class(
         obstacle_centers=obstacle_centers,
         obstacle_radii=obstacle_radii,

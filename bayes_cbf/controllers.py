@@ -35,58 +35,6 @@ def identity(x):
 def to_numpy(x):
     return x.detach().double().cpu().numpy() if isinstance(x, torch.Tensor) else x
 
-class InfeasibleProblemError(ValueError):
-    pass
-
-def controller_socp_cvxopt(u0, linear_objective, socp_constraints):
-    """
-    Solve the optimization problem
-
-    min_u   A u + b
-       s.t. h₀ - (G u)₀ ≻ |h₁ - (Gu)₁ |₂
-
-    u0: reference control signal
-    linear
-    """
-    from cvxopt import matrix
-    from cvxopt.solvers import socp
-    m = u0.shape[0]
-    c = matrix(linear_objective, (m, 1))
-    Gqs = []
-    hqs = []
-    for name, (A, bfb, bfc, d) in socp_constraints:
-        # (name, (A, b, c, d))
-        # |Au + bfb| < bfc' u + d
-        # s.t. ||Ax + b||_2 <= c'x + d
-        # But || h₁ - G₁x ||₂ ≺ h₀ - g₀' x
-        # G = [g₀'; G₁] = [-c'; -A]
-        # h = [h₀; h₁] = [d; b]
-        Gqi = matrix(0.0, (A.shape[0]+1, m))
-        Gqi[0, :] = -bfc
-        Gqi[1:, :] = -A
-        Gqs.append(Gqi)
-        hqi = matrix(0.0, (A.shape[0]+1, 1))
-        hqi[0, 0] = d.reshape(1,1)
-        hqi[1:, 0] = bfb
-        hqs.append(hqi)
-
-    sol = socp(c, Gq = Gqs, hq = hqs)
-    if sol['status'] != 'optimal':
-        if sol['status'] == 'primal infeasible':
-            y_uopt = sol.get('z', u0)
-        else:
-            y_uopt = u0
-
-        print("{c}.T [y, u]\n".format(c=c)
-              + "s.t. "
-              + "".join((" sq = {hq} - {Gq} [{y_uopt}]\n".format(hq=np.asarray(hq),
-                                                             Gq=np.asarray(Gq),
-                                                             y_uopt=np.asarray(y_uopt))
-                     for Gq, hq in zip(Gqs, hqs))))
-        raise InfeasibleProblemError("Infeasible problem: %s" % sol['status'])
-
-    return np.asarray(sol['x']).astype(u0.dtype).reshape(-1)
-
 def add_diag_const(Q, const=1.0):
     return torch.cat((torch.cat([Q,     torch.zeros(Q.shape[0], 1)], dim=0),
                       torch.cat([torch.zeros(1, Q.shape[1]), torch.tensor([[const]])], dim=0)),
@@ -335,56 +283,6 @@ class EpsilonGreedyController(ABC):
         return clip(uegreedy, min_, max_)
 
 
-def convert_cbc_terms_to_socp_terms(bfe, e, V, bfv, v, extravars,
-                                    testing=False):
-    m = bfe.shape[-1]
-    bfc = bfe.new_zeros((m+extravars))
-    if testing:
-        u0 = torch.zeros((m,))
-        u0_hom = torch.cat((torch.tensor([1.]), u0))
-    with torch.no_grad():
-        # [1, u] Asq [1; u]
-        Asq = torch.cat(
-            (
-                torch.cat((torch.tensor([[v]]),         (bfv / 2).reshape(1, -1)), dim=-1),
-                torch.cat(((bfv / 2).reshape(-1, 1),    V), dim=-1)
-            ),
-            dim=-2)
-        if testing:
-            np.testing.assert_allclose(u0_hom @ Asq @ u0_hom,
-                                    u0 @ V @ u0 + bfv @ u0 + v)
-
-        # [1, u] Asq [1; u] = |L[1; u]|_2 = |[0, A] [y_1; y_2; u] + b|_2
-        A = torch.zeros((m + 1, m + extravars))
-        try:
-            L = torch.cholesky(Asq) # (m+1) x (m+1)
-        except RuntimeError as err:
-            if "cholesky" in str(err) and "singular" in str(err):
-                if torch.allclose(v, torch.zeros((1,))) and torch.allclose(bfv, torch.zeros(bfv.shape[0])):
-                    L = torch.zeros((m+1, m+1))
-                    L[1:, 1:] = torch.cholesky(V)
-                else:
-                    diag_e, U = torch.symeig(Asq, eigenvectors=True)
-                    L = torch.max(torch.diag(diag_e),
-                                    torch.tensor(0.)).sqrt() @ U.t()
-            else:
-                raise
-
-    if testing:
-        np.testing.assert_allclose(L @ L.T, Asq, rtol=1e-2, atol=1e-3)
-
-    A[:, extravars:] = L.T[:, 1:]
-    bfb = L.T[:, 0] # (m+1)
-    if testing:
-        y_u0 = torch.cat((torch.zeros(extravars), u0))
-        np.testing.assert_allclose(A @ y_u0 + bfb, L.T @ u0_hom)
-        np.testing.assert_allclose(u0_hom @ Asq @ u0_hom, u0_hom @ L @ L.T @ u0_hom, rtol=1e-2, atol=1e-3)
-        np.testing.assert_allclose(u0 @ V @ u0 + bfv @ u0 + v, (A @ y_u0 + bfb) @ (A @ y_u0 + bfb), rtol=1e-2, atol=1e-3)
-    assert extravars >= 2, "I assumed atleast y and δ "
-    bfc[extravars-1] = 1 # For delta the relaxation factor
-    bfc[extravars:] = bfe # only affine terms need to be negative?
-    d = e
-    return A, bfb, bfc, d
 
 class ControlCBFLearned(Controller):
     needs_ground_truth = False
@@ -414,7 +312,7 @@ class ControlCBFLearned(Controller):
                  summary_writer=None, # tensorboard summary writer
                  x0=None, # Initial starting point
                  ctrl_reg=1., # Q control regularizer
-                 clf_relax_weight=5. # ρ CLF relaxation weight compared to ctrl_reg
+                 clf_relax_weight=10000. # ρ CLF relaxation weight compared to ctrl_reg
     ):
         self.Xtrain = []
         self.Utrain = []
@@ -486,25 +384,87 @@ class ControlCBFLearned(Controller):
                 self.axes[1].flatten()[0].figure,
                 'plots/online_g_learned_vs_g_true_%d.pdf' % Xtrain.shape[0])
 
+    def _ctrl_cost_sqrt_Q(self):
+        return torch.eye(self.u_dim) * math.sqrt(self.ctrl_reg)
 
     def _socp_objective(self, i, x, u0, yidx=0, convert_out=to_numpy, extravars=1):
-        # s.t. ||[0, 1, Q][y_1; y_2; u] - Q u_0||_2 <= [1, 0, 0] [y_1; y_2; u] + 0
-        # s.t. ||R[y_1; y_2; u] + h||_2 <= a' [y_1; y_2; u] + b
+        # s.t. ||[0, 1, Q][y_1; ρ; u] - Q u_0||_2 <= [1, 0, 0] [y_1; ρ; u] + 0
+        # s.t. ||R[y_1; ρ; u] + h||_2 <= a' [y_1; ρ; u] + b
         assert yidx < extravars
-        Q = torch.eye(self.u_dim) * self.ctrl_reg
+
+        # R = [ 0, √λ,  0 ]
+        #     [ 0, 0 , √Q ]
+        # h = [0, - √Q u₀]
+        # a = [1, 0, 0]
+        # b = 0
+        sqrt_Q = self._ctrl_cost_sqrt_Q()
+        λ = self.clf_relax_weight
         assert extravars >= 2
         R = torch.zeros(self.u_dim + 1, self.u_dim + extravars)
         h = torch.zeros(self.u_dim + 1)
         with torch.no_grad():
             assert extravars >= 2
-            R[1, extravars-1] = self.clf_relax_weight # for δ
-            R[1:, extravars:] = Q
-            h[1:] = - Q @ u0
+            R[0, 1] = math.sqrt(λ ) # for δ
+            R[1:, extravars:] = sqrt_Q
+            h[1:] = - sqrt_Q @ u0
         a = torch.zeros((self.u_dim + extravars,))
         a[yidx] = 1
         b = torch.tensor(0.)
-        # s.t. ||R[y_1; y_2; u] + h||_2 <= a' [y_1; y_2; u] + b
+        # s.t. ||R[y_1; ρ; u] + h||_2 <= a' [y_1; ρ; u] + b
         return list(map(convert_out, (R, h, a, b)))
+
+
+    @staticmethod
+    def convert_cbc_terms_to_socp_terms(bfe, e, V, bfv, v, extravars,
+                                        testing=False):
+        m = bfe.shape[-1]
+        bfc = bfe.new_zeros((m+extravars))
+        if testing:
+            u0 = torch.zeros((m,))
+            u0_hom = torch.cat((torch.tensor([1.]), u0))
+        with torch.no_grad():
+            # [1, u] Asq [1; u]
+            Asq = torch.cat(
+                (
+                    torch.cat((torch.tensor([[v]]),         (bfv / 2).reshape(1, -1)), dim=-1),
+                    torch.cat(((bfv / 2).reshape(-1, 1),    V), dim=-1)
+                ),
+                dim=-2)
+            if testing:
+                np.testing.assert_allclose(u0_hom @ Asq @ u0_hom,
+                                        u0 @ V @ u0 + bfv @ u0 + v)
+
+            # [1, u] Asq [1; u] = |L[1; u]|_2 = |[0, A] [y_1; y_2; u] + b|_2
+            A = torch.zeros((m + 1, m + extravars))
+            try:
+                L = torch.cholesky(Asq) # (m+1) x (m+1)
+            except RuntimeError as err:
+                if "cholesky" in str(err) and "singular" in str(err):
+                    if torch.allclose(v, torch.zeros((1,))) and torch.allclose(bfv, torch.zeros(bfv.shape[0])):
+                        L = torch.zeros((m+1, m+1))
+                        L[1:, 1:] = torch.cholesky(V)
+                    else:
+                        diag_e, U = torch.symeig(Asq, eigenvectors=True)
+                        L = torch.max(torch.diag(diag_e),
+                                        torch.tensor(0.)).sqrt() @ U.t()
+                else:
+                    raise
+
+        if testing:
+            np.testing.assert_allclose(L @ L.T, Asq, rtol=1e-2, atol=1e-3)
+
+        A[:, extravars:] = L.T[:, 1:]
+        bfb = L.T[:, 0] # (m+1)
+        if testing:
+            y_u0 = torch.cat((torch.zeros(extravars), u0))
+            np.testing.assert_allclose(A @ y_u0 + bfb, L.T @ u0_hom)
+            np.testing.assert_allclose(u0_hom @ Asq @ u0_hom, u0_hom @ L @ L.T @ u0_hom, rtol=1e-2, atol=1e-3)
+            np.testing.assert_allclose(u0 @ V @ u0 + bfv @ u0 + v, (A @ y_u0 + bfb) @ (A @ y_u0 + bfb), rtol=1e-2, atol=1e-3)
+        assert extravars >= 2, "I assumed atleast y and δ "
+        bfc[extravars-1] = 1 # For delta the relaxation factor
+        bfc[extravars:] = bfe # only affine terms need to be negative?
+        d = e
+        return A, bfb, bfc, d
 
     def _socp_stability(self, clc, x, u0, t, extravars=1, convert_out=to_numpy):
         """
@@ -518,7 +478,7 @@ class ControlCBFLearned(Controller):
         x_d = self.planner.plan(x, t)
         (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(
             lambda u: clc(x_d, u), x, u0)
-        A, bfb, bfc, d = convert_cbc_terms_to_socp_terms(
+        A, bfb, bfc, d = self.convert_cbc_terms_to_socp_terms(
             bfe, e, V, bfv, v, extravars)
         # # We want to return in format?
         # (name, (A, b, c, d))
@@ -569,7 +529,7 @@ class ControlCBFLearned(Controller):
     def _socp_constraints(self, t, x, u_ref, convert_out=to_numpy, extravars=1):
         constraints =  [
             (#r"$y_1 - \|R (u - u_{ref})\|>0$",
-                "CtrlCost",
+                "Objective",
              self._socp_objective(t, x, u_ref, yidx=0, convert_out=convert_out,
                                   extravars=extravars)),
         ] +  [(#r"$\mbox{CBC}_%d > 0$" % i,
@@ -611,15 +571,32 @@ class ControlCBFLearned(Controller):
             A, bfb, bfc, d = self._socp_safety(
                 cbf.cbc, xp, u_ref,
                 safety_factor=cbf.safety_factor(),
-                convert_out=identity)
+                convert_out=identity,
+                extravars=extravars)
             return (bfc @ y_uopt + d)
 
-        def ref_diff(xp, y_uopt):
-            R, h, a, b = self._socp_objective(0, xp, u_ref,
+        def relax_cost(xp, y_uopt):
+            R, h, a, b = self._socp_objective(t, xp, u_ref,
                                               yidx=0,
                                               convert_out=identity,
                                               extravars=extravars)
-            return (R @ y_uopt + h).norm(p=2, dim=-1)
+            return (R[0, 1] * y_uopt[1] + h[0]).abs()
+
+        def ctrl_ref_cost(xp, y_uopt):
+            R, h, a, b = self._socp_objective(t, xp, u_ref,
+                                              yidx=0,
+                                              convert_out=identity,
+                                              extravars=extravars)
+            return (R[1:, extravars:] @ y_uopt[extravars:] + h[1:]).norm(p=2, dim=-1)
+
+
+        def total_cost(xp, y_uopt):
+            A, bfb, bfc, d = self._socp_objective(t, xp, u_ref,
+                                              yidx=0,
+                                              convert_out=identity,
+                                              extravars=extravars)
+            return (A @ y_uopt + bfb).norm(p=2, dim=-1)
+
 
         def clf(xp, y_uopt):
             x_d = self.planner.plan(xp, t)
@@ -652,18 +629,20 @@ class ControlCBFLearned(Controller):
 
         return [
             NamedFunc(
-                lambda _, y_u: (bfc @ y_u + d
-                                - (A @ y_u + bfb).norm(p=2,dim=-1)) , name)
+                lambda _, y_u, Ap=A, bfbp=bfb, bfcp=bfc, dp=d:
+                (bfcp @ y_u + dp - (Ap @ y_u + bfbp).norm(p=2,dim=-1)) , name)
             for name, (A, bfb, bfc, d) in self._socp_constraints(
                     t, x, u_ref, convert_out=identity, extravars=extravars)
         ] + [
             NamedFunc(
-                lambda _, y_u: (bfc @ y_u + d) , name + "_affine")
+                lambda _, y_u, bfcp=bfc, dp=d:
+                (bfcp @ y_u + dp) , name + "_affine")
             for name, (A, bfb, bfc, d) in self._socp_constraints(
                     t, x, u_ref, convert_out=identity, extravars=extravars)
         ] + [
             NamedFunc(
-                lambda _, y_u: (A @ y_u + bfb).norm(p=2,dim=-1), name + "_norm")
+                lambda _, y_u, Ap=A, bfbp=bfb:
+                (Ap @ y_u + bfbp).norm(p=2,dim=-1), name + "_norm")
             for name, (A, bfb, bfc, d) in self._socp_constraints(
                     t, x, u_ref, convert_out=identity, extravars=extravars)
         ] + [
@@ -681,25 +660,27 @@ class ControlCBFLearned(Controller):
                       "ScaledVariance")
             for cbf in self.cbfs
         ] + [
-            NamedFunc(partial(mean, cbf), "ExpectedCBC")
+            NamedFunc(partial(mean, cbf), "CBC")
             for cbf in self.cbfs
         ] + [
-            NamedFunc(lambda x, u: to_numpy(u_ref)[j], "uᵣₑ_%d" % j)
-            for j in range(u_ref.shape[-1])
+            NamedFunc(lambda x, u, val=u_ref_j: to_numpy(val), "uᵣₑ_%d" % j)
+            for j, u_ref_j in enumerate(u_ref[:])
         ] + [
-            NamedFunc(ref_diff, "RefTrackingLoss"),
-            NamedFunc(clf, "ExpectedCLF"),
-            NamedFunc(dot_clf, "ExpectedDotCLF"),
-            NamedFunc(expected_clc, "ExpectedCLC"),
-            NamedFunc(clc_socp, "ExpCLC_socp"),
-            NamedFunc(clc_relax, "ExpCLC_Relax")
+            NamedFunc(clf, "CLF"),
+            NamedFunc(dot_clf, "CLFDot"),
+            NamedFunc(relax_cost, "CostRelax"),
+            NamedFunc(ctrl_ref_cost, "CostCtrl"),
+            NamedFunc(total_cost, "CostTotal")
+            # NamedFunc(expected_clc, "CLC"),
+            # NamedFunc(clc_socp, "CLC_socp"),
+            # NamedFunc(clc_relax, "CLC_Relax")
         ]
 
     def control(self, xi, t=None, extravars=2):
         if (len(self.Xtrain) > 0
             and len(self.Xtrain) % int(self.train_every_n_steps) == 0):
             # train every n steps
-            self.train()
+            pass # self.train()
 
         tic = time.time()
         u_ref = self.unsafe_control(xi, t=t)

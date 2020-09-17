@@ -19,6 +19,7 @@ from bayes_cbf.misc import (store_args, ZeroDynamicsModel, epsilon, t_jac,
 from bayes_cbf.plotting import plot_results, plot_learned_2D_func, plt_savefig_with_data
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, cbc2_safety_factor
 from bayes_cbf.ilqr import ILQR
+from bayes_cbf.optimizers import controller_socp_cvxopt, InfeasibleProblemError
 
 
 class NamedFunc:

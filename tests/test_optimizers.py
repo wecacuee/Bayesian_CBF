@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-from bayes_cbf.optimizers import convert_socp_to_cvxopt_format, controller_socp_cvxopt
+from bayes_cbf.optimizers import convert_socp_to_cvxopt_format, optimizer_socp_cvxopt
 
 
 def test_cvxopt_example():
@@ -113,7 +113,7 @@ def test_controller_socp_cvxopt():
 
     assert np.asarray(uopt) == pytest.approx(np.asarray(exp_uopt), rel=1e-2)
 
-    uopt = controller_socp_cvxopt(np.random.rand(3),
-                                  linear_objective,
-                                  named_socp_constraints)
+    uopt = optimizer_socp_cvxopt(np.random.rand(3),
+                                 linear_objective,
+                                 named_socp_constraints)
     assert np.asarray(uopt) == pytest.approx(np.asarray(exp_uopt).flatten(), rel=1e-2)

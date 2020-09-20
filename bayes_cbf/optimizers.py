@@ -38,7 +38,7 @@ def convert_socp_to_cvxopt_format(c, socp_constraints):
 
     return c, Gqs, hqs
 
-def controller_socp_cvxopt(u0, linear_objective, socp_constraints):
+def optimizer_socp_cvxopt(u0, linear_objective, socp_constraints):
     """
     Solve the optimization problem
 
@@ -86,3 +86,31 @@ def controller_socp_cvxopt(u0, linear_objective, socp_constraints):
         raise InfeasibleProblemError("Infeasible problem: %s" % sol['status'])
 
     return np.asarray(sol['x']).astype(u0.dtype).reshape(-1)
+
+
+def optimizer_socp_cvxpy(u0, linear_objective, socp_constraints, solver='GUROBI'):
+    import cvxpy as cp
+    x = cp.Variable(u0.shape)
+    x.value = u0
+    constraints = []
+    for name, (A, bfb, bfc, d) in socp_constraints:
+        constraints.append(cp.norm(A @ x + bfb) <= bfc @ x + d)
+
+    obj = cp.Minimize(linear_objective @ x)
+    prob = cp.Problem(obj, constraints)
+    prob.solve(solver=solver)
+    return x.value
+
+
+def optimizer_qp_cvxpy(u0, quadratic_objective, linear_constraints, solver='GUROBI'):
+    import cvxpy as cp
+    x = cp.Variable(u0.shape)
+    x.value = u0
+    constraints = []
+    for name, (bfc, d) in linear_constraints:
+        constraints.append(0 <= bfc @ x + d)
+    A, bfb = quadratic_objective
+    obj = cp.Minimize(cp.sum_squares(A @ x + bfb))
+    prob = cp.Problem(obj, constraints)
+    prob.solve(solver=solver)
+    return x.value

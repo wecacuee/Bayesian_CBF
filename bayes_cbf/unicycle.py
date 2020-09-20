@@ -130,7 +130,7 @@ class ObstacleCBF(RelDeg1Safety, NamedAffineFunc):
         return self.grad_cbf(x) @ self.model.f_func(x) + self.gamma * self.cbf(x)
 
 class RelDeg1CLF:
-    def __init__(self, model, gamma=0.5, max_unstable_prop=0.01, diagP=[1., 1., 0.]):
+    def __init__(self, model, gamma=0.5, max_unstable_prop=0.01, diagP=[1., 1., 1.]):
         self._gamma = gamma
         self._model = model
         self._max_unsafe_prob = max_unstable_prop
@@ -253,7 +253,6 @@ class ControllerUnicycle(ControlCBFLearned):
                  x_dim=3,
                  u_dim=2,
                  train_every_n_steps=10,
-                 mean_dynamics_model_class=ZeroDynamicsModel,
                  dt=0.001,
                  constraint_plotter_class=TensorboardPlotter,
                  cbc_class=ObstacleCBF,
@@ -267,6 +266,7 @@ class ControllerUnicycle(ControlCBFLearned):
                  planner_class=LinearPlanner,
                  summary_writer=None,
                  x0=[-3, 0, math.pi/4],
+                 **kwargs
     ):
         if self.use_ground_truth_model:
             model = self.true_model
@@ -284,7 +284,6 @@ class ControllerUnicycle(ControlCBFLearned):
         super().__init__(x_dim=x_dim,
                          u_dim=u_dim,
                          train_every_n_steps=train_every_n_steps,
-                         mean_dynamics_model_class=mean_dynamics_model_class,
                          dt=dt,
                          constraint_plotter_class=constraint_plotter_class,
                          plots_dir=plots_dir,
@@ -302,7 +301,8 @@ class ControllerUnicycle(ControlCBFLearned):
                          summary_writer=summary_writer,
                          clf_class=clf_class,
                          planner_class=planner_class,
-                         x0=x0
+                         x0=x0,
+                         **kwargs
         )
         self.x_goal = torch.tensor(x_goal)
         self.x_quad_goal_cost = torch.tensor(quad_goal_cost)
@@ -462,12 +462,13 @@ def run_unicycle_control_learned(
         x_goal=[1., 0., math.pi/4],
         D=1000,
         dt=0.002,
-        egreedy_scheme=[0.5, 0.001],
+        egreedy_scheme=[0.00, 0.00],
         controller_class=partial(ControllerUnicycle,
                                  # mean_dynamics_model_class=partial(
                                  #    ZeroDynamicsModel, m=2, n=3)),
-                                 mean_dynamics_model_class=UnicycleDynamicsModel),
-        unsafe_controller_class = ZeroController,
+                                 mean_dynamics_model_class=UnicycleDynamicsModel,
+                                 enable_learning=False),
+        unsafe_controller_class = GreedyController,
         # unsafe_controller_class=ILQR,
         visualizer_class=UnicycleVisualizerMatplotlib,
         summary_writer=None,
@@ -479,7 +480,15 @@ def run_unicycle_control_learned(
     if summary_writer is None:
         summary_writer = create_summary_writer(
             run_dir=plots_dir,
-            exp_tags=exp_tags + ['unicycle', 'fixed', 'true-mean'])
+            exp_tags=exp_tags + [
+                'unicycle',
+                ('learned' if controller_class.keywords['enable_learning'] else 'fixed'),
+                ('true-mean'
+                 if issubclass(
+                         controller_class.keywords['mean_dynamics_model_class'],
+                         UnicycleDynamicsModel)
+                 else 'zero-mean')
+            ])
     controller = controller_class(
         obstacle_centers=obstacle_centers,
         obstacle_radii=obstacle_radii,

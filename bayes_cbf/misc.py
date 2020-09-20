@@ -178,9 +178,6 @@ class SumDynamicModels(DynamicsModel):
     def g_func(self, x):
         return sum(m.g_func(x) for m in self.models)
 
-    def __getattr__(self, n):
-        return getattr(self.models[0], n)
-
 class ZeroDynamicsModel(DynamicsModel):
     def __init__(self, m, n):
         self.m = m

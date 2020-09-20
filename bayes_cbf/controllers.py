@@ -370,7 +370,8 @@ class MeanAdjustedModel(SumDynamicModels):
 
 class SOCPController(Controller):
     def __init__(self, x_dim, u_dim, ctrl_reg, clf_relax_weight, net_model,
-                 planner, cbfs, clf, unsafe_control):
+                 planner, cbfs, clf, unsafe_controller,
+                 summary_writer):
         self.x_dim = x_dim
         self.u_dim = u_dim
         self.ctrl_reg = ctrl_reg
@@ -379,7 +380,8 @@ class SOCPController(Controller):
         self.planner = planner
         self.cbfs = cbfs
         self.clf = clf
-        self.unsafe_control = unsafe_control
+        self.unsafe_controller = unsafe_controller
+        self.summary_writer = summary_writer
 
     def _socp_objective(self, i, x, u0, yidx=0, convert_out=to_numpy, extravars=None):
         # s.t. ||[0, 1, Q][y_1; ρ; u] - Q u_0||_2 <= [1, 0, 0] [y_1; ρ; u] + 0
@@ -391,7 +393,7 @@ class SOCPController(Controller):
         # h = [0, - √Q u₀]
         # a = [1, 0, 0]
         # b = 0
-        sqrt_Q = self._ctrl_cost_sqrt_Q()
+        sqrt_Q = torch.eye(self.u_dim) * math.sqrt(self.ctrl_reg)
         λ = self.clf_relax_weight
         assert extravars >= 2
         R = torch.zeros(self.u_dim + 1, self.u_dim + extravars)
@@ -553,10 +555,10 @@ class SOCPController(Controller):
     def control(self, xi, t=None, extravars=2):
 
         tic = time.time()
-        u_ref = self.unsafe_control(xi, t=t)
+        u_ref = self.unsafe_controller.control(xi, t=t)
         y_uopt_init = np.hstack([np.zeros(extravars), u_ref.detach().numpy()])
-        assert extravars == 1, "I assumed extravars to be δ"
-        linear_obj = np.hstack([np.array([1.,]), np.zeros(u_ref.shape)])
+        assert extravars == 2, "I assumed extravars to be δ"
+        linear_obj = np.hstack([np.array([1., 0]), np.zeros(u_ref.shape)])
         try:
             y_uopt = optimizer_socp_cvxpy(
                 y_uopt_init,
@@ -567,20 +569,15 @@ class SOCPController(Controller):
             y_uopt = torch.from_numpy(y_uopt_init).to(dtype=xi.dtype,
                                                         device=xi.device)
             raise
-        (A, bfb, bfc, d) = self._socp_stability(self.clf.clc, t, xi, u_ref, convert_out=to_numpy, extravars=extravars)
-        assert (linear_obj @ y_uopt) <= np.linalg.norm(A @ y_uopt_init + bfb) - bfc[extravars:] @ y_uopt_init[extravars:] - d, 'objective must be less at optimal point than init point'
         y_uopt_t = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
         uopt = y_uopt_t[extravars:]
         print("Controller took {:.4f} sec".format(time.time()- tic))
         return uopt
 
-    def unsafe_control(self, x, t=None):
-        return self.unsafe_controller.control(x, t=t)
 
-
-class QPController:
+class QPController(Controller):
     def __init__(self, x_dim, u_dim, ctrl_reg, clf_relax_weight, net_model,
-                 planner, cbfs, clf, unsafe_control):
+                 planner, cbfs, clf, unsafe_controller, summary_writer):
         self.x_dim = x_dim
         self.u_dim = u_dim
         self.ctrl_reg = ctrl_reg
@@ -589,11 +586,12 @@ class QPController:
         self.planner = planner
         self.cbfs = cbfs
         self.clf = clf
-        self.unsafe_control = unsafe_control
+        self.unsafe_controller = unsafe_controller
+        self.summary_writer = summary_writer
 
     def control(self, xi, t=None, extravars=1):
         tic = time.time()
-        u_ref = self.unsafe_control(xi, t=t)
+        u_ref = self.unsafe_controller.control(xi, t=t)
         assert extravars == 1, "I assumed extravars to be δ"
         m = u_ref.shape[-1]
         A = np.zeros((extravars+m, extravars+m))
@@ -614,9 +612,6 @@ class QPController:
         print("Controller took {:.4f} sec".format(time.time()- tic))
 
         return uopt
-
-    def unsafe_control(self, x, t=None):
-        return self.unsafe_controller.control(x, t=t)
 
 
 class ControlCBFLearned(Controller):
@@ -650,6 +645,7 @@ class ControlCBFLearned(Controller):
                  enable_learning=False, # Whether learning from data is enabled
                  mean_dynamics_model_class=None, # A prior known model (mean model)
                  max_train=None, # The sample size of max training dataset
+                 controller_class=SOCPController, # SOCPController or QPController
     ):
         self.axes = [None, None]
         self.summary_writer = summary_writer
@@ -677,9 +673,13 @@ class ControlCBFLearned(Controller):
         self.ground_truth_cbfs = ground_truth_cbfs
         self.planner = planner_class(torch.tensor(x0), self.x_goal, numSteps)
         self.clf = clf_class(self.net_model)
-        self._controller = controller_class(x_dim, u_dim, ctrl_reg,
-                                            clf_relax_weight, net_model,
-                                            planner, cbfs, clf, unsafe_control)
+        self._controller = controller_class(self.x_dim, self.u_dim,
+                                            self.ctrl_reg,
+                                            self.clf_relax_weight,
+                                            self.net_model, self.planner,
+                                            self.cbfs, self.clf,
+                                            self.unsafe_controller,
+                                            self.summary_writer)
 
     def control(self, xi, t=None):
         uopt = self._controller.control(xi, t=t)

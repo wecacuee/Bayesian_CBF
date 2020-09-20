@@ -368,71 +368,18 @@ class MeanAdjustedModel(SumDynamicModels):
 
 
 
-class ControlCBFLearned(Controller):
-    needs_ground_truth = False
-    @store_args
-    def __init__(self,
-                 x_dim=2,
-                 u_dim=1,
-                 model=None,
-                 train_every_n_steps=10,
-                 dt=0.001,
-                 constraint_plotter_class=TensorboardPlotter,
-                 plots_dir='data/runs/',
-                 ctrl_range=[-5., 5.],
-                 x_goal=None,
-                 x_quad_goal_cost=None,
-                 u_quad_cost=None,
-                 numSteps=1000,
-                 unsafe_controller_class=LQRController,
-                 planner_class=Planner,
-                 cbfs=[],
-                 ground_truth_cbfs=[],
-                 exp_tags=[], # Experiment tags for tensorboard summary writer (if None)
-                 exploration_controller_class=EpsilonGreedyController,
-                 clf_class=None, # Control Lyapunov Controller class
-                 egreedy_scheme=[1, 0.1], # Scheme for EpsilonGreedyController
-                 summary_writer=None, # tensorboard summary writer
-                 x0=None, # Initial starting point
-                 ctrl_reg=1., # Q control regularizer
-                 clf_relax_weight=10000., # ρ CLF relaxation weight compared to ctrl_reg
-                 enable_learning=False, # Whether learning from data is enabled
-                 mean_dynamics_model_class=None, # A prior known model (mean model)
-                 max_train=None, # The sample size of max training dataset
-    ):
-        self.axes = [None, None]
-        self.constraint_plotter = constraint_plotter_class(
-            summary_writer=summary_writer,
-            run_dir=plots_dir,
-            exp_tags=exp_tags)
-        self.ctrl_range = torch.tensor(ctrl_range)
-        self.x_goal = torch.tensor(x_goal)
-        self.x_quad_goal_cost = torch.tensor(x_quad_goal_cost)
-        self.u_quad_cost = torch.tensor(u_quad_cost)
-        self.net_model = MeanAdjustedModel(x_dim, u_dim,
-                                           mean_dynamics_model_class, model,
-                                           max_train=max_train,
-                                           train_every_n_steps=train_every_n_steps,
-                                           enable_learning=enable_learning)
-        self.unsafe_controller = exploration_controller_class(
-            unsafe_controller_class(
-                self.net_model, self.x_quad_goal_cost,
-                self.u_quad_cost, self.x_goal, numSteps, dt,
-                self.ctrl_range
-            ),
-            u_dim,
-            numSteps,
-            egreedy_scheme,
-            self.ctrl_range
-        )
+class SOCPController(Controller):
+    def __init__(self, x_dim, u_dim, ctrl_reg, clf_relax_weight, net_model,
+                 planner, cbfs, clf, unsafe_control):
+        self.x_dim = x_dim
+        self.u_dim = u_dim
+        self.ctrl_reg = ctrl_reg
+        self.clf_relax_weight = clf_relax_weight
+        self.net_model = net_model
+        self.planner = planner
         self.cbfs = cbfs
-        self.ground_truth_cbfs = ground_truth_cbfs
-        self.planner = planner_class(torch.tensor(x0), self.x_goal, numSteps)
-        self.clf = clf_class(self.net_model)
-
-
-    def _ctrl_cost_sqrt_Q(self):
-        return torch.eye(self.u_dim) * math.sqrt(self.ctrl_reg)
+        self.clf = clf
+        self.unsafe_control = unsafe_control
 
     def _socp_objective(self, i, x, u0, yidx=0, convert_out=to_numpy, extravars=None):
         # s.t. ||[0, 1, Q][y_1; ρ; u] - Q u_0||_2 <= [1, 0, 0] [y_1; ρ; u] + 0
@@ -584,9 +531,9 @@ class ControlCBFLearned(Controller):
 
     def _socp_constraints(self, t, x, u_ref, convert_out=to_numpy, extravars=None):
         constraints = [
-            # ("Objective",
-            #  self._socp_objective(t, x, u_ref, yidx=0, convert_out=convert_out,
-            #                       extravars=extravars))
+            ("Objective",
+             self._socp_objective(t, x, u_ref, yidx=0, convert_out=convert_out,
+                                  extravars=extravars))
         ] + [
             ("SafetyConstraint gt 0",
              self._socp_safety(
@@ -603,175 +550,54 @@ class ControlCBFLearned(Controller):
             ]
         return constraints
 
-    def _plottables(self, t, x, u_ref, y_uopt, extravars=None):
-        def true_h(gcbf, xp, y_uoptp):
-            val = gcbf.cbf(xp)
-            return val
-
-        def true_cbc2(gcbf, xp, y_uopt):
-            val = (- gcbf.A(xp) @ y_uopt[extravars:]
-                    + gcbf.b(xp))
-            return val
-
-        def scaled_variance(cbf, xp, y_uopt):
-            up = y_uopt[extravars:]
-            A, bfb, bfc, d = self._socp_safety(cbf.cbc, xp, u_ref,
-                                               safety_factor=cbf.safety_factor(),
-                                               convert_out=identity,
-                                               extravars=extravars)
-            return (A @ y_uopt + bfb).norm(p=2,dim=-1)
-
-        def mean(cbf, xp, y_uopt):
-            A, bfb, bfc, d = self._socp_safety(
-                cbf.cbc, xp, u_ref,
-                safety_factor=cbf.safety_factor(),
-                convert_out=identity,
-                extravars=extravars)
-            return (bfc @ y_uopt + d)
-
-        def relax_cost(xp, y_uopt):
-            R, h, a, b = self._socp_objective(t, xp, u_ref,
-                                              yidx=0,
-                                              convert_out=identity,
-                                              extravars=extravars)
-            return (R[0, 1] * y_uopt[1] + h[0]).abs()
-
-        def ctrl_ref_cost(xp, y_uopt):
-            R, h, a, b = self._socp_objective(t, xp, u_ref,
-                                              yidx=0,
-                                              convert_out=identity,
-                                              extravars=extravars)
-            return (R[1:, extravars:] @ y_uopt[extravars:] + h[1:]).norm(p=2, dim=-1)
-
-
-        def total_cost(xp, y_uopt):
-            A, bfb, bfc, d = self._socp_objective(t, xp, u_ref,
-                                              yidx=0,
-                                              convert_out=identity,
-                                              extravars=extravars)
-            return (A @ y_uopt + bfb).norm(p=2, dim=-1)
-
-
-        def clf(xp, y_uopt):
-            x_d = self.planner.plan(xp, t)
-            return self.clf.gamma * self.clf.clf(xp, x_d)
-
-        def dot_clf(xp, y_uopt):
-            x_d = self.planner.plan(xp, t)
-            uopt = y_uopt[extravars:]
-            return self.clf.grad_clf(xp, x_d) @ (
-                self.net_model.fu_func_gp(uopt).mean(xp))
-
-        def expected_clc(xp, y_uopt):
-            x_d = self.planner.plan(xp, t)
-            uopt = y_uopt[extravars:]
-            return self.clf.clc(x_d, uopt).mean(xp)
-
-        def clc_socp(xp, y_uopt):
-            (A, bfb, bfc, d) = self._socp_stability(self.clf.clc, t, x, u_ref,
-                                                    convert_out=identity,
-                                                    extravars=extravars)
-            return bfc[extravars:] @ y_uopt[extravars:] + d
-
-        def clc_relax(xp, y_uopt):
-            (A, bfb, bfc, d) = self._socp_stability(self.clf.clc, t, x, u_ref,
-                                                    convert_out=identity,
-                                                    extravars=extravars)
-            return bfc[extravars-1] * y_uopt[extravars-1]
-
-
-        return [
-            NamedFunc(
-                lambda _, y_u, Ap=A, bfbp=bfb, bfcp=bfc, dp=d:
-                (bfcp @ y_u + dp - (Ap @ y_u + bfbp).norm(p=2,dim=-1)) , name)
-            for name, (A, bfb, bfc, d) in self._socp_constraints(
-                    t, x, u_ref, convert_out=identity, extravars=extravars)
-        ] + [
-            NamedFunc(
-                lambda _, y_u, bfcp=bfc, dp=d:
-                (bfcp @ y_u + dp) , name + "_affine")
-            for name, (A, bfb, bfc, d) in self._socp_constraints(
-                    t, x, u_ref, convert_out=identity, extravars=extravars)
-        ] + [
-            NamedFunc(
-                lambda _, y_u, Ap=A, bfbp=bfb:
-                (Ap @ y_u + bfbp).norm(p=2,dim=-1), name + "_norm")
-            for name, (A, bfb, bfc, d) in self._socp_constraints(
-                    t, x, u_ref, convert_out=identity, extravars=extravars)
-        ] + [
-            NamedFunc(partial(true_cbc2, gcbf),
-                      #r"$ \mbox{CBC}_{true} > 0$")
-                      "CBCₜᵣᵤₑ")
-            for gcbf in self.ground_truth_cbfs
-        ] + [
-            NamedFunc(partial(true_h, gcbf),
-                      #r"$h_{true}(x)> 0$")
-                      "hₜᵣᵤₑ")
-            for gcbf in self.ground_truth_cbfs
-        ] + [
-            NamedFunc(partial(scaled_variance, cbf),
-                      "ScaledVariance")
-            for cbf in self.cbfs
-        ] + [
-            NamedFunc(partial(mean, cbf), "CBC")
-            for cbf in self.cbfs
-        ] + [
-            NamedFunc(lambda x, u, val=u_ref_j: to_numpy(val), "uᵣₑ_%d" % j)
-            for j, u_ref_j in enumerate(u_ref[:])
-        ] + [
-            NamedFunc(clf, "CLF"),
-            NamedFunc(dot_clf, "CLFDot"),
-            # NamedFunc(relax_cost, "CostRelax"),
-            # NamedFunc(ctrl_ref_cost, "CostCtrl"),
-            # NamedFunc(total_cost, "CostTotal"),
-            NamedFunc(expected_clc, "Stability_CLC"),
-            NamedFunc(clc_socp, "Stability_socp"),
-            NamedFunc(clc_relax, "Stability_Relax")
-        ]
-
-
-    def _socp_control(self, xi, t=None, extravars=1):
+    def control(self, xi, t=None, extravars=2):
 
         tic = time.time()
         u_ref = self.unsafe_control(xi, t=t)
-        if True or self._has_been_trained_once:
-            y_uopt_init = np.hstack([np.zeros(extravars), u_ref.detach().numpy()])
-            assert extravars == 1, "I assumed extravars to be δ"
-            linear_obj = np.hstack([np.array([1.,]), np.zeros(u_ref.shape)])
-            try:
-                y_uopt = optimizer_socp_cvxpy(
-                    y_uopt_init,
-                    linear_obj,
-                    self._socp_constraints(t, xi, u_ref,
-                                           convert_out=to_numpy, extravars=extravars))
-            except InfeasibleProblemError as e:
-                y_uopt = torch.from_numpy(y_uopt_init).to(dtype=xi.dtype,
-                                                          device=xi.device)
-                self.constraint_plotter.plot(
-                    self._plottables(t, xi, u_ref, y_uopt, extravars=extravars),
-                    xi, y_uopt, t)
-                raise
-            (A, bfb, bfc, d) = self._socp_stability(self.clf.clc, t, xi, u_ref, convert_out=to_numpy, extravars=extravars)
-            assert (linear_obj @ y_uopt) <= np.linalg.norm(A @ y_uopt_init + bfb) - bfc[extravars:] @ y_uopt_init[extravars:] - d, 'objective must be less at optimal point than init point'
-            y_uopt_t = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
-            self.constraint_plotter.plot(
-                self._plottables(t, xi, u_ref, y_uopt_t, extravars=extravars),
-                xi, y_uopt_t, t)
-            uopt = y_uopt_t[extravars:]
-        else:
-            uopt = u_ref
+        y_uopt_init = np.hstack([np.zeros(extravars), u_ref.detach().numpy()])
+        assert extravars == 1, "I assumed extravars to be δ"
+        linear_obj = np.hstack([np.array([1.,]), np.zeros(u_ref.shape)])
+        try:
+            y_uopt = optimizer_socp_cvxpy(
+                y_uopt_init,
+                linear_obj,
+                self._socp_constraints(t, xi, u_ref,
+                                        convert_out=to_numpy, extravars=extravars))
+        except InfeasibleProblemError as e:
+            y_uopt = torch.from_numpy(y_uopt_init).to(dtype=xi.dtype,
+                                                        device=xi.device)
+            raise
+        (A, bfb, bfc, d) = self._socp_stability(self.clf.clc, t, xi, u_ref, convert_out=to_numpy, extravars=extravars)
+        assert (linear_obj @ y_uopt) <= np.linalg.norm(A @ y_uopt_init + bfb) - bfc[extravars:] @ y_uopt_init[extravars:] - d, 'objective must be less at optimal point than init point'
+        y_uopt_t = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
+        uopt = y_uopt_t[extravars:]
         print("Controller took {:.4f} sec".format(time.time()- tic))
-
-        self.net_model.train(xi, uopt)
         return uopt
 
-    def _qp_control(self, xi, t=None, extravars=1):
+    def unsafe_control(self, x, t=None):
+        return self.unsafe_controller.control(x, t=t)
+
+
+class QPController:
+    def __init__(self, x_dim, u_dim, ctrl_reg, clf_relax_weight, net_model,
+                 planner, cbfs, clf, unsafe_control):
+        self.x_dim = x_dim
+        self.u_dim = u_dim
+        self.ctrl_reg = ctrl_reg
+        self.clf_relax_weight = clf_relax_weight
+        self.net_model = net_model
+        self.planner = planner
+        self.cbfs = cbfs
+        self.clf = clf
+        self.unsafe_control = unsafe_control
+
+    def control(self, xi, t=None, extravars=1):
         tic = time.time()
         u_ref = self.unsafe_control(xi, t=t)
         assert extravars == 1, "I assumed extravars to be δ"
         m = u_ref.shape[-1]
         A = np.zeros((extravars+m, extravars+m))
-        sqrt_Q = self._ctrl_cost_sqrt_Q()
+        sqrt_Q = np.diag(self.ctrl_reg)
         A[0, 0] = math.sqrt(self.clf_relax_weight)
         A[extravars:, extravars:] = to_numpy(sqrt_Q)
         bfb = np.zeros((extravars+m,))
@@ -784,19 +610,81 @@ class ControlCBFLearned(Controller):
             (A, bfb),
             [('Safety', (bfc, d))])
         y_uopt_t = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
-        self.constraint_plotter.plot(
-            self._plottables(t, xi, u_ref, y_uopt_t, extravars=extravars),
-            xi, y_uopt_t, t)
         uopt = y_uopt_t[extravars:]
         print("Controller took {:.4f} sec".format(time.time()- tic))
 
-        self.net_model.train(xi, uopt)
         return uopt
-
-    control = _qp_control
 
     def unsafe_control(self, x, t=None):
         return self.unsafe_controller.control(x, t=t)
+
+
+class ControlCBFLearned(Controller):
+    needs_ground_truth = False
+    @store_args
+    def __init__(self,
+                 x_dim=2,
+                 u_dim=1,
+                 model=None,
+                 train_every_n_steps=10,
+                 dt=0.001,
+                 constraint_plotter_class=TensorboardPlotter,
+                 plots_dir='data/runs/',
+                 ctrl_range=[-5., 5.],
+                 x_goal=None,
+                 x_quad_goal_cost=None,
+                 u_quad_cost=None,
+                 numSteps=1000,
+                 unsafe_controller_class=LQRController,
+                 planner_class=Planner,
+                 cbfs=[],
+                 ground_truth_cbfs=[],
+                 exp_tags=[], # Experiment tags for tensorboard summary writer (if None)
+                 exploration_controller_class=EpsilonGreedyController,
+                 clf_class=None, # Control Lyapunov Controller class
+                 egreedy_scheme=[1, 0.1], # Scheme for EpsilonGreedyController
+                 summary_writer=None, # tensorboard summary writer
+                 x0=None, # Initial starting point
+                 ctrl_reg=1., # Q control regularizer
+                 clf_relax_weight=10000., # ρ CLF relaxation weight compared to ctrl_reg
+                 enable_learning=False, # Whether learning from data is enabled
+                 mean_dynamics_model_class=None, # A prior known model (mean model)
+                 max_train=None, # The sample size of max training dataset
+    ):
+        self.axes = [None, None]
+        self.summary_writer = summary_writer
+        self.ctrl_range = torch.tensor(ctrl_range)
+        self.x_goal = torch.tensor(x_goal)
+        self.x_quad_goal_cost = torch.tensor(x_quad_goal_cost)
+        self.u_quad_cost = torch.tensor(u_quad_cost)
+        self.net_model = MeanAdjustedModel(x_dim, u_dim,
+                                           mean_dynamics_model_class, model,
+                                           max_train=max_train,
+                                           train_every_n_steps=train_every_n_steps,
+                                           enable_learning=enable_learning)
+        self.unsafe_controller = exploration_controller_class(
+            unsafe_controller_class(
+                self.net_model, self.x_quad_goal_cost,
+                self.u_quad_cost, self.x_goal, numSteps, dt,
+                self.ctrl_range
+            ),
+            u_dim,
+            numSteps,
+            egreedy_scheme,
+            self.ctrl_range
+        )
+        self.cbfs = cbfs
+        self.ground_truth_cbfs = ground_truth_cbfs
+        self.planner = planner_class(torch.tensor(x0), self.x_goal, numSteps)
+        self.clf = clf_class(self.net_model)
+        self._controller = controller_class(x_dim, u_dim, ctrl_reg,
+                                            clf_relax_weight, net_model,
+                                            planner, cbfs, clf, unsafe_control)
+
+    def control(self, xi, t=None):
+        uopt = self._controller.control(xi, t=t)
+        self.net_model.train(xi, uopt)
+        return uopt
 
 class NamedAffineFunc(ABC):
     @property

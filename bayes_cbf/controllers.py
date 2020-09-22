@@ -594,19 +594,48 @@ class QPController(Controller):
         self.unsafe_controller = unsafe_controller
         self.summary_writer = summary_writer
 
+    def _qp_stability(self, clc, t, x, u0, extravars=None):
+        """
+        SOCP compatible representation of condition
+
+        d clf(x) / dt + gamma * clf(x) < rho
+        """
+        # grad_clf(x) @ f(x) + grad_clf(x) @ g(x) @ u + gamma * clf(x) < 0
+        # ||[0] [y_1; u] + [0]||_2 <= - [grad_clf(x) @ g(x)] u - grad_clf(x) @ ||f(x) - gamma * clf(x)
+        m = u0.shape[-1]
+        (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(
+            lambda u: clc(t, u), x, u0)
+        A, bfb, bfc, d = SOCPController.convert_cbc_terms_to_socp_terms(
+            bfe, e, V, bfv, v, extravars)
+        # # We want to return in format?
+        # (name, (A, b, c, d))
+        # s.t. factor * ||A[y_1; u] + b||_2 <= c'u + d
+        return (bfc, d)
+
+
+    def _plots(self, t, xi, y_uopt_t, extravars):
+        uopt = y_uopt_t[extravars:]
+        x_p = self.clf.planner.plan(t)
+        self.summary_writer.add_scalar('QPController/clf', self.clf.clf(xi, x_p), t)
+        self.summary_writer.add_scalar(
+            'QPController/clf/dot',
+            self.clf.grad_clf(xi, x_p) @
+            (self.clf.model.fu_func_gp(uopt).mean(xi) - self.clf.planner.dot_plan(t)), t)
+        self.summary_writer.add_scalar('QPController/clc', self.clf.clc(t, uopt).mean(xi), t)
+
     def control(self, xi, t=None, extravars=1):
         tic = time.time()
         u_ref = self.unsafe_controller.control(xi, t=t)
         assert extravars == 1, "I assumed extravars to be δ"
         m = u_ref.shape[-1]
         A = np.zeros((extravars+m, extravars+m))
-        sqrt_Q = np.diag(self.ctrl_reg)
+        sqrt_Q = np.eye(self.u_dim) * math.sqrt(self.ctrl_reg)
         A[0, 0] = math.sqrt(self.clf_relax_weight)
         A[extravars:, extravars:] = to_numpy(sqrt_Q)
         bfb = np.zeros((extravars+m,))
-        (_, _, bfc, d) = self._socp_stability(
+        (bfc, d) = list(map(to_numpy, self._qp_stability(
             self.clf.clc, t, xi, u_ref,
-            convert_out=to_numpy, extravars=extravars)
+            extravars=extravars)))
         y_uopt_init = np.hstack([np.zeros(extravars), u_ref.detach().numpy()])
         y_uopt = optimizer_qp_cvxpy(
             y_uopt_init,
@@ -616,6 +645,7 @@ class QPController(Controller):
         uopt = y_uopt_t[extravars:]
         print("Controller took {:.4f} sec".format(time.time()- tic))
 
+        self._plots(t, xi, y_uopt_t, extravars)
         return uopt
 
 
@@ -649,7 +679,7 @@ class ControlCBFLearned(Controller):
                  enable_learning=False, # Whether learning from data is enabled
                  mean_dynamics_model_class=None, # A prior known model (mean model)
                  max_train=None, # The sample size of max training dataset
-                 controller_class=SOCPController, # SOCPController or QPController
+                 controller_class=QPController, # SOCPController or QPController
                  planner_class=Planner, # A Planner that provides time parameterized trajectory
     ):
         self.axes = [None, None]

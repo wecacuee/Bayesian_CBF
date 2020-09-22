@@ -130,7 +130,7 @@ class ObstacleCBF(RelDeg1Safety, NamedAffineFunc):
         return self.grad_cbf(x) @ self.model.f_func(x) + self.gamma * self.cbf(x)
 
 class RelDeg1CLF:
-    def __init__(self, model, gamma=0.5, max_unstable_prop=0.01,
+    def __init__(self, model, gamma=2.0, max_unstable_prop=0.01,
                  diagP=[1., 1., 1.], planner=None):
         self._gamma = gamma
         self._model = model
@@ -172,7 +172,6 @@ class RelDeg1CLF:
         fu_gp = self.model.fu_func_gp(u0)
         clc = grad_V_gp.t() @ (fu_gp + dot_plan) + V_gp
         return clc
-
 
     def get_affine_terms(self, x, x_p):
         return (self.model.g_func(x).t() @ self.grad_clf(x, x_p),

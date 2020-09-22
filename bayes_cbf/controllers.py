@@ -263,6 +263,11 @@ class Planner(ABC):
     def plan(self, x, t):
         pass
 
+    @abstractmethod
+    def dot_plan(self, x, t):
+        pass
+
+
 class EpsilonGreedyController(ABC):
     def __init__(self, base_controller, u_dim, numSteps, egreedy_scheme, ctrl_range):
         self.base_controller = base_controller
@@ -370,20 +375,19 @@ class MeanAdjustedModel(SumDynamicModels):
 
 class SOCPController(Controller):
     def __init__(self, x_dim, u_dim, ctrl_reg, clf_relax_weight, net_model,
-                 planner, cbfs, clf, unsafe_controller,
+                 cbfs, clf, unsafe_controller,
                  summary_writer):
         self.x_dim = x_dim
         self.u_dim = u_dim
         self.ctrl_reg = ctrl_reg
         self.clf_relax_weight = clf_relax_weight
         self.net_model = net_model
-        self.planner = planner
         self.cbfs = cbfs
         self.clf = clf
         self.unsafe_controller = unsafe_controller
         self.summary_writer = summary_writer
 
-    def _socp_objective(self, i, x, u0, yidx=0, convert_out=to_numpy, extravars=None):
+    def _socp_objective(self, i, x, u0, yidx=0, extravars=None):
         # s.t. ||[0, 1, Q][y_1; ρ; u] - Q u_0||_2 <= [1, 0, 0] [y_1; ρ; u] + 0
         # s.t. ||R[y_1; ρ; u] + h||_2 <= a' [y_1; ρ; u] + b
         assert yidx < extravars
@@ -407,7 +411,7 @@ class SOCPController(Controller):
         a[yidx] = 1
         b = torch.tensor(0.)
         # s.t. ||R[y_1; ρ; u] + h||_2 <= a' [y_1; ρ; u] + b
-        return list(map(convert_out, (R, h, a, b)))
+        return (R, h, a, b)
 
 
     @staticmethod
@@ -471,7 +475,7 @@ class SOCPController(Controller):
         d = e
         return A, bfb, bfc, d
 
-    def _socp_stability(self, clc, t, x, u0, extravars=None, convert_out=to_numpy):
+    def _socp_stability(self, clc, t, x, u0, extravars=None):
         """
         SOCP compatible representation of condition
 
@@ -480,19 +484,17 @@ class SOCPController(Controller):
         # grad_clf(x) @ f(x) + grad_clf(x) @ g(x) @ u + gamma * clf(x) < 0
         # ||[0] [y_1; u] + [0]||_2 <= - [grad_clf(x) @ g(x)] u - grad_clf(x) @ ||f(x) - gamma * clf(x)
         m = u0.shape[-1]
-        x_d = self.planner.plan(x, t)
         (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(
-            lambda u: clc(x_d, u), x, u0)
+            lambda u: clc(t, u), x, u0)
         A, bfb, bfc, d = self.convert_cbc_terms_to_socp_terms(
             bfe, e, V, bfv, v, extravars)
         # # We want to return in format?
         # (name, (A, b, c, d))
         # s.t. factor * ||A[y_1; u] + b||_2 <= c'u + d
-        return list(map(convert_out, (A, bfb, bfc, d)))
+        return (A, bfb, bfc, d)
 
     def _socp_safety(self, cbc2, x, u0,
                      safety_factor=None,
-                     convert_out=to_numpy,
                      extravars=None):
         """
         Var(CBC2) = Au² + b' u + c
@@ -529,26 +531,30 @@ class SOCPController(Controller):
             # # We want to return in format?
             # (name, (A, b, c, d))
             # s.t. factor * ||A[y_1; u] + b||_2 <= c'x + d
-            return list(map(convert_out, (factor * A, factor * b, c, e)))
+            return (factor * A, factor * b, c, e)
 
-    def _socp_constraints(self, t, x, u_ref, convert_out=to_numpy, extravars=None):
+    def _named_socp_constraints(self, t, x, u_ref, convert_out=to_numpy, extravars=None):
         constraints = [
             ("Objective",
-             self._socp_objective(t, x, u_ref, yidx=0, convert_out=convert_out,
-                                  extravars=extravars))
+             list(map(to_numpy, self._socp_objective(t, x, u_ref, yidx=0,
+                                                     extravars=extravars))))
         ] + [
-            ("SafetyConstraint gt 0",
-             self._socp_safety(
+            ("Safety_%d gt 0" % d,
+             list(map(to_numpy, self._socp_safety(
                  cbf.cbc,
                  x, u_ref,
                  safety_factor=cbf.safety_factor(),
-                 convert_out=convert_out,
-                 extravars=extravars))
-             for i, cbf in enumerate(self.cbfs)]
+                 extravars=extravars))))
+             for i, cbf in enumerate(self.cbfs)
+        ]
         if self.clf is not None:
-            constraints += [ ("StabilityConstraint gt 0",
-                self._socp_stability( self.clf.clc, t, x, u_ref,
-                                      convert_out=convert_out, extravars=extravars))
+            constraints += [ ("Stability gt 0",
+                              list(map(convert_out,
+                                       self._socp_stability(
+                                           self.clf.clc,
+                                           t, x,
+                                           u_ref,
+                                           extravars=extravars))))
             ]
         return constraints
 
@@ -563,8 +569,8 @@ class SOCPController(Controller):
             y_uopt = optimizer_socp_cvxpy(
                 y_uopt_init,
                 linear_obj,
-                self._socp_constraints(t, xi, u_ref,
-                                        convert_out=to_numpy, extravars=extravars))
+                self._named_socp_constraints(t, xi, u_ref,
+                                             convert_out=to_numpy, extravars=extravars))
         except InfeasibleProblemError as e:
             y_uopt = torch.from_numpy(y_uopt_init).to(dtype=xi.dtype,
                                                         device=xi.device)
@@ -577,13 +583,12 @@ class SOCPController(Controller):
 
 class QPController(Controller):
     def __init__(self, x_dim, u_dim, ctrl_reg, clf_relax_weight, net_model,
-                 planner, cbfs, clf, unsafe_controller, summary_writer):
+                 cbfs, clf, unsafe_controller, summary_writer):
         self.x_dim = x_dim
         self.u_dim = u_dim
         self.ctrl_reg = ctrl_reg
         self.clf_relax_weight = clf_relax_weight
         self.net_model = net_model
-        self.planner = planner
         self.cbfs = cbfs
         self.clf = clf
         self.unsafe_controller = unsafe_controller
@@ -631,7 +636,6 @@ class ControlCBFLearned(Controller):
                  u_quad_cost=None,
                  numSteps=1000,
                  unsafe_controller_class=LQRController,
-                 planner_class=Planner,
                  cbfs=[],
                  ground_truth_cbfs=[],
                  exp_tags=[], # Experiment tags for tensorboard summary writer (if None)
@@ -646,6 +650,7 @@ class ControlCBFLearned(Controller):
                  mean_dynamics_model_class=None, # A prior known model (mean model)
                  max_train=None, # The sample size of max training dataset
                  controller_class=SOCPController, # SOCPController or QPController
+                 planner_class=Planner, # A Planner that provides time parameterized trajectory
     ):
         self.axes = [None, None]
         self.summary_writer = summary_writer
@@ -671,12 +676,13 @@ class ControlCBFLearned(Controller):
         )
         self.cbfs = cbfs
         self.ground_truth_cbfs = ground_truth_cbfs
-        self.planner = planner_class(torch.tensor(x0), self.x_goal, numSteps)
-        self.clf = clf_class(self.net_model)
+        self.clf = clf_class(self.net_model,
+                             planner=planner_class(torch.tensor(x0),
+                                                   self.x_goal, numSteps))
         self._controller = controller_class(self.x_dim, self.u_dim,
                                             self.ctrl_reg,
                                             self.clf_relax_weight,
-                                            self.net_model, self.planner,
+                                            self.net_model,
                                             self.cbfs, self.clf,
                                             self.unsafe_controller,
                                             self.summary_writer)
@@ -685,6 +691,7 @@ class ControlCBFLearned(Controller):
         uopt = self._controller.control(xi, t=t)
         self.net_model.train(xi, uopt)
         return uopt
+
 
 class NamedAffineFunc(ABC):
     @property

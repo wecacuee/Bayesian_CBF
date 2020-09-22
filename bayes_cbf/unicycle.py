@@ -130,11 +130,13 @@ class ObstacleCBF(RelDeg1Safety, NamedAffineFunc):
         return self.grad_cbf(x) @ self.model.f_func(x) + self.gamma * self.cbf(x)
 
 class RelDeg1CLF:
-    def __init__(self, model, gamma=0.5, max_unstable_prop=0.01, diagP=[1., 1., 1.]):
+    def __init__(self, model, gamma=0.5, max_unstable_prop=0.01,
+                 diagP=[1., 1., 1.], planner=None):
         self._gamma = gamma
         self._model = model
         self._max_unsafe_prob = max_unstable_prop
         self._P = torch.diag(torch.tensor(diagP))
+        self.planner = planner
 
     @property
     def model(self):
@@ -148,29 +150,34 @@ class RelDeg1CLF:
     def max_unsafe_prob(self):
         return self._max_unsafe_prob
 
-    def clf(self, x, x_d):
-        xdiff = x - x_d
+    def clf(self, x, x_p):
+        xdiff = x - x_p
         return xdiff @ self._P @ xdiff
 
-    def grad_clf(self, x, x_d):
-        xdiff = x - x_d
+    def grad_clf(self, x, x_p):
+        xdiff = x - x_p
         return 2 * self._P @ xdiff
 
-    def clc(self, x_d, u0):
-        V_gp = DeterministicGP(lambda x: - self.gamma * self.clf(x, x_d),
+    def clc(self, t, u0):
+        x_p = self.planner.plan(t)
+        V_gp = DeterministicGP(lambda x: - self.gamma * self.clf(x, x_p),
                                shape=(1,), name="V(x)")
-        grad_V_gp = DeterministicGP(lambda x: - self.grad_clf(x, x_d),
-                                    shape=(self.model.state_size,),
+        n = self.model.state_size
+        grad_V_gp = DeterministicGP(lambda x: - self.grad_clf(x, x_p),
+                                    shape=(n,),
                                     name="∇ V(x)")
+        dot_plan = DeterministicGP(lambda x: - self.planner.dot_plan(t),
+                                   shape=(n,),
+                                   name="ẋₚ(t)")
         fu_gp = self.model.fu_func_gp(u0)
-        clc = grad_V_gp.t() @ fu_gp + V_gp
+        clc = grad_V_gp.t() @ (fu_gp + dot_plan) + V_gp
         return clc
 
 
-    def get_affine_terms(self, x, x_d):
-        return (self.model.g_func(x).t() @ self.grad_clf(x, x_d),
-                self.grad_clf(x, x_d) @ self.model.f_func(x)
-                + self.gamma * self.clf(x, x_d))
+    def get_affine_terms(self, x, x_p):
+        return (self.model.g_func(x).t() @ self.grad_clf(x, x_p),
+                self.grad_clf(x, x_p) @ self.model.f_func(x)
+                + self.gamma * self.clf(x, x_p))
 
 
 class ShiftInvariantModel(ControlAffineRegressor):
@@ -215,19 +222,24 @@ class LinearPlanner(Planner):
         self.x_goal = x_goal
         self.numSteps = numSteps
 
-    def plan(self, x, t, replan = False):
+    def _start_x_t(self):
+        start_x = self.x0
+        start_t = 0
+        return (start_x, start_t)
+
+    def plan(self, t):
+        start_x, start_t = self._start_x_t()
+        dx = self.dot_plan(t)
+        x_p =  dx * (t+1-start_t)  + start_x
+        # LOG.info("t={t}, dx={dx}, x={x}, x_p={x_p}".format(t=t, dx=dx, x=x, x_p=x_p))
+        return x_p
+
+    def dot_plan(self, t):
+        start_x, start_t = self._start_x_t()
         end_x = self.x_goal
         end_t = self.numSteps
-        if replan:
-            start_x = x
-            start_t = t
-        else:
-            start_x = self.x0
-            start_t = 0
         dx = (end_x - start_x) / (end_t - start_t)
-        x_d =  dx * (t+1-start_t)  + start_x
-        # LOG.info("t={t}, dx={dx}, x={x}, x_d={x_d}".format(t=t, dx=dx, x=x, x_d=x_d))
-        return x_d
+        return dx
 
 
 class ControllerUnicycle(ControlCBFLearned):

@@ -13,15 +13,17 @@ import torch
 import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 
+from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, cbc2_safety_factor
+from bayes_cbf.gp_algebra import DeterministicGP
+from bayes_cbf.ilqr import ILQR
 from bayes_cbf.misc import (store_args, ZeroDynamicsModel, epsilon, t_jac,
                             variable_required_grad, SumDynamicModels, clip,
                             create_summary_writer, DynamicsModel)
-from bayes_cbf.plotting import plot_results, plot_learned_2D_func, plt_savefig_with_data
-from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, cbc2_safety_factor
-from bayes_cbf.ilqr import ILQR
-from bayes_cbf.optimizers import (optimizer_socp_cvxopt, InfeasibleProblemError,
-                                  optimizer_socp_cvxpy, optimizer_qp_cvxpy)
-from bayes_cbf.gp_algebra import DeterministicGP
+from bayes_cbf.optimizers import (optimizer_socp_cvxopt,
+                                  InfeasibleProblemError, optimizer_socp_cvxpy,
+                                  optimizer_qp_cvxpy)
+from bayes_cbf.plotting import (plot_results, plot_learned_2D_func,
+                                plt_savefig_with_data)
 
 
 class NamedFunc:
@@ -32,15 +34,19 @@ class NamedFunc:
     def __call__(self, *args, **kwargs):
         return self.func(*args, **kwargs)
 
+
 def identity(x):
     return x
+
 
 def to_numpy(x):
     return x.detach().double().cpu().numpy() if isinstance(x, torch.Tensor) else x
 
+
 def add_diag_const(Q, const=1.0):
-    return torch.cat((torch.cat([Q,     torch.zeros(Q.shape[0], 1)], dim=0),
-                      torch.cat([torch.zeros(1, Q.shape[1]), torch.tensor([[const]])], dim=0)),
+    return torch.cat(
+        (torch.cat([Q,                       torch.zeros(Q.shape[0], 1)], dim=0),
+         torch.cat([torch.zeros(1, Q.shape[1]), torch.tensor([[const]])], dim=0)),
                      dim=1)
 
 
@@ -577,7 +583,7 @@ class SOCPController(Controller):
             raise
         y_uopt_t = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
         uopt = y_uopt_t[extravars:]
-        print("Controller took {:.4f} sec".format(time.time()- tic))
+        print("Controller step {0:d} took {1:.4f} sec".format(t, time.time()- tic))
         return uopt
 
 
@@ -647,7 +653,7 @@ class QPController(Controller):
         # assert bfc @ y_uopt + d >= 0
         y_uopt_t = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
         uopt = y_uopt_t[extravars:]
-        print("Controller took {:.4f} sec".format(time.time()- tic))
+        print("Controller step {0:d} took {1:.4f} sec".format(t, time.time()- tic))
 
         self._plots(t, xi, y_uopt_t, extravars)
         return uopt
@@ -679,7 +685,7 @@ class ControlCBFLearned(Controller):
                  summary_writer=None, # tensorboard summary writer
                  x0=None, # Initial starting point
                  ctrl_reg=1., # Q control regularizer
-                 clf_relax_weight=10000., # ρ CLF relaxation weight compared to ctrl_reg
+                 clf_relax_weight=100., # ρ CLF relaxation weight compared to ctrl_reg
                  enable_learning=False, # Whether learning from data is enabled
                  mean_dynamics_model_class=None, # A prior known model (mean model)
                  max_train=None, # The sample size of max training dataset

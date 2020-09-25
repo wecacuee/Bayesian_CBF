@@ -173,18 +173,22 @@ class RelDeg1CLF:
                                                    [-θ.sin(), -θ.sin()]]) @ x])
 
     def _clf_terms(self, x, x_p, epsilon=1e-6):
-        x_rel = self._x_rel(x_p[2], x[:2] - x_p[:2])
-        ϕ = x[2] - x_p[2]
+        x_rel = self._x_rel(x_p[2], x_p[:2] - x[:2])
+        ϕ = x_p[2] - x[2]
 
         e_sq = x_rel @ x_rel
         if torch.sqrt(e_sq) > epsilon:
             x_rel_norm = x_rel / torch.sqrt(e_sq)
         else:
+            print("[WARN]e_sq too small")
             x_rel_norm = x_rel.new_tensor([1., 0.])
-        θ_sq = x_rel_norm[1] ** 2
+        θ = x_rel_norm[1].atan2(x_rel_norm[0])
+        θsq = θ**2
         # cosine distance
-        α_cos = 1-(x_rel_norm[0] * ϕ.cos() + x_rel_norm[1] * ϕ.sin())
-        return torch.cat([e_sq.unsqueeze(-1), θ_sq.unsqueeze(-1), α_cos.unsqueeze(-1)])
+        # α_cos = 1-(x_rel_norm[0] * ϕ.cos() + x_rel_norm[1] * ϕ.sin())
+        α = θ-ϕ
+        αsq = α**2
+        return torch.cat([e_sq.unsqueeze(-1), θsq.unsqueeze(-1), αsq.unsqueeze(-1)])
 
     def _clf(self, x, x_p):
         return  self._diagP @ self._clf_terms(x, x_p)
@@ -381,7 +385,7 @@ class ControllerUnicycle(ControlCBFLearned):
                              [10, 10*math.pi]],
                  unsafe_controller_class = GreedyController,
                  clf_class=RelDeg1CLF,
-                 planner_class=SplinePlanner,
+                 planner_class=PiecewiseLinearPlanner,
                  summary_writer=None,
                  x0=[-3, 0, math.pi/4],
                  **kwargs
@@ -576,7 +580,7 @@ def run_unicycle_control_learned(
         obstacle_radii=[],
         x0=[-3.0,  -2., -np.pi/4.],
         x_goal=[1., 0., np.pi/4.],
-        D=100,
+        D=200,
         dt=0.002,
         egreedy_scheme=[0.00, 0.00],
         controller_class=partial(ControllerUnicycle,

@@ -129,14 +129,22 @@ class ObstacleCBF(RelDeg1Safety, NamedAffineFunc):
     def b(self, x):
         return self.grad_cbf(x) @ self.model.f_func(x) + self.gamma * self.cbf(x)
 
+
+def rotmat(θ):
+    θ = θ.unsqueeze(-1).unsqueeze(-1)
+    return torch.cat([torch.cat([ θ.cos(), θ.sin()], dim=-1),
+                      torch.cat([-θ.sin(), θ.cos()], dim=-1)],
+                     dim=-2)
+
+
 class RelDeg1CLF:
     def __init__(self, model, gamma=2.0, max_unstable_prop=0.01,
                  diagP=[1., 1., 1.], planner=None):
         self._gamma = gamma
         self._model = model
         self._max_unsafe_prob = max_unstable_prop
-        self._P = torch.diag(torch.tensor(diagP))
-        self.planner = planner
+        self._diagP = torch.tensor(diagP)
+        self._planner = planner
 
     @property
     def model(self):
@@ -150,33 +158,42 @@ class RelDeg1CLF:
     def max_unsafe_prob(self):
         return self._max_unsafe_prob
 
-    def clf(self, x, x_p):
-        xdiff = x - x_p
-        return xdiff @ self._P @ xdiff
+    def _clf(self, x, x_p):
+        x_rel = rotmat(x_p[2]) @ (x[:2] - x_p[:2])
+        ϕ = x[2] - x_p[2]
 
-    def grad_clf(self, x, x_p):
-        xdiff = x - x_p
-        return 2 * self._P @ xdiff
+        e_sq = x_rel @ x_rel
+        x_rel_norm = x_rel / torch.sqrt(e_sq)
+        θ_sq = x_rel_norm[1] ** 2
+        α_cos = 1-(x_rel_norm[0] * ϕ.cos() + x_rel_norm[1] * ϕ.sin())
+        return  self._diagP[0] * e_sq + self._diagP[1] * θ_sq + self._diagP[2] * α_cos
 
-    def clc(self, t, u0):
-        x_p = self.planner.plan(t)
-        V_gp = DeterministicGP(lambda x: - self.gamma * self.clf(x, x_p),
-                               shape=(1,), name="V(x)")
+    def _grad_clf(self, x, x_p):
+        with variable_required_grad(x):
+            return torch.autograd.grad(self._clf(x, x_p), x)[0]
+
+    def _dot_clf_gp(self, t, x_p, u0):
         n = self.model.state_size
-        grad_V_gp = DeterministicGP(lambda x: - self.grad_clf(x, x_p),
+        grad_V_gp = DeterministicGP(lambda x: - self._grad_clf(x, x_p),
                                     shape=(n,),
                                     name="∇ V(x)")
-        dot_plan = DeterministicGP(lambda x: - self.planner.dot_plan(t),
+        dot_plan = DeterministicGP(lambda x: - self._planner.dot_plan(t),
                                    shape=(n,),
                                    name="ẋₚ(t)")
         fu_gp = self.model.fu_func_gp(u0)
-        clc = grad_V_gp.t() @ (fu_gp + dot_plan) + V_gp
-        return clc
+        dot_clf_gp = grad_V_gp.t() @ (fu_gp + dot_plan)
+        return dot_clf_gp
+
+    def clc(self, t, u0):
+        x_p = self._planner.plan(t)
+        V_gp = DeterministicGP(lambda x: - self.gamma * self._clf(x, x_p),
+                               shape=(1,), name="V(x)")
+        return self._dot_clf_gp(t, x_p, u0) + V_gp
 
     def get_affine_terms(self, x, x_p):
-        return (self.model.g_func(x).t() @ self.grad_clf(x, x_p),
-                self.grad_clf(x, x_p) @ self.model.f_func(x)
-                + self.gamma * self.clf(x, x_p))
+        return (self.model.g_func(x).t() @ self._grad_clf(x, x_p),
+                self._grad_clf(x, x_p) @ self.model.f_func(x)
+                + self.gamma * self._clf(x, x_p))
 
 
 class ShiftInvariantModel(ControlAffineRegressor):
@@ -215,28 +232,29 @@ class ShiftInvariantModel(ControlAffineRegressor):
         return super().g_func(self._filter_state(Xtest_in))
 
 
-class LinearPlanner(Planner):
-    def __init__(self, x0, x_goal, numSteps):
+class PiecewiseLinearPlanner(Planner):
+    def __init__(self, x0, x_goal, numSteps, dt):
         self.x0 = x0
         self.x_goal = x_goal
         self.numSteps = numSteps
+        self.dt = dt
 
     def _start_x_t(self):
         start_x = self.x0
         start_t = 0
         return (start_x, start_t)
 
-    def plan(self, t):
+    def plan(self, t_step):
         start_x, start_t = self._start_x_t()
-        dx = self.dot_plan(t)
-        x_p =  dx * (t+1-start_t)  + start_x
+        dx = self.dot_plan(t_step)
+        x_p =  dx * ((t_step+1)*self.dt-start_t)  + start_x
         # LOG.info("t={t}, dx={dx}, x={x}, x_p={x_p}".format(t=t, dx=dx, x=x, x_p=x_p))
         return x_p
 
-    def dot_plan(self, t):
+    def dot_plan(self, t_step):
         start_x, start_t = self._start_x_t()
         end_x = self.x_goal
-        end_t = self.numSteps
+        end_t = self.numSteps * self.dt
         dx = (end_x - start_x) / (end_t - start_t)
         return dx
 
@@ -318,9 +336,8 @@ class ControllerUnicycle(ControlCBFLearned):
         self.x_goal = torch.tensor(x_goal)
         self.x_quad_goal_cost = torch.tensor(quad_goal_cost)
 
-    def fit(self, Xtrain, Utrain, XdotError, training_iter=100):
-        Xtrain[..., :2] = 0
-        super().fit(Xtrain, Utrain, XdotError, training_iter=training_iter)
+    def control(self, xi, t=None):
+        return super().control(xi, t)
 
 
 class UnicycleVisualizer(Visualizer):
@@ -469,8 +486,8 @@ def run_unicycle_control_learned(
         # obstacle_radii=[0.8, 0.8],
         obstacle_centers=[],
         obstacle_radii=[],
-        x0=[-3.0,  0.5, 0],
-        x_goal=[1., 0., math.pi/4],
+        x0=[-3.0,  0., 0.],
+        x_goal=[1., 0., 0.],
         D=1000,
         dt=0.002,
         egreedy_scheme=[0.00, 0.00],
@@ -507,7 +524,8 @@ def run_unicycle_control_learned(
         numSteps=D,
         unsafe_controller_class=unsafe_controller_class,
         dt=dt,
-        summary_writer=summary_writer)
+        summary_writer=summary_writer,
+        x0=x0)
     return sample_generator_trajectory(
         dynamics_model=UnicycleDynamicsModel(),
         D=D,

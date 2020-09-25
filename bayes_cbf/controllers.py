@@ -615,12 +615,15 @@ class QPController(Controller):
 
     def _plots(self, t, xi, y_uopt_t, extravars):
         uopt = y_uopt_t[extravars:]
-        x_p = self.clf.planner.plan(t)
-        self.summary_writer.add_scalar('QPController/clf', self.clf.clf(xi, x_p), t)
+        x_p = self.clf._planner.plan(t)
+        self.summary_writer.add_scalar('QPController/plan0', x_p[0], t)
+        self.summary_writer.add_scalar('QPController/plan1', x_p[1], t)
+        self.summary_writer.add_scalar('QPController/plan2', x_p[2], t)
+        self.summary_writer.add_scalar('QPController/clf', self.clf._clf(xi, x_p), t)
         self.summary_writer.add_scalar(
             'QPController/clf/dot',
-            self.clf.grad_clf(xi, x_p) @
-            (self.clf.model.fu_func_gp(uopt).mean(xi) - self.clf.planner.dot_plan(t)), t)
+            self.clf._grad_clf(xi, x_p) @
+            (self.clf.model.fu_func_gp(uopt).mean(xi) - self.clf._planner.dot_plan(t)), t)
         self.summary_writer.add_scalar('QPController/clc', self.clf.clc(t, uopt).mean(xi), t)
 
     def control(self, xi, t=None, extravars=1):
@@ -708,7 +711,7 @@ class ControlCBFLearned(Controller):
         self.ground_truth_cbfs = ground_truth_cbfs
         self.clf = clf_class(self.net_model,
                              planner=planner_class(torch.tensor(x0),
-                                                   self.x_goal, numSteps))
+                                                   self.x_goal, numSteps, dt))
         self._controller = controller_class(self.x_dim, self.u_dim,
                                             self.ctrl_reg,
                                             self.clf_relax_weight,

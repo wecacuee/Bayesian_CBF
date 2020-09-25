@@ -11,6 +11,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, FancyArrowPatch
+from scipy.interpolate import splrep, splev, spalde
 
 from bayes_cbf.misc import (t_hstack, store_args, DynamicsModel,
                             ZeroDynamicsModel, epsilon, to_numpy,
@@ -30,6 +31,8 @@ from bayes_cbf.controllers import (ControlCBFLearned, NamedAffineFunc,
                                    ZeroController)
 from bayes_cbf.ilqr import ILQR
 
+def normalize_radians(theta):
+    return (theta + math.pi) % (2*math.pi) - math.pi
 
 class UnicycleDynamicsModel(DynamicsModel):
     """
@@ -79,7 +82,7 @@ class UnicycleDynamicsModel(DynamicsModel):
         return gX.squeeze(0) if X_in.dim() <= 1 else gX
 
     def normalize_state(self, X_in):
-        X_in[..., 2] = X_in[..., 2] % math.pi
+        X_in[..., 2] = normalize_radians(X_in[..., 2])
         return X_in
 
 
@@ -139,7 +142,7 @@ def rotmat(θ):
 
 class RelDeg1CLF:
     def __init__(self, model, gamma=2.0, max_unstable_prop=0.01,
-                 diagP=[1., 1., 1.], planner=None):
+                 diagP=[10., 2., 1.], planner=None):
         self._gamma = gamma
         self._model = model
         self._max_unsafe_prob = max_unstable_prop
@@ -158,34 +161,59 @@ class RelDeg1CLF:
     def max_unsafe_prob(self):
         return self._max_unsafe_prob
 
-    def _clf(self, x, x_p):
-        x_rel = rotmat(x_p[2]) @ (x[:2] - x_p[:2])
+
+    @staticmethod
+    def _x_rel(θ, x):
+        x_rel = rotmat(θ) @ x
+        return x_rel
+
+    @staticmethod
+    def _jac_x_rel(θ, x):
+        return torch.cat([rotmat(θ), θ.new_tensor([[-θ.sin(),  θ.cos()]
+                                                   [-θ.sin(), -θ.sin()]]) @ x])
+
+    def _clf_terms(self, x, x_p, epsilon=1e-6):
+        x_rel = self._x_rel(x_p[2], x[:2] - x_p[:2])
         ϕ = x[2] - x_p[2]
 
         e_sq = x_rel @ x_rel
-        x_rel_norm = x_rel / torch.sqrt(e_sq)
+        if torch.sqrt(e_sq) > epsilon:
+            x_rel_norm = x_rel / torch.sqrt(e_sq)
+        else:
+            x_rel_norm = x_rel.new_tensor([1., 0.])
         θ_sq = x_rel_norm[1] ** 2
+        # cosine distance
         α_cos = 1-(x_rel_norm[0] * ϕ.cos() + x_rel_norm[1] * ϕ.sin())
-        return  self._diagP[0] * e_sq + self._diagP[1] * θ_sq + self._diagP[2] * α_cos
+        return torch.cat([e_sq.unsqueeze(-1), θ_sq.unsqueeze(-1), α_cos.unsqueeze(-1)])
 
-    def _grad_clf(self, x, x_p):
+    def _clf(self, x, x_p):
+        return  self._diagP @ self._clf_terms(x, x_p)
+
+    def _grad_clf_x(self, x, x_p):
         with variable_required_grad(x):
-            return torch.autograd.grad(self._clf(x, x_p), x)[0]
+            return torch.autograd.grad(self._clf(x, x_p), x, create_graph=True)[0]
+
+    def _grad_clf_x_p(self, x, x_p):
+        with variable_required_grad(x_p):
+            return torch.autograd.grad(self._clf(x, x_p), x_p, create_graph=True)[0]
 
     def _dot_clf_gp(self, t, x_p, u0):
         n = self.model.state_size
-        grad_V_gp = DeterministicGP(lambda x: - self._grad_clf(x, x_p),
+        grad_V_gp = DeterministicGP(lambda x: - self._grad_clf_x(x, x_p),
                                     shape=(n,),
                                     name="∇ V(x)")
-        dot_plan = DeterministicGP(lambda x: - self._planner.dot_plan(t),
+        fu_gp = self.model.fu_func_gp(u0)
+        grad_V_gp_xp = DeterministicGP(lambda x: - self._grad_clf_x_p(x, x_p),
+                                    shape=(n,),
+                                    name="∇_x_p V(x_p)")
+        dot_plan = DeterministicGP(lambda x: self._planner.dot_plan(t+1),
                                    shape=(n,),
                                    name="ẋₚ(t)")
-        fu_gp = self.model.fu_func_gp(u0)
-        dot_clf_gp = grad_V_gp.t() @ (fu_gp + dot_plan)
+        dot_clf_gp = grad_V_gp.t() @ fu_gp + grad_V_gp_xp.t() @ dot_plan
         return dot_clf_gp
 
     def clc(self, t, u0):
-        x_p = self._planner.plan(t)
+        x_p = self._planner.plan(t+1)
         V_gp = DeterministicGP(lambda x: - self.gamma * self._clf(x, x_p),
                                shape=(1,), name="V(x)")
         return self._dot_clf_gp(t, x_p, u0) + V_gp
@@ -237,26 +265,87 @@ class PiecewiseLinearPlanner(Planner):
         self.x0 = x0
         self.x_goal = x_goal
         self.numSteps = numSteps
+        assert self.numSteps >= 3
+        self._checkpoint_list = self._checkpoints()
         self.dt = dt
 
-    def _start_x_t(self):
-        start_x = self.x0
-        start_t = 0
-        return (start_x, start_t)
+    def _checkpoints(self):
+        numSteps = self.numSteps
+        x0 = self.x0
+        x_goal = self.x_goal
+        xdiff = (x_goal[:2] - x0[:2])
+        desired_theta = xdiff[1].atan2(xdiff[0])
+        t_first_step = max(int(numSteps*0.1), 1)
+        t_second_stage = min(int(numSteps*0.9), numSteps-1)
+        return [(t_first_step, torch.cat([x0[:2], desired_theta.unsqueeze(-1)])),
+                (t_second_stage,
+                 torch.cat([x_goal[:2], desired_theta.unsqueeze(-1)])),
+                (numSteps, x_goal)]
+
+    def _get_checkpoint_interval(self, t_step):
+        prev_t, prev_x = 0, self.x0
+        for checkpoint_t, checkpoint_x in self._checkpoint_list:
+            if t_step <= checkpoint_t:
+                break
+            prev_t, prev_x = checkpoint_t, checkpoint_x
+        assert prev_t != checkpoint_t
+        return [(checkpoint_t, checkpoint_x), (prev_t, prev_x)]
 
     def plan(self, t_step):
-        start_x, start_t = self._start_x_t()
-        dx = self.dot_plan(t_step)
-        x_p =  dx * ((t_step+1)*self.dt-start_t)  + start_x
-        # LOG.info("t={t}, dx={dx}, x={x}, x_p={x_p}".format(t=t, dx=dx, x=x, x_p=x_p))
+        [(checkpoint_t, checkpoint_x), (prev_t, prev_x)] = self._get_checkpoint_interval(t_step)
+        x_p =  (checkpoint_x - prev_x) * (t_step - prev_t) / (checkpoint_t - prev_t) + prev_x
+        x_p[2] = normalize_radians(x_p[2])
         return x_p
 
     def dot_plan(self, t_step):
-        start_x, start_t = self._start_x_t()
-        end_x = self.x_goal
-        end_t = self.numSteps * self.dt
-        dx = (end_x - start_x) / (end_t - start_t)
-        return dx
+        [(checkpoint_t, checkpoint_x), (prev_t, prev_x)] = self._get_checkpoint_interval(t_step)
+        return (checkpoint_x - prev_x) / ((checkpoint_t - prev_t) * self.dt)
+
+class SplinePlanner(Planner):
+    def __init__(self, x0, x_goal, numSteps, dt):
+        self.x0 = x0
+        self.x_goal = x_goal
+        self.numSteps = numSteps
+        assert self.numSteps >= 3
+        knots = self._knots()
+        self._x_spl = splrep(knots[:, 0], knots[:, 1])
+        self._y_spl = splrep(knots[:, 0], knots[:, 2])
+        self._yaw_spl = splrep(knots[:, 0], knots[:, 3])
+        self.dt = dt
+
+    def _knots(self):
+        numSteps = self.numSteps
+        x0 = self.x0
+        x_goal = self.x_goal
+        xdiff = (x_goal[:2] - x0[:2])
+        desired_theta = xdiff[1].atan2(xdiff[0])
+        t_first_step = max(int(numSteps*0.1), 1)
+        t_second_stage = min(int(numSteps*0.9), numSteps-1)
+        dx = (x_goal - x0)/(t_second_stage - t_first_step)
+        t_mid = (t_second_stage + t_first_step)/2
+        x_mid = (x0 + x_goal)/2
+        return torch.tensor([
+            [0, x0[0], x0[1], x0[2]],
+            [t_first_step, x0[0], x0[1], desired_theta],
+            [t_first_step + 1, x0[0]+dx[0], x0[1]+dx[1], desired_theta],
+            [t_mid, x_mid[0], x_mid[1], desired_theta],
+            [t_second_stage - 1, x_goal[0]-dx[0], x_goal[1]-dx[1], desired_theta],
+            [t_second_stage, x_goal[0], x_goal[1], desired_theta],
+            [numSteps, x_goal[0], x_goal[1], x_goal[2]]])
+
+    def plan(self, t_step):
+        return torch.from_numpy(np.hstack([splev(t_step, self._x_spl),
+                                           splev(t_step, self._y_spl),
+                                           splev(t_step, self._yaw_spl)])).to(
+                                device=self.x0.device,
+                                dtype=self.x0.dtype)
+
+    def dot_plan(self, t_step):
+        return torch.from_numpy(np.hstack([spalde(t_step, self._x_spl)[0],
+                                           spalde(t_step, self._y_spl)[0],
+                                           spalde(t_step, self._yaw_spl)[0]])).to(
+                                device=self.x0.device,
+                                dtype=self.x0.dtype)
 
 
 class ControllerUnicycle(ControlCBFLearned):
@@ -292,7 +381,7 @@ class ControllerUnicycle(ControlCBFLearned):
                              [10, 10*math.pi]],
                  unsafe_controller_class = GreedyController,
                  clf_class=RelDeg1CLF,
-                 planner_class=LinearPlanner,
+                 planner_class=SplinePlanner,
                  summary_writer=None,
                  x0=[-3, 0, math.pi/4],
                  **kwargs
@@ -361,7 +450,7 @@ BBox = namedtuple('BBox', 'XMIN YMIN XMAX YMAX'.split())
 class UnicycleVisualizerMatplotlib(Visualizer):
     @store_args
     def __init__(self, robotsize, obstacle_centers, obstacle_radii, x_goal,
-                 summary_writer, every_n_steps=20):
+                 summary_writer, every_n_steps=5):
         self.fig, self.axes = plt.subplots(1,1)
         self.summary_writer = summary_writer
         self._bbox = BBox(-2.0, -2.0, 2.0, 2.0)
@@ -450,8 +539,6 @@ class UnicycleVisualizerMatplotlib(Visualizer):
         )
 
     def setStateCtrl(self, x, u, t=0, xtp1=None, xtp1_var=None):
-        if t % self.every_n_steps != 0:
-            return
         self._add_robot(self.axes, x[:2], x[2], self.robotsize)
         self._add_history_state(self.axes)
         for i in range(u.shape[-1]):
@@ -466,9 +553,10 @@ class UnicycleVisualizerMatplotlib(Visualizer):
             self._draw_next_step_var(self.axes, xtp1, xtp1_var)
         #self.fig.savefig(self.plotfile.format(t=t))
         #plt.draw()
-        img = plot_to_image(self.fig)
-        self.summary_writer.add_image('vis', img, t, dataformats='HWC')
-        #plt.pause(0.01)
+        if t % self.every_n_steps == 0:
+            img = plot_to_image(self.fig)
+            self.summary_writer.add_image('vis', img, t, dataformats='HWC')
+            #plt.pause(0.01)
 
 
 class UnsafeControllerUnicycle(ControllerUnicycle):
@@ -486,9 +574,9 @@ def run_unicycle_control_learned(
         # obstacle_radii=[0.8, 0.8],
         obstacle_centers=[],
         obstacle_radii=[],
-        x0=[-3.0,  0., 0.],
-        x_goal=[1., 0., 0.],
-        D=1000,
+        x0=[-3.0,  -2., -np.pi/4.],
+        x_goal=[1., 0., np.pi/4.],
+        D=100,
         dt=0.002,
         egreedy_scheme=[0.00, 0.00],
         controller_class=partial(ControllerUnicycle,

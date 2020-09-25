@@ -622,9 +622,9 @@ class QPController(Controller):
         self.summary_writer.add_scalar('QPController/clf', self.clf._clf(xi, x_p), t)
         self.summary_writer.add_scalar(
             'QPController/clf/dot',
-            self.clf._grad_clf(xi, x_p) @
-            (self.clf.model.fu_func_gp(uopt).mean(xi) - self.clf._planner.dot_plan(t)), t)
+            self.clf._dot_clf_gp(t, x_p, uopt).mean(xi), t)
         self.summary_writer.add_scalar('QPController/clc', self.clf.clc(t, uopt).mean(xi), t)
+        self.summary_writer.add_scalar('QPController/ρ', y_uopt_t[0], t)
 
     def control(self, xi, t=None, extravars=1):
         tic = time.time()
@@ -644,6 +644,7 @@ class QPController(Controller):
             y_uopt_init,
             (A, bfb),
             [('Safety', (bfc, d))])
+        # assert bfc @ y_uopt + d >= 0
         y_uopt_t = torch.from_numpy(y_uopt).to(dtype=xi.dtype, device=xi.device)
         uopt = y_uopt_t[extravars:]
         print("Controller took {:.4f} sec".format(time.time()- tic))

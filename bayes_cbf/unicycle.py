@@ -28,11 +28,13 @@ from bayes_cbf.control_affine_model import ControlAffineRegressor
 from bayes_cbf.controllers import (ControlCBFLearned, NamedAffineFunc,
                                    TensorboardPlotter, LQRController,
                                    GreedyController, ILQRController, Planner,
-                                   ZeroController)
+                                   ZeroController, Controller)
 from bayes_cbf.ilqr import ILQR
+
 
 def normalize_radians(theta):
     return (theta + math.pi) % (2*math.pi) - math.pi
+
 
 class UnicycleDynamicsModel(DynamicsModel):
     """
@@ -86,18 +88,21 @@ class UnicycleDynamicsModel(DynamicsModel):
         return X_in
 
 
+Obstacle = namedtuple('Obstacle', 'center radius'.split())
+
+
 class ObstacleCBF(RelDeg1Safety, NamedAffineFunc):
     """
     ∇h(x)ᵀf(x) + ∇h(x)ᵀg(x)u + γ_c h(x) > 0
     """
     @partial(store_args, skip=["model", "max_unsafe_prob"])
-    def __init__(self, model, center, radius, γ_c=40, name="obstacle_cbf",
+    def __init__(self, model, obstacle : Obstacle, γ_c=40, name="obstacle_cbf",
                  dtype=torch.get_default_dtype(),
                  max_unsafe_prob=0.01):
         self._model = model
         self._max_unsafe_prob = max_unsafe_prob
-        self.center = torch.tensor(center, dtype=dtype)
-        self.radius = torch.tensor(radius, dtype=dtype)
+        self.center = torch.tensor(obstacle.center, dtype=dtype)
+        self.radius = torch.tensor(obstacle.radius, dtype=dtype)
 
     @property
     def model(self):
@@ -142,7 +147,7 @@ def rotmat(θ):
 
 class RelDeg1CLF:
     def __init__(self, model, gamma=2.0, max_unstable_prop=0.01,
-                 diagP=[10., 2., 1.], planner=None):
+                 diagP=[10., 1., 1.], planner=None):
         self._gamma = gamma
         self._model = model
         self._max_unsafe_prob = max_unstable_prop
@@ -173,8 +178,8 @@ class RelDeg1CLF:
                                                    [-θ.sin(), -θ.sin()]]) @ x])
 
     def _clf_terms(self, x, x_p, epsilon=1e-6):
-        x_rel = self._x_rel(x_p[2], x_p[:2] - x[:2])
-        ϕ = x_p[2] - x[2]
+        x_rel = self._x_rel(x_p[2], x[:2] - x_p[:2])
+        ϕ =  x[2] - x_p[2]
 
         e_sq = x_rel @ x_rel
         if torch.sqrt(e_sq) > epsilon:
@@ -183,11 +188,11 @@ class RelDeg1CLF:
             print("[WARN]e_sq too small")
             x_rel_norm = x_rel.new_tensor([1., 0.])
         θ = x_rel_norm[1].atan2(x_rel_norm[0])
-        θsq = θ**2
+        θsq = θ**2 / (np.pi**2) # scale to (-1, 1)
         # cosine distance
         # α_cos = 1-(x_rel_norm[0] * ϕ.cos() + x_rel_norm[1] * ϕ.sin())
         α = θ-ϕ
-        αsq = α**2
+        αsq = α**2 / (np.pi**2) # scale to (-1, 1)
         return torch.cat([e_sq.unsqueeze(-1), θsq.unsqueeze(-1), αsq.unsqueeze(-1)])
 
     def _clf(self, x, x_p):
@@ -378,8 +383,7 @@ class ControllerUnicycle(ControlCBFLearned):
                  dt=0.001,
                  constraint_plotter_class=TensorboardPlotter,
                  cbc_class=ObstacleCBF,
-                 obstacle_centers=[(0, 0)],
-                 obstacle_radii=[0.5],
+                 obstacles=Obstacle((0, 0), 0.5),
                  numSteps=1000,
                  ctrl_range=[[-10, -10*math.pi],
                              [10, 10*math.pi]],
@@ -398,9 +402,9 @@ class ControllerUnicycle(ControlCBFLearned):
                 gamma_length_scale_prior=gamma_length_scale_prior)
         cbfs = []
         ground_truth_cbfs = []
-        for obsc, obsr in zip(obstacle_centers, obstacle_radii):
-            cbfs.append( cbc_class(model, obsc, obsr, dtype=dtype) )
-            ground_truth_cbfs.append( cbc_class(true_model, obsc, obsr,
+        for obs in obstacles:
+            cbfs.append( cbc_class(model, obs, dtype=dtype) )
+            ground_truth_cbfs.append( cbc_class(true_model, obs,
                                                dtype=dtype) )
 
         super().__init__(x_dim=x_dim,
@@ -453,7 +457,7 @@ BBox = namedtuple('BBox', 'XMIN YMIN XMAX YMAX'.split())
 
 class UnicycleVisualizerMatplotlib(Visualizer):
     @store_args
-    def __init__(self, robotsize, obstacle_centers, obstacle_radii, x_goal,
+    def __init__(self, robotsize, obstacles, x_goal,
                  summary_writer, every_n_steps=5):
         self.fig, self.axes = plt.subplots(1,1)
         self.summary_writer = summary_writer
@@ -467,13 +471,13 @@ class UnicycleVisualizerMatplotlib(Visualizer):
         self.every_n_steps = every_n_steps
 
     def _init_drawing(self, ax):
-        self._add_obstacles(ax, self.obstacle_centers, self.obstacle_radii)
-        if len(self.obstacle_centers):
+        self._add_obstacles(ax, self.obstacles)
+        if len(self.obstacles):
             obs_bbox = BBox(
-                min((c[0]-r) for c, r in zip(self.obstacle_centers, self.obstacle_radii)),
-                min((c[1]-r) for c, r in zip(self.obstacle_centers, self.obstacle_radii)),
-                max((c[0]+r) for c, r in zip(self.obstacle_centers, self.obstacle_radii)),
-                max((c[1]+r) for c, r in zip(self.obstacle_centers, self.obstacle_radii)))
+                min((c[0]-r) for c, r in self.obstacles),
+                min((c[1]-r) for c, r in self.obstacles),
+                max((c[0]+r) for c, r in self.obstacles),
+                max((c[1]+r) for c, r in self.obstacles))
             self._bbox = BBox(min(obs_bbox.XMIN, self._bbox.XMIN),
                               min(obs_bbox.YMIN, self._bbox.YMIN),
                               max(obs_bbox.XMAX, self._bbox.XMAX),
@@ -484,8 +488,8 @@ class UnicycleVisualizerMatplotlib(Visualizer):
         self._add_goal(ax, self.x_goal, markersize=1)
 
 
-    def _add_obstacles(self, ax, centers, radii):
-        for c, r in zip(centers, radii):
+    def _add_obstacles(self, ax, obstacles):
+        for c, r in obstacles:
             circle = Circle(c, radius=r, fill=True, color='r')
             ax.add_patch(circle)
 
@@ -573,11 +577,9 @@ class UnsafeControllerUnicycle(ControllerUnicycle):
 
 def run_unicycle_control_learned(
         robotsize=0.2,
-        # obstacle_centers=[(0.00,  -1.00),
-        #                   (0.00,  1.00)],
-        # obstacle_radii=[0.8, 0.8],
-        obstacle_centers=[],
-        obstacle_radii=[],
+        # obstacles=[Obstacle((0.00,  -1.00), 0.8),
+        #            Obstacle((0.00,  1.00), 0.8)],
+        obstacles=[],
         x0=[-3.0,  -2., -np.pi/4.],
         x_goal=[1., 0., np.pi/4.],
         D=200,
@@ -610,8 +612,7 @@ def run_unicycle_control_learned(
                  else 'zero-mean')
             ])
     controller = controller_class(
-        obstacle_centers=obstacle_centers,
-        obstacle_radii=obstacle_radii,
+        obstacles=obstacles,
         x_goal=x_goal,
         numSteps=D,
         unsafe_controller_class=unsafe_controller_class,
@@ -622,8 +623,7 @@ def run_unicycle_control_learned(
         dynamics_model=UnicycleDynamicsModel(),
         D=D,
         controller=controller.control,
-        visualizer=visualizer_class(robotsize, obstacle_centers,
-                                    obstacle_radii, x_goal, summary_writer),
+        visualizer=visualizer_class(robotsize, obstacles, x_goal, summary_writer),
         x0=x0,
         dt=dt)
 
@@ -633,11 +633,9 @@ def run_unicycle_control_unsafe():
             UnsafeControllerUnicycle,
             mean_dynamics_model_class=UnicycleDynamicsModel))
 
-
 def run_unicycle_ilqr(
         robotsize=0.2,
-        obstacle_centers=[(0.10, -0.10)],
-        obstacle_radii=[0.5],
+        obstacles=Obstacle(center=(0.10, -0.10), radius=0.5),
         x0=[-0.8, -0.8, 1*math.pi/18],
         x_goal=[1., 1., math.pi/4],
         x_quad_goal_cost=[[1.0, 0, 0],
@@ -667,8 +665,7 @@ def run_unicycle_ilqr(
         dynamics_model=UnicycleDynamicsModel(),
         D=D,
         controller=controller.control,
-        visualizer=visualizer_class(robotsize, obstacle_centers,
-                                    obstacle_radii, x_goal),
+        visualizer=visualizer_class(robotsize, obstacles, x_goal),
         x0=x0,
         dt=dt)
 
@@ -722,21 +719,63 @@ class RRTPlanner:
 
 def plan_unicycle_path(x0=[-3.0, 0.1, np.pi/18],
                        cbc_class=ObstacleCBF,
-                       obstacle_centers=[(0.00,  -1.00),
-                                         (0.00,  1.00)],
-                       obstacle_radii=[0.8, 0.8],
+                       obstacles=[Obstacle((0.00,  -1.00), 0.8),
+                                  Obstacle((0.00,  1.00), 0.8)],
                        model=UnicycleDynamicsModel(),
                        x_goal=[1.0, 0, np.pi/4],
 ):
     cbfs = []
-    for obsc, obsr in zip(obstacle_centers, obstacle_radii):
-        cbfs.append( cbc_class(model, obsc, obsr, dtype=dtype) )
+    for obs in obstacles:
+        cbfs.append( cbc_class(model, obs, dtype=dtype) )
     planner = RRTPlanner(cbfs, x_goal)
     planner.plan(x=x0)
 
 
+class CosinePlanner(Planner):
+    def __init__(self, R, b):
+        self.R = R
+        self.b = b
+        self.n = n
+
+    def plan(self, t):
+        R, b, n = map(partial(getattr, self), 'R b n'.split())
+        # TODO: where does x,y come from?
+        ϕ = y.atan2(x)
+        Rpath = R + b.cos(n*ϕ)
+        return x - Rpath.cos(ϕ)
+
+    def dot_plan(self, t):
+        pass
+
+def run_unicycle_toy_ctrl(robotsize=0.2,
+                          D=200,
+                          x0=torch.tensor([-3, -1, -np.pi/4]),
+                          obstacles=[],
+                          x_goal=torch.tensor([0., 0., np.pi/4]),
+                          dt=0.01):
+    from move_to_pose import ControllerCLF, CLFCartesian
+    summary_writer = create_summary_writer('data/runs', ['unicycle', 'toy'])
+    return sample_generator_trajectory(
+        dynamics_model=UnicycleDynamicsModel(),
+        D=200,
+        controller=ControllerCLF(
+            x_goal,
+            coordinate_converter = lambda x, x_g: x,
+            dynamics = UnicycleDynamicsModel(),
+            clf = CLFCartesian(),
+        ).control,
+        visualizer=UnicycleVisualizerMatplotlib(
+            robotsize, obstacles,
+            x_goal,
+            summary_writer),
+        x0=x0,
+        dt=dt)
+
 if __name__ == '__main__':
+    import doctest
+    doctest.testmod()
     # run_unicycle_control_unsafe()
-    run_unicycle_control_learned()
+    # run_unicycle_control_learned()
     # run_unicycle_ilqr()
     # plan_unicycle_path()
+    run_unicycle_toy_ctrl()

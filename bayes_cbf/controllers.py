@@ -629,6 +629,9 @@ class QPController(Controller):
         self.summary_writer.add_scalar(
             'QPController/clf/dot',
             self.clf._dot_clf_gp(t, x_p, uopt).mean(xi), t)
+        self.summary_writer.add_scalar(
+            'QPController/clf/dotctrl',
+            self.clf._grad_clf_x(xi, x_p) @ self.clf.model.g_func(xi) @ uopt, t)
         self.summary_writer.add_scalar('QPController/clc', self.clf.clc(t, uopt).mean(xi), t)
         self.summary_writer.add_scalar('QPController/ρ', y_uopt_t[0], t)
 

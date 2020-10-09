@@ -147,7 +147,7 @@ def rotmat(θ):
 
 class RelDeg1CLF:
     def __init__(self, model, gamma=2.0, max_unstable_prop=0.01,
-                 diagP=[10., 1., 1.], planner=None):
+                 diagP=[1., 15., 40.], planner=None):
         self._gamma = gamma
         self._model = model
         self._max_unsafe_prob = max_unstable_prop
@@ -167,33 +167,18 @@ class RelDeg1CLF:
         return self._max_unsafe_prob
 
 
-    @staticmethod
-    def _x_rel(θ, x):
-        x_rel = rotmat(θ) @ x
-        return x_rel
-
-    @staticmethod
-    def _jac_x_rel(θ, x):
-        return torch.cat([rotmat(θ), θ.new_tensor([[-θ.sin(),  θ.cos()]
-                                                   [-θ.sin(), -θ.sin()]]) @ x])
-
     def _clf_terms(self, x, x_p, epsilon=1e-6):
-        x_rel = self._x_rel(x_p[2], x[:2] - x_p[:2])
-        ϕ =  x[2] - x_p[2]
+        xdiff = x[:2] - x_p[:2]
+        ϕ = xdiff[1].atan2(xdiff[0])
+        θ = x[2]
+        θp = x_p[2]
 
-        e_sq = x_rel @ x_rel
-        if torch.sqrt(e_sq) > epsilon:
-            x_rel_norm = x_rel / torch.sqrt(e_sq)
-        else:
-            print("[WARN]e_sq too small")
-            x_rel_norm = x_rel.new_tensor([1., 0.])
-        θ = x_rel_norm[1].atan2(x_rel_norm[0])
-        θsq = θ**2 / (np.pi**2) # scale to (-1, 1)
-        # cosine distance
-        # α_cos = 1-(x_rel_norm[0] * ϕ.cos() + x_rel_norm[1] * ϕ.sin())
+        e_sq = xdiff @ xdiff
         α = θ-ϕ
-        αsq = α**2 / (np.pi**2) # scale to (-1, 1)
-        return torch.cat([e_sq.unsqueeze(-1), θsq.unsqueeze(-1), αsq.unsqueeze(-1)])
+        cosα = 1-α.cos()
+        β = θp - ϕ
+        cosβ = 1-β.cos()
+        return torch.cat([e_sq.unsqueeze(-1), cosα.unsqueeze(-1), cosβ.unsqueeze(-1)])
 
     def _clf(self, x, x_p):
         return  self._diagP @ self._clf_terms(x, x_p)
@@ -284,10 +269,8 @@ class PiecewiseLinearPlanner(Planner):
         x_goal = self.x_goal
         xdiff = (x_goal[:2] - x0[:2])
         desired_theta = xdiff[1].atan2(xdiff[0])
-        t_first_step = max(int(numSteps*0.1), 1)
         t_second_stage = min(int(numSteps*0.9), numSteps-1)
-        return [(t_first_step, torch.cat([x0[:2], desired_theta.unsqueeze(-1)])),
-                (t_second_stage,
+        return [(t_second_stage,
                  torch.cat([x_goal[:2], desired_theta.unsqueeze(-1)])),
                 (numSteps, x_goal)]
 
@@ -580,7 +563,7 @@ def run_unicycle_control_learned(
         # obstacles=[Obstacle((0.00,  -1.00), 0.8),
         #            Obstacle((0.00,  1.00), 0.8)],
         obstacles=[],
-        x0=[-3.0,  -2., -np.pi/4.],
+        x0=[-3.0,  -2., np.pi/3.],
         x_goal=[1., 0., np.pi/4.],
         D=200,
         dt=0.002,
@@ -753,17 +736,26 @@ def run_unicycle_toy_ctrl(robotsize=0.2,
                           obstacles=[],
                           x_goal=torch.tensor([0., 0., np.pi/4]),
                           dt=0.01):
-    from move_to_pose import ControllerCLF, CLFCartesian
     summary_writer = create_summary_writer('data/runs', ['unicycle', 'toy'])
     return sample_generator_trajectory(
         dynamics_model=UnicycleDynamicsModel(),
         D=200,
-        controller=ControllerCLF(
-            x_goal,
-            coordinate_converter = lambda x, x_g: x,
-            dynamics = UnicycleDynamicsModel(),
-            clf = CLFCartesian(),
-        ).control,
+        # controller=ControllerCLF(
+        #     x_goal,
+        #     coordinate_converter = lambda x, x_g: x,
+        #     dynamics = UnicycleDynamicsModel(),
+        #     clf = CLFCartesian(),
+        # ).control,
+        controller = ControllerUnicycle(
+            obstacles=obstacles,
+            x_goal=x_goal,
+            numSteps=D,
+            mean_dynamics_model_class=UnicycleDynamicsModel,
+            unsafe_controller_class=GreedyController,
+            dt=dt,
+            summary_writer=summary_writer,
+            enable_learning=False,
+            x0=x0).control,
         visualizer=UnicycleVisualizerMatplotlib(
             robotsize, obstacles,
             x_goal,

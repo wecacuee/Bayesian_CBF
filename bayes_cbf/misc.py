@@ -156,7 +156,7 @@ class DynamicsModel(ABC):
         return dict(x=xtp1, xdot=xdot)
 
     def set_init_state(self, x0):
-        self._state = x0
+        self._state = x0.clone()
 
 
 class SumDynamicModels(DynamicsModel):

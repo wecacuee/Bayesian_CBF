@@ -42,19 +42,19 @@ def polar2cartesian(x: PolarState, state_goal : CartesianState) -> CartesianStat
     beta is the goal position relative to the angle to the goal
     : theta* - atan2((y*-y),(x*-x))
 
-    >>> polar = np.random.rand(3) * np.array([1, 2*np.pi, 2*np.pi]) - np.array([0, np.pi, np.pi])
-    >>> state_goal = np.random.rand(3) * np.array([2, 2, 2*np.pi]) - np.array([1, 1, np.pi])
+    >>> polar = torch.rand(3) * torch.tensor([1, 2*math.pi, 2*math.pi]) - torch.tensor([0, math.pi, math.pi])
+    >>> state_goal = torch.rand(3) * torch.tensor([2, 2, 2*math.pi]) - torch.tensor([1, 1, math.pi])
     >>> state = polar2cartesian(polar, state_goal)
     >>> polarp = cartesian2polar(state, state_goal)
-    >>> np.testing.assert_allclose(polar, polarp)
+    >>> torch.testing.assert_allclose(polar, polarp)
     """
     rho, alpha, beta = x
     x_goal, y_goal, theta_goal = state_goal
     phi = angdiff(theta_goal, beta)
     theta = normalize_angle(phi + alpha)
-    x_diff = rho * np.cos(phi)
-    y_diff = rho * np.sin(phi)
-    return np.array([x_goal - x_diff,
+    x_diff = rho * torch.cos(phi)
+    y_diff = rho * torch.sin(phi)
+    return torch.tensor([x_goal - x_diff,
                      y_goal - y_diff,
                      theta])
 
@@ -68,11 +68,11 @@ def cartesian2polar(state: CartesianState, state_goal : CartesianState) -> Polar
     beta is the goal position relative to the angle to the goal
     : theta* - atan2((y*-y),(x*-x))
 
-    >>> state = np.random.rand(3)* np.array([2, 2, 2*np.pi]) - np.array([1, 1, np.pi])
-    >>> state_goal = np.random.rand(3)* np.array([2, 2, 2*np.pi]) - np.array([1, 1, np.pi])
+    >>> state = torch.rand(3)* torch.tensor([2, 2, 2*math.pi]) - torch.tensor([1, 1, math.pi])
+    >>> state_goal = torch.rand(3)* torch.tensor([2, 2, 2*math.pi]) - torch.tensor([1, 1, math.pi])
     >>> polar = cartesian2polar(state, state_goal)
     >>> statep = polar2cartesian(polar, state_goal)
-    >>> np.testing.assert_allclose(state, statep)
+    >>> torch.testing.assert_allclose(state, statep)
     """
     x, y, theta = state
     x_goal, y_goal, theta_goal = state_goal
@@ -81,11 +81,11 @@ def cartesian2polar(state: CartesianState, state_goal : CartesianState) -> Polar
     y_diff = y_goal - y
 
     # reparameterization
-    rho = np.hypot(x_diff, y_diff)
-    phi = np.arctan2(y_diff, x_diff)
+    rho = torch.sqrt(x_diff**2 + y_diff**2)
+    phi = torch.atan2(y_diff, x_diff)
     alpha = angdiff(theta, phi)
     beta = angdiff(theta_goal , phi)
-    return np.array((rho, alpha, beta))
+    return torch.tensor((rho, alpha, beta))
 
 
 
@@ -136,7 +136,7 @@ def normalize_angle(theta):
     # Restrict alpha and beta (angle differences) to the range
     # [-pi, pi] to prevent unstable behavior e.g. difference going
     # from 0 rad to 2*pi rad with slight turn
-    return (theta + np.pi) % (2 * np.pi) - np.pi
+    return (theta + math.pi) % (2 * math.pi) - math.pi
 
 
 def angdiff(thetap, theta):
@@ -144,7 +144,7 @@ def angdiff(thetap, theta):
 
 
 def cosdist(thetap, theta):
-    return 1 - np.cos(thetap - theta)
+    return 1 - torch.cos(thetap - theta)
 
 
 def angdist(thetap, theta):
@@ -152,127 +152,129 @@ def angdist(thetap, theta):
 
 class CLFPolar:
     def __init__(self,
-                 Kp = np.array([5, 15, 40, 0])/10.):
-        self.Kp = np.asarray(Kp)
+                 Kp = torch.tensor([5, 15, 40, 0])/10.):
+        self.Kp = Kp
 
     def clf_terms(self, polar, state_goal):
         return self._clf_terms(polar, state_goal)
 
     def _clf_terms(self, polar, state_goal):
         rho, alpha, beta = polar
-        return np.array((0.5 * self.Kp[0] * rho ** 2,
+        return torch.tensor((0.5 * self.Kp[0] * rho ** 2,
                          self.Kp[1] * cosdist(alpha, 0),
                          self.Kp[2] * cosdist(beta, 0),
-                         self.Kp[3] * (1-np.cos(beta - alpha))
+                         self.Kp[3] * (1-torch.cos(beta - alpha))
         ))
 
     def grad_clf(self, polar, state_goal):
         """
         >>> self = CLFPolar()
-        >>> x0 = np.random.rand(3)
-        >>> state_goal = np.random.rand(3)
+        >>> x0 = torch.rand(3)
+        >>> state_goal = torch.rand(3)
         >>> ajac = self.grad_clf(x0, state_goal)
         >>> njac = numerical_jac(lambda x: self._clf_terms(x, state_goal).sum(), x0, 1e-6)[0]
-        >>> np.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        >>> torch.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
         """
         return self._grad_clf_terms(polar, state_goal).sum(axis=-1)
 
     def _grad_clf_terms(self, polar, state_goal):
         """
         >>> self = CLFPolar()
-        >>> x0 = np.random.rand(3)
-        >>> x0_goal = np.random.rand(3)
+        >>> x0 = torch.rand(3)
+        >>> x0_goal = torch.rand(3)
         >>> ajac = self._grad_clf_terms(x0, x0_goal)[:, 0]
         >>> njac = numerical_jac(lambda x: self.clf_terms(x,x0_goal)[0], x0, 1e-6)[0]
-        >>> np.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        >>> torch.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
         >>> ajac = self._grad_clf_terms(x0, x0_goal)[:, 1]
         >>> njac = numerical_jac(lambda x: self.clf_terms(x,x0_goal)[1], x0, 1e-6)[0]
-        >>> np.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        >>> torch.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
         >>> ajac = self._grad_clf_terms(x0, x0_goal)[:, 2]
         >>> njac = numerical_jac(lambda x: self.clf_terms(x,x0_goal)[2], x0, 1e-6)[0]
-        >>> np.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        >>> torch.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
         >>> ajac = self._grad_clf_terms(x0, x0_goal)[:, 3]
         >>> njac = numerical_jac(lambda x: self.clf_terms(x,x0_goal)[3], x0, 1e-6)[0]
-        >>> np.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        >>> torch.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
         """
         rho, alpha, beta = polar
-        return np.array([[self.Kp[0] * rho,  0, 0, 0],
-                         [0, self.Kp[1] * np.sin(alpha), 0, - self.Kp[3] * np.sin(beta - alpha)],
-                         [0,  0, self.Kp[2] * np.sin(beta), self.Kp[3] * np.sin(beta - alpha)]])
+        return torch.tensor([[self.Kp[0] * rho,  0, 0, 0],
+                         [0, self.Kp[1] * torch.sin(alpha), 0, - self.Kp[3] * torch.sin(beta - alpha)],
+                         [0,  0, self.Kp[2] * torch.sin(beta), self.Kp[3] * torch.sin(beta - alpha)]])
 
     def isconverged(self, x, state_goal):
         rho, alpha, beta = cartesian2polar(x, state_goal)
         return rho < 1e-3
 
 
-def numerical_jac(func, x0, eps):
+def numerical_jac(func, x0_in, eps):
     """
-    >>> def func(x): return np.array([np.cos(x[0]), np.sin(x[1])])
-    >>> def jacfunc(x): return np.array([[-np.sin(x[0]), 0], [0, np.cos(x[1])]])
-    >>> x0 = np.random.rand(2)
+    >>> def func(x): return torch.tensor([torch.cos(x[0]), torch.sin(x[1])])
+    >>> def jacfunc(x): return torch.tensor([[-torch.sin(x[0]), 0], [0, torch.cos(x[1])]])
+    >>> x0 = torch.rand(2)
     >>> njac = numerical_jac(func, x0, 1e-6)
     >>> ajac = jacfunc(x0)
-    >>> np.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+    >>> torch.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
     """
+    x0 = x0_in.to(dtype=torch.float64)
     f0 = func(x0)
-    m = 1 if np.isscalar(f0) else f0.shape[-1]
-    jac = np.empty((m, x0.shape[-1]))
-    Dx = eps * np.eye(x0.shape[-1])
+    m = f0.shape[-1] if len(f0.shape) else 1
+    jac = torch.empty((m, x0.shape[-1]), dtype=torch.float64)
+    Dx = eps * torch.eye(x0.shape[-1],dtype=torch.float64)
     XpDx = x0 + Dx
     for c in range(x0.shape[-1]):
         jac[:, c:c+1] = (func(XpDx[c, :]).reshape(-1, 1) - f0.reshape(-1, 1)) / eps
 
-    return jac
+    return jac.to(dtype=x0_in.dtype,
+                  device=x0_in.device)
 
 
 class CLFCartesian:
     def __init__(self,
-                 Kp = np.array([9, 15, 40])/10.):
-        self.Kp = np.asarray(Kp)
+                 Kp = torch.tensor([9, 15, 40])/10.):
+        self.Kp = Kp
 
     def clf_terms(self, state, state_goal):
         rho, alpha, beta = cartesian2polar(state, state_goal)
         x,y, theta = state
         x_goal, y_goal, theta_goal = state_goal
-        return np.array((0.5 * self.Kp[0] * rho ** 2,
-                         self.Kp[1] * (1-np.cos(alpha)),
-                         self.Kp[2] * (1-np.cos(beta))
+        return torch.tensor((0.5 * self.Kp[0] * rho ** 2,
+                         self.Kp[1] * (1-torch.cos(alpha)),
+                         self.Kp[2] * (1-torch.cos(beta))
         ))
 
     def _grad_clf_terms(self, state, state_goal):
         """
         >>> self = CLFCartesian()
-        >>> x0 = np.random.rand(3)
-        >>> x0_goal = np.random.rand(3)
+        >>> x0 = torch.rand(3)
+        >>> x0_goal = torch.rand(3)
         >>> ajac = self._grad_clf_terms(x0, x0_goal)[:, 0]
         >>> njac = numerical_jac(lambda x: self.clf_terms(x,x0_goal)[0], x0, 1e-6)[0]
-        >>> np.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        >>> torch.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
         >>> ajac = self._grad_clf_terms(x0, x0_goal)[:, 1]
         >>> njac = numerical_jac(lambda x: self.clf_terms(x,x0_goal)[1], x0, 1e-6)[0]
-        >>> np.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        >>> torch.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
         >>> ajac = self._grad_clf_terms(x0, x0_goal)[:, 2]
         >>> njac = numerical_jac(lambda x: self.clf_terms(x,x0_goal)[2], x0, 1e-6)[0]
-        >>> np.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        >>> torch.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
         """
         x_diff, y_diff, theta_diff = state_goal - state
         rho, alpha, beta = cartesian2polar(state, state_goal)
-        return np.array([[- self.Kp[0] * x_diff,
-                          - self.Kp[1] * np.sin(alpha) * y_diff / (rho**2),
-                          - self.Kp[2] * np.sin(beta) * y_diff / (rho**2)
+        return torch.tensor([[- self.Kp[0] * x_diff,
+                          - self.Kp[1] * torch.sin(alpha) * y_diff / (rho**2),
+                          - self.Kp[2] * torch.sin(beta) * y_diff / (rho**2)
                           ],
                          [- self.Kp[0] * y_diff,
-                          self.Kp[1] * np.sin(alpha) * x_diff / (rho**2),
-                          self.Kp[2] * np.sin(beta) * x_diff / (rho**2)],
-                         [0, self.Kp[1] * np.sin(alpha), 0]
+                          self.Kp[1] * torch.sin(alpha) * x_diff / (rho**2),
+                          self.Kp[2] * torch.sin(beta) * x_diff / (rho**2)],
+                         [0, self.Kp[1] * torch.sin(alpha), 0]
                          ])
     def grad_clf(self, state, state_goal):
         """
         >>> self = CLFCartesian()
-        >>> x0 = np.random.rand(3)
-        >>> x0_goal = np.random.rand(3)
+        >>> x0 = torch.rand(3)
+        >>> x0_goal = torch.rand(3)
         >>> ajac = self.grad_clf(x0, x0_goal)
         >>> njac = numerical_jac(lambda x: self.clf_terms(x, x0_goal).sum(), x0, 1e-6)[0]
-        >>> np.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        >>> torch.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
         """
         return self._grad_clf_terms(state, state_goal).sum(axis=-1)
 
@@ -291,7 +293,7 @@ class ControllerCLF:
                  coordinate_converter = cartesian2polar,
                  dynamics = PolarDynamics(),
                  clf = CLFPolar()):
-        self.state_goal = to_numpy(state_goal)
+        self.state_goal = state_goal
         self.u_dim = 2
         self.coordinate_converter = coordinate_converter
         self.dynamics = dynamics
@@ -305,8 +307,8 @@ class ControllerCLF:
 
     def _clc(self, x, state_goal, u, t):
         polar = self.coordinate_converter(x, state_goal)
-        f = lambda x: to_numpy(self.dynamics.f_func(torch.from_numpy(x)))
-        g = lambda x: to_numpy(self.dynamics.g_func(torch.from_numpy(x)))
+        f = self.dynamics.f_func
+        g = self.dynamics.g_func
         gclf = self._grad_clf(polar, state_goal)
         LOG.add_scalar("x_0", x[0], t)
         # print("x :", x)
@@ -315,7 +317,9 @@ class ControllerCLF:
         # print("grad_x clf:", gclf)
         # print("g(x): ", g(polar))
         # print("grad_u clf:", gclf @ g(polar))
-        return gclf @ (f(polar) + g(polar) @ u) + 10 * self._clf(polar, state_goal)
+        bfa = to_numpy(gclf @ g(polar))
+        b = to_numpy(gclf @ f(polar) + 10 * self._clf(polar, state_goal))
+        return bfa @ u + b
 
     def _cost(self, x, u):
         import cvxpy as cp # pip install cvxpy
@@ -324,7 +328,7 @@ class ControllerCLF:
     def control(self, x_torch, t):
         state_goal = self.state_goal
         import cvxpy as cp # pip install cvxpy
-        x = to_numpy(x_torch)
+        x = x_torch
         uvar = cp.Variable(self.u_dim)
         uvar.value = np.zeros(self.u_dim)
         relax = cp.Variable(1)
@@ -367,7 +371,7 @@ class ControllerPID:
         Kp_beta  = self.Kp_beta
         v = Kp_rho * rho
         w = Kp_alpha * alpha + Kp_beta * beta
-        if alpha > np.pi / 2 or alpha < -np.pi / 2:
+        if alpha > math.pi / 2 or alpha < -math.pi / 2:
             v = -v
         return [v, w]
 
@@ -388,11 +392,11 @@ class Visualizer:
             self.state_start = state
         plt.cla()
         x_start, y_start, theta_start = self.state_start
-        plt.arrow(x_start, y_start, np.cos(theta_start),
-                    np.sin(theta_start), color='r', width=0.1)
+        plt.arrow(x_start, y_start, torch.cos(theta_start),
+                    torch.sin(theta_start), color='r', width=0.1)
         x_goal, y_goal, theta_goal = self.state_goal
-        plt.arrow(x_goal, y_goal, np.cos(theta_goal),
-                    np.sin(theta_goal), color='g', width=0.1)
+        plt.arrow(x_goal, y_goal, torch.cos(theta_goal),
+                    torch.sin(theta_goal), color='g', width=0.1)
         x, y, theta = state
         self.x_traj.append(x)
         self.y_traj.append(y)
@@ -432,14 +436,14 @@ def move_to_pose(state_start, state_goal,
 
 def plot_vehicle(x, y, theta, x_traj, y_traj, dt):  # pragma: no cover
     # Corners of triangular vehicle when pointing to the right (0 radians)
-    p1_i = np.array([0.5, 0, 1]).T
-    p2_i = np.array([-0.5, 0.25, 1]).T
-    p3_i = np.array([-0.5, -0.25, 1]).T
+    p1_i = torch.tensor([0.5, 0, 1]).T
+    p2_i = torch.tensor([-0.5, 0.25, 1]).T
+    p3_i = torch.tensor([-0.5, -0.25, 1]).T
 
     T = transformation_matrix(x, y, theta)
-    p1 = np.matmul(T, p1_i)
-    p2 = np.matmul(T, p2_i)
-    p3 = np.matmul(T, p3_i)
+    p1 = torch.matmul(T, p1_i)
+    p2 = torch.matmul(T, p2_i)
+    p3 = torch.matmul(T, p3_i)
 
     plt.plot([p1[0], p2[0]], [p1[1], p2[1]], 'k-')
     plt.plot([p2[0], p3[0]], [p2[1], p3[1]], 'k-')
@@ -458,9 +462,9 @@ def plot_vehicle(x, y, theta, x_traj, y_traj, dt):  # pragma: no cover
 
 
 def transformation_matrix(x, y, theta):
-    return np.array([
-        [np.cos(theta), -np.sin(theta), x],
-        [np.sin(theta), np.cos(theta), y],
+    return torch.tensor([
+        [torch.cos(theta), -torch.sin(theta), x],
+        [torch.sin(theta), torch.cos(theta), y],
         [0, 0, 1]
     ])
 
@@ -526,10 +530,10 @@ def sample_generator_trajectory(dynamics_model, D, dt=0.01, x0=None,
                                 visualizer=None):
     m = dynamics_model.ctrl_size
     n = dynamics_model.state_size
-    U = np.empty((D, m))
-    X = np.zeros((D+1, n))
-    X[0, :] = np.random.rand(n) if x0 is None else np.asarray(x0)
-    Xdot = np.zeros((D, n))
+    U = torch.empty((D, m))
+    X = torch.zeros((D+1, n))
+    X[0, :] = torch.rand(n) if x0 is None else x0
+    Xdot = torch.zeros((D, n))
     # Single trajectory
     dynamics_model.set_init_state(X[0, :])
     for t in range(D):
@@ -542,20 +546,20 @@ def sample_generator_trajectory(dynamics_model, D, dt=0.01, x0=None,
 
 
 def main(simulator = move_to_pose):
-    simulator(np.array([-3, -1, -np.pi/4]), np.array([0, 0, np.pi/4]))
+    simulator(torch.tensor([-3, -1, -math.pi/4]), torch.tensor([0, 0, math.pi/4]))
     for i in range(5):
         x_start = 20 * random()
         y_start = 20 * random()
-        theta_start = 2 * np.pi * random() - np.pi
+        theta_start = 2 * math.pi * random() - math.pi
         x_goal = 20 * random()
         y_goal = 20 * random()
-        theta_goal = 2 * np.pi * random() - np.pi
+        theta_goal = 2 * math.pi * random() - math.pi
         print("Initial x: %.2f m\nInitial y: %.2f m\nInitial theta: %.2f rad\n" %
               (x_start, y_start, theta_start))
         print("Goal x: %.2f m\nGoal y: %.2f m\nGoal theta: %.2f rad\n" %
               (x_goal, y_goal, theta_goal))
-        state_goal = np.array([x_goal, y_goal, theta_goal])
-        state_start = np.array([x_start, y_start, theta_start])
+        state_goal = torch.tensor([x_goal, y_goal, theta_goal])
+        state_start = torch.tensor([x_start, y_start, theta_start])
         simulator(state_start, state_goal)
 
 if __name__ == '__main__':

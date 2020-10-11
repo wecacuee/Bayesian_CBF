@@ -17,18 +17,27 @@ import math
 
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
+NUMPY_AS_TORCH = False
+if NUMPY_AS_TORCH:
+    import bayes_cbf.numpy2torch as torch
+    import numpy.testing as testing
+else:
+    import torch
+    def torch_to(arr, **kw):
+        return arr.to(**kw)
+    import torch.testing as testing
+
+
 from torch.utils.tensorboard import SummaryWriter
 
 from bayes_cbf.misc import to_numpy
 
-# simulation parameters
+LOG = SummaryWriter('data/runs/' + datetime.now().strftime("%m%d-%H%M"))
 
 PolarState = namedtuple('PolarState', 'rho alpha beta'.split())
 CartesianState = namedtuple('CartesianState', 'x y theta'.split())
-CartesianStateWithGoal = namedtuple('CartesianStateWithGoal', 'state state_goal'.split())
-
-LOG = SummaryWriter('data/runs/' + datetime.now().strftime("%m%d-%H%M"))
+CartesianStateWithGoal = namedtuple('CartesianStateWithGoal',
+                                    'state state_goal'.split())
 
 
 def polar2cartesian(x: PolarState, state_goal : CartesianState) -> CartesianState:
@@ -42,11 +51,13 @@ def polar2cartesian(x: PolarState, state_goal : CartesianState) -> CartesianStat
     beta is the goal position relative to the angle to the goal
     : theta* - atan2((y*-y),(x*-x))
 
-    >>> polar = torch.rand(3) * torch.tensor([1, 2*math.pi, 2*math.pi]) - torch.tensor([0, math.pi, math.pi])
-    >>> state_goal = torch.rand(3) * torch.tensor([2, 2, 2*math.pi]) - torch.tensor([1, 1, math.pi])
+    >>> polar = (torch.rand(3) * torch.tensor([1, 2*math.pi, 2*math.pi]) -
+    ...         torch.tensor([0, math.pi, math.pi]))
+    >>> state_goal = (torch.rand(3) * torch.tensor([2, 2, 2*math.pi]) -
+    ...              torch.tensor([1, 1, math.pi]))
     >>> state = polar2cartesian(polar, state_goal)
     >>> polarp = cartesian2polar(state, state_goal)
-    >>> torch.testing.assert_allclose(polar, polarp)
+    >>> testing.assert_allclose(polar, polarp)
     """
     rho, alpha, beta = x
     x_goal, y_goal, theta_goal = state_goal
@@ -72,7 +83,7 @@ def cartesian2polar(state: CartesianState, state_goal : CartesianState) -> Polar
     >>> state_goal = torch.rand(3)* torch.tensor([2, 2, 2*math.pi]) - torch.tensor([1, 1, math.pi])
     >>> polar = cartesian2polar(state, state_goal)
     >>> statep = polar2cartesian(polar, state_goal)
-    >>> torch.testing.assert_allclose(state, statep)
+    >>> testing.assert_allclose(state, statep)
     """
     x, y, theta = state
     x_goal, y_goal, theta_goal = state_goal
@@ -173,7 +184,7 @@ class CLFPolar:
         >>> state_goal = torch.rand(3)
         >>> ajac = self.grad_clf(x0, state_goal)
         >>> njac = numerical_jac(lambda x: self._clf_terms(x, state_goal).sum(), x0, 1e-6)[0]
-        >>> torch.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        >>> testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
         """
         return self._grad_clf_terms(polar, state_goal).sum(axis=-1)
 
@@ -184,16 +195,16 @@ class CLFPolar:
         >>> x0_goal = torch.rand(3)
         >>> ajac = self._grad_clf_terms(x0, x0_goal)[:, 0]
         >>> njac = numerical_jac(lambda x: self.clf_terms(x,x0_goal)[0], x0, 1e-6)[0]
-        >>> torch.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        >>> testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
         >>> ajac = self._grad_clf_terms(x0, x0_goal)[:, 1]
         >>> njac = numerical_jac(lambda x: self.clf_terms(x,x0_goal)[1], x0, 1e-6)[0]
-        >>> torch.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        >>> testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
         >>> ajac = self._grad_clf_terms(x0, x0_goal)[:, 2]
         >>> njac = numerical_jac(lambda x: self.clf_terms(x,x0_goal)[2], x0, 1e-6)[0]
-        >>> torch.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        >>> testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
         >>> ajac = self._grad_clf_terms(x0, x0_goal)[:, 3]
         >>> njac = numerical_jac(lambda x: self.clf_terms(x,x0_goal)[3], x0, 1e-6)[0]
-        >>> torch.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        >>> testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
         """
         rho, alpha, beta = polar
         return torch.tensor([[self.Kp[0] * rho,  0, 0, 0],
@@ -205,26 +216,26 @@ class CLFPolar:
         return rho < 1e-3
 
 
-def numerical_jac(func, x0_in, eps):
+def numerical_jac(func, x0_in, eps, dtype=torch.float64):
     """
     >>> def func(x): return torch.tensor([torch.cos(x[0]), torch.sin(x[1])])
     >>> def jacfunc(x): return torch.tensor([[-torch.sin(x[0]), 0], [0, torch.cos(x[1])]])
     >>> x0 = torch.rand(2)
     >>> njac = numerical_jac(func, x0, 1e-6)
     >>> ajac = jacfunc(x0)
-    >>> torch.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+    >>> testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
     """
-    x0 = x0_in.to(dtype=torch.float64)
+    x0 = torch_to(x0_in, dtype=dtype)
     f0 = func(x0)
     m = f0.shape[-1] if len(f0.shape) else 1
-    jac = torch.empty((m, x0.shape[-1]), dtype=torch.float64)
-    Dx = eps * torch.eye(x0.shape[-1],dtype=torch.float64)
+    jac = torch.empty((m, x0.shape[-1]), dtype=x0.dtype)
+    Dx = eps * torch.eye(x0.shape[-1], dtype=x0.dtype)
     XpDx = x0 + Dx
     for c in range(x0.shape[-1]):
         jac[:, c:c+1] = (func(XpDx[c, :]).reshape(-1, 1) - f0.reshape(-1, 1)) / eps
 
-    return jac.to(dtype=x0_in.dtype,
-                  device=x0_in.device)
+    return torch_to(jac, dtype=x0_in.dtype,
+                    device=getattr(x0_in, 'device', None))
 
 
 class CLFCartesian:
@@ -248,13 +259,13 @@ class CLFCartesian:
         >>> x0_goal = torch.rand(3)
         >>> ajac = self._grad_clf_terms(x0, x0_goal)[:, 0]
         >>> njac = numerical_jac(lambda x: self.clf_terms(x,x0_goal)[0], x0, 1e-6)[0]
-        >>> torch.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        >>> testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
         >>> ajac = self._grad_clf_terms(x0, x0_goal)[:, 1]
         >>> njac = numerical_jac(lambda x: self.clf_terms(x,x0_goal)[1], x0, 1e-6)[0]
-        >>> torch.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        >>> testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
         >>> ajac = self._grad_clf_terms(x0, x0_goal)[:, 2]
         >>> njac = numerical_jac(lambda x: self.clf_terms(x,x0_goal)[2], x0, 1e-6)[0]
-        >>> torch.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        >>> testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
         """
         x_diff, y_diff, theta_diff = state_goal - state
         rho, alpha, beta = cartesian2polar(state, state_goal)
@@ -274,7 +285,7 @@ class CLFCartesian:
         >>> x0_goal = torch.rand(3)
         >>> ajac = self.grad_clf(x0, x0_goal)
         >>> njac = numerical_jac(lambda x: self.clf_terms(x, x0_goal).sum(), x0, 1e-6)[0]
-        >>> torch.testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        >>> testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
         """
         return self._grad_clf_terms(state, state_goal).sum(axis=-1)
 
@@ -344,8 +355,9 @@ class ControllerCLF:
             raise ValueError(problem.status)
         # for variable in problem.variables():
         #     print("Variable %s: value %s" % (variable.name(), variable.value))
-        return torch.from_numpy(uvar.value).to(device=x_torch.device,
-                                               dtype=x_torch.dtype)
+        return torch_to(torch.from_numpy(uvar.value),
+                        device=getattr(x_torch, 'device', None),
+                        dtype=x_torch.dtype)
 
 
     def isconverged(self, state, state_goal):

@@ -28,7 +28,10 @@ Similar to np.vstack
 
 
 def to_numpy(x):
-    return x.detach().cpu().double().numpy()
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu().double().numpy()
+    else:
+        return x
 
 
 def t_jac(f_x, x, retain_graph=False, **kw):

@@ -181,6 +181,9 @@ class CLFPolar:
         """
         return self._grad_clf_terms(polar, state_goal).sum(axis=-1)
 
+    def grad_clf_wrt_goal(self, polar, state_goal):
+        return torch.zeros_like(state_goal)
+
     def _grad_clf_terms(self, polar, state_goal):
         """
         >>> self = CLFPolar()

@@ -245,6 +245,34 @@ class CLFCartesian:
                          self.Kp[2] * (1-torch.cos(beta))
         ))
 
+    def _grad_clf_terms_wrt_goal(self, state, state_goal):
+        """
+        >>> self = CLFCartesian()
+        >>> x0 = torch.rand(3)
+        >>> x0_goal = torch.rand(3)
+        >>> ajac = self._grad_clf_terms_wrt_goal(x0, x0_goal)[:, 0]
+        >>> njac = numerical_jac(lambda xg: self.clf_terms(x0, xg)[0], x0_goal, 1e-6)[0]
+        >>> testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        >>> ajac = self._grad_clf_terms_wrt_goal(x0, x0_goal)[:, 1]
+        >>> njac = numerical_jac(lambda xg: self.clf_terms(x0, xg)[1], x0_goal, 1e-6)[0]
+        >>> testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        >>> ajac = self._grad_clf_terms_wrt_goal(x0, x0_goal)[:, 2]
+        >>> njac = numerical_jac(lambda xg: self.clf_terms(x0, xg)[2], x0_goal, 1e-6)[0]
+        >>> testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        """
+        x_diff, y_diff, theta_diff = state_goal - state
+        rho, alpha, beta = cartesian2polar(state, state_goal)
+        return torch.tensor([[self.Kp[0] * x_diff,
+                          self.Kp[1] * torch.sin(alpha) * y_diff / (rho**2),
+                          self.Kp[2] * torch.sin(beta) * y_diff / (rho**2)
+                          ],
+                         [self.Kp[0] * y_diff,
+                          - self.Kp[1] * torch.sin(alpha) * x_diff / (rho**2),
+                          - self.Kp[2] * torch.sin(beta) * x_diff / (rho**2)],
+                         [0, 0,
+                          self.Kp[2] * torch.sin(beta)]
+                         ])
+
     def _grad_clf_terms(self, state, state_goal):
         """
         >>> self = CLFCartesian()
@@ -282,6 +310,18 @@ class CLFCartesian:
         """
         return self._grad_clf_terms(state, state_goal).sum(axis=-1)
 
+    def grad_clf_wrt_goal(self, state, state_goal):
+        """
+        >>> self = CLFCartesian()
+        >>> x0 = torch.rand(3)
+        >>> x0_goal = torch.rand(3)
+        >>> ajac = self.grad_clf_wrt_goal(x0, x0_goal)
+        >>> njac = numerical_jac(lambda xg: self.clf_terms(x0, xg).sum(), x0_goal, 1e-6)[0]
+        >>> testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        """
+        return self._grad_clf_terms_wrt_goal(state, state_goal).sum(axis=-1)
+
+
     def isconverged(self, x, state_goal):
         rho, alpha, beta = cartesian2polar(x, state_goal)
         return rho < 1e-3
@@ -303,17 +343,12 @@ class ControllerCLF:
         self.dynamics = dynamics
         self.clf = clf
 
-    def _clf(self, polar, state_goal):
-        return self.clf.clf_terms(polar, state_goal).sum()
-
-    def _grad_clf(self, polar, state_goal):
-        return self.clf.grad_clf(polar, state_goal)
-
     def _clc(self, x, state_goal, u, t):
         polar = self.coordinate_converter(x, state_goal)
         f = self.dynamics.f_func
         g = self.dynamics.g_func
-        gclf = self._grad_clf(polar, state_goal)
+        gclf = self.clf.grad_clf(polar, state_goal)
+        gclf_goal = self.clf.grad_clf_wrt_goal(polar, state_goal)
         LOG.add_scalar("x_0", x[0], t)
         # print("x :", x)
         # print("clf terms :", self.clf.clf_terms(polar, state_goal))
@@ -323,8 +358,8 @@ class ControllerCLF:
         # print("grad_u clf:", gclf @ g(polar))
         bfa = to_numpy(gclf @ g(polar))
         b = to_numpy(gclf @ f(polar)
-                     - gclf @ self.planner.dot_plan(t) + 10 *
-                     self._clf(polar, state_goal))
+                     - gclf_goal @ self.planner.dot_plan(t) + 10 *
+                     self.clf.clf_terms(polar, state_goal).sum())
         return bfa @ u + b
 
     def _cost(self, x, u):

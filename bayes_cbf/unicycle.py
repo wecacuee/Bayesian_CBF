@@ -172,9 +172,7 @@ class RelDeg1CLF:
         e_sq = xdiff @ xdiff
         α = θ-ϕ
         cosα = 1-α.cos()
-        β = θp - ϕ
-        cosβ = 1-β.cos()
-        return torch.cat([e_sq.unsqueeze(-1), cosα.unsqueeze(-1), cosβ.unsqueeze(-1)])
+        return torch.cat([e_sq.unsqueeze(-1), cosα.unsqueeze(-1)])
 
     def _clf(self, x, x_p):
         return  self._diagP @ self._clf_terms(x, x_p)

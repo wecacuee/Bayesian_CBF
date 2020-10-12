@@ -16,6 +16,8 @@ import sys
 import math
 
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle
+
 import numpy as np
 NUMPY_AS_TORCH = False
 if NUMPY_AS_TORCH:
@@ -34,7 +36,7 @@ from bayes_cbf.misc import to_numpy, normalize_radians
 from bayes_cbf.sampling import sample_generator_trajectory
 from bayes_cbf.planner import PiecewiseLinearPlanner, SplinePlanner
 
-LOG = SummaryWriter('data/runs/' + datetime.now().strftime("%m%d-%H%M"))
+LOG = SummaryWriter('data/runs/unicycle_move_to_pose' + datetime.now().strftime("%m%d-%H%M"))
 
 PolarState = namedtuple('PolarState', 'rho alpha beta'.split())
 CartesianState = namedtuple('CartesianState', 'x y theta'.split())
@@ -330,6 +332,35 @@ class CLFCartesian:
         return rho < 1e-3
 
 
+class ObstacleCBF:
+    def __init__(self, center, radius):
+        self.center = center
+        self.radius = radius
+
+    def cbf(self, state):
+        self.center, self.radius = map(partial(torch_to,
+                                               device=state.device,
+                                               dtype=state.dtype),
+                                       (self.center, self.radius))
+        return ((state[:2] - self.center)**2).sum() - self.radius**2
+
+    def grad_cbf(self, state):
+        """
+        >>> self = ObstacleCBF(torch.rand(2), torch.rand(1))
+        >>> x0 = torch.rand(3)
+        >>> ajac = self.grad_cbf(x0)
+        >>> njac = numerical_jac(lambda x: self.cbf(x), x0, 1e-6)[0]
+        >>> testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        """
+        self.center, self.radius = map(partial(torch_to,
+                                               device=state.device,
+                                               dtype=state.dtype),
+                                       (self.center, self.radius))
+        gcbf = torch.zeros_like(state)
+        gcbf[:2] = 2*(state[:2]-self.center)
+        return gcbf
+
+
 class ControllerCLF:
     """
     Aicardi, M., Casalino, G., Bicchi, A., & Balestrino, A. (1995). Closed loop steering of unicycle like vehicles via Lyapunov techniques. IEEE Robotics & Automation Magazine, 2(1), 27-35.
@@ -337,19 +368,27 @@ class ControllerCLF:
     def __init__(self, # simulation parameters
                  planner,
                  u_dim = 2,
-                 coordinate_converter = cartesian2polar,
-                 dynamics = PolarDynamics(),
-                 clf = CLFPolar()):
+                 coordinate_converter = None, # cartesian2polar/ lambda x, xg: x
+                 dynamics = None, # PolarDynamics()/CartesianDynamics()
+                 clf = None, # CLFPolar()/CLFCartesian()
+                 clf_gamma = 10,
+                 clf_relax_weight = 10,
+                 cbfs = [],
+                 cbf_gammas = []):
         self.planner = planner
         self.u_dim = 2
         self.coordinate_converter = coordinate_converter
         self.dynamics = dynamics
         self.clf = clf
+        self.clf_gamma = 10
+        self.clf_relax_weight = 10
+        self.cbfs = cbfs
+        self.cbf_gammas = cbf_gammas
 
-    def _clc(self, x, state_goal, u, t):
+    def _clc(self, x, state_goal, t):
         polar = self.coordinate_converter(x, state_goal)
-        f = self.dynamics.f_func
-        g = self.dynamics.g_func
+        fx = self.dynamics.f_func(polar)
+        gx = self.dynamics.g_func(polar)
         gclf = self.clf.grad_clf(polar, state_goal)
         gclf_goal = self.clf.grad_clf_wrt_goal(polar, state_goal)
         LOG.add_scalar("x_0", x[0], t)
@@ -359,11 +398,20 @@ class ControllerCLF:
         # print("grad_x clf:", gclf)
         # print("g(x): ", g(polar))
         # print("grad_u clf:", gclf @ g(polar))
-        bfa = to_numpy(gclf @ g(polar))
-        b = to_numpy(gclf @ f(polar)
-                     - gclf_goal @ self.planner.dot_plan(t) + 10 *
+        bfa = to_numpy(gclf @ gx)
+        b = to_numpy(gclf @ fx
+                     - gclf_goal @ self.planner.dot_plan(t) + self.clf_gamma *
                      self.clf.clf_terms(polar, state_goal).sum())
-        return bfa @ u + b
+        return bfa, b
+
+    def _cbcs(self, x, t):
+        fx = self.dynamics.f_func(x)
+        gx = self.dynamics.g_func(x)
+        for cbf, cbf_gamma in zip(self.cbfs, self.cbf_gammas):
+            gcbf = cbf.grad_cbf(x)
+            cbfx = cbf.cbf(x)
+            LOG.add_scalar("cbf", cbfx, t)
+            yield to_numpy(gcbf @ gx), to_numpy(gcbf @ fx + cbf_gamma * cbfx)
 
     def _cost(self, x, u):
         import cvxpy as cp # pip install cvxpy
@@ -376,9 +424,13 @@ class ControllerCLF:
         uvar = cp.Variable(self.u_dim)
         uvar.value = np.zeros(self.u_dim)
         relax = cp.Variable(1)
-        obj = cp.Minimize(self._cost(x, uvar) + 10*self._clc(x, state_goal, uvar, t))
-        #constr = (self._clc(x, uvar) + relax <= 0)
-        problem = cp.Problem(obj)#, [constr])
+        obj = cp.Minimize(self._cost(x, uvar) + self.clf_relax_weight *relax)
+        clc_bfa, clc_b = self._clc(x, state_goal, t)
+        constraints = [clc_bfa @ uvar + clc_b - relax <= 0]
+        for cbc_bfa, cbc_b in self._cbcs(x, t):
+            constraints.append(cbc_bfa @ uvar + cbc_b >= 0)
+
+        problem = cp.Problem(obj, constraints)
         problem.solve(solver='GUROBI')
         if problem.status not in ["infeasible", "unbounded"]:
             # Otherwise, problem.value is inf or -inf, respectively.
@@ -426,10 +478,11 @@ class ControllerPID:
         return rho < 1e-3
 
 class Visualizer:
-    def __init__(self, planner, dt):
+    def __init__(self, planner, dt, cbfs=[]):
         self.planner = planner
         self.dt = dt
         self.state_start = None
+        self.cbfs = cbfs
         self.x_traj, self.y_traj = [], []
 
 
@@ -446,6 +499,11 @@ class Visualizer:
         x_goal, y_goal, theta_goal = self.planner.x_goal
         plt.arrow(x_goal, y_goal, torch.cos(theta_goal),
                     torch.sin(theta_goal), color='g', width=0.1)
+        for cbf in self.cbfs:
+            circle = Circle(to_numpy(cbf.center),
+                            radius=to_numpy(cbf.radius),
+                            fill=False, color='r')
+            plt.gca().add_patch(circle)
         x, y, theta = state
         self.x_traj.append(x)
         self.y_traj.append(y)
@@ -595,6 +653,9 @@ class Configs:
     def sim_cartesian_clf_traj(self):
         dt = 0.01
         numSteps = 200
+        cbfs = lambda x, x_g: [ObstacleCBF((x[:2] + x_g[:2])/2,
+                                           (x[:2] - x_g[:2]).norm()/10)]
+        cbf_gammas = [torch.tensor(1.)]
         return dict(simulator=partial(
             lambda x, x_g, **kw: sample_generator_trajectory(
                                       dynamics_model=CartesianDynamics(),
@@ -605,11 +666,15 @@ class Configs:
                                           dynamics = CartesianDynamics(),
                                           clf = CLFCartesian(
                                               Kp = torch.tensor([0.9, 1.5, 0.])
-                                          )
+                                          ),
+                                          cbfs = cbfs(x , x_g),
+                                          cbf_gammas = cbf_gammas
                                       ).control,
                                       visualizer=Visualizer(
                                           PiecewiseLinearPlanner(x, x_g, numSteps, dt),
-                                          dt),
+                                          dt,
+                                          cbfs = cbfs(x, x_g)
+                                      ),
                                       x0=x,
                                       dt=dt)))
 

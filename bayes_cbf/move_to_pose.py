@@ -163,7 +163,7 @@ def angdist(thetap, theta):
 
 class CLFPolar:
     def __init__(self,
-                 Kp = torch.tensor([5, 15, 40, 0])/10.):
+                 Kp = torch.tensor([6., 15., 40., 0.])/10.):
         self.Kp = Kp
 
     def clf_terms(self, polar, state_goal):
@@ -240,7 +240,7 @@ def numerical_jac(func, x0_in, eps, dtype=torch.float64):
 
 class CLFCartesian:
     def __init__(self,
-                 Kp = torch.tensor([9, 15, 40])/10.):
+                 Kp = torch.tensor([9., 15., 40.])/10.):
         self.Kp = Kp
 
     def clf_terms(self, state, state_goal):
@@ -385,7 +385,7 @@ class ControllerPID:
         w = Kp_alpha * alpha + Kp_beta * beta
         if alpha > math.pi / 2 or alpha < -math.pi / 2:
             v = -v
-        return [v, w]
+        return torch.cat([v.unsqueeze(-1), w.unsqueeze(-1)])
 
     def isconverged(self, x, state_goal):
         rho, alpha, beta = cartesian2polar(x, state_goal)
@@ -428,7 +428,7 @@ def move_to_pose(state_start, state_goal,
     Kp_beta*beta rotates the line so that it is parallel to the goal angle
     """
 
-    state = state_start.copy()
+    state = state_start.clone()
     count = 0
     visualizer = Visualizer(state_goal, dt)
     dynamics.set_init_state(state)
@@ -577,4 +577,4 @@ def main(simulator = move_to_pose):
 if __name__ == '__main__':
     import doctest
     doctest.testmod() # always run unittests first
-    main(**getattr(Configs(), 'sim_cartesian_clf')) # 'pid', 'clf_polar' or 'clf_cartesian'
+    main(**getattr(Configs(), 'sim_cartesian_clf')) # 'pid', 'clf_polar' or 'clf_cartesian' 'sim_cartesian_clf'

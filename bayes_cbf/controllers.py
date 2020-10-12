@@ -24,6 +24,7 @@ from bayes_cbf.optimizers import (optimizer_socp_cvxopt,
                                   optimizer_qp_cvxpy)
 from bayes_cbf.plotting import (plot_results, plot_learned_2D_func,
                                 plt_savefig_with_data)
+from bayes_cbf.planner import Planner
 
 
 class NamedFunc:
@@ -262,16 +263,6 @@ class ConstraintPlotter:
             if i is not None:
                 plt_savefig_with_data(axs[i].figure, self.plotfile.format(i=i))
         return axs
-
-
-class Planner(ABC):
-    @abstractmethod
-    def plan(self, x, t):
-        pass
-
-    @abstractmethod
-    def dot_plan(self, x, t):
-        pass
 
 
 class EpsilonGreedyController(ABC):

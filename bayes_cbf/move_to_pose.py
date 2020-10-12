@@ -30,7 +30,9 @@ else:
 
 from torch.utils.tensorboard import SummaryWriter
 
-from bayes_cbf.misc import to_numpy
+from bayes_cbf.misc import to_numpy, normalize_radians
+from bayes_cbf.sampling import sample_generator_trajectory
+from bayes_cbf.planner import PiecewiseLinearPlanner, SplinePlanner
 
 LOG = SummaryWriter('data/runs/' + datetime.now().strftime("%m%d-%H%M"))
 
@@ -62,7 +64,7 @@ def polar2cartesian(x: PolarState, state_goal : CartesianState) -> CartesianStat
     rho, alpha, beta = x
     x_goal, y_goal, theta_goal = state_goal
     phi = angdiff(theta_goal, beta)
-    theta = normalize_angle(phi + alpha)
+    theta = normalize_radians(phi + alpha)
     x_diff = rho * torch.cos(phi)
     y_diff = rho * torch.sin(phi)
     return torch.tensor([x_goal - x_diff,
@@ -93,6 +95,7 @@ def cartesian2polar(state: CartesianState, state_goal : CartesianState) -> Polar
 
     # reparameterization
     rho = torch.sqrt(x_diff**2 + y_diff**2)
+    assert rho.abs() > 1e-6, "Invalid conversion"
     phi = torch.atan2(y_diff, x_diff)
     alpha = angdiff(theta, phi)
     beta = angdiff(theta_goal , phi)
@@ -114,13 +117,10 @@ class PolarDynamics:
 
     def g_func(self, x : PolarState):
         rho, alpha, beta = x
-        return (torch.tensor([[-torch.cos(alpha), 0],
-                          [-torch.sin(alpha)/rho, 1],
-                          [-torch.sin(alpha)/rho, 0]])
-                if (rho > 1e-6) else
-                torch.array([[-1, 0],
-                          [-1, 1],
-                          [-1, 0]]))
+        assert rho > 1e-6
+        return torch.tensor([[-torch.cos(alpha), 0],
+                             [-torch.sin(alpha)/rho, 1],
+                             [-torch.sin(alpha)/rho, 0]])
 
     def step(self, u_torch, dt):
         x = self.current_state
@@ -143,15 +143,8 @@ class CartesianDynamics(PolarDynamics):
                          [0, 1]])
 
 
-def normalize_angle(theta):
-    # Restrict alpha and beta (angle differences) to the range
-    # [-pi, pi] to prevent unstable behavior e.g. difference going
-    # from 0 rad to 2*pi rad with slight turn
-    return (theta + math.pi) % (2 * math.pi) - math.pi
-
-
 def angdiff(thetap, theta):
-    return normalize_angle(thetap - theta)
+    return normalize_radians(thetap - theta)
 
 
 def cosdist(thetap, theta):
@@ -299,12 +292,12 @@ class ControllerCLF:
     Aicardi, M., Casalino, G., Bicchi, A., & Balestrino, A. (1995). Closed loop steering of unicycle like vehicles via Lyapunov techniques. IEEE Robotics & Automation Magazine, 2(1), 27-35.
     """
     def __init__(self, # simulation parameters
-                 state_goal,
+                 planner,
                  u_dim = 2,
                  coordinate_converter = cartesian2polar,
                  dynamics = PolarDynamics(),
                  clf = CLFPolar()):
-        self.state_goal = state_goal
+        self.planner = planner
         self.u_dim = 2
         self.coordinate_converter = coordinate_converter
         self.dynamics = dynamics
@@ -329,7 +322,9 @@ class ControllerCLF:
         # print("g(x): ", g(polar))
         # print("grad_u clf:", gclf @ g(polar))
         bfa = to_numpy(gclf @ g(polar))
-        b = to_numpy(gclf @ f(polar) + 10 * self._clf(polar, state_goal))
+        b = to_numpy(gclf @ f(polar)
+                     - gclf @ self.planner.dot_plan(t) + 10 *
+                     self._clf(polar, state_goal))
         return bfa @ u + b
 
     def _cost(self, x, u):
@@ -337,7 +332,7 @@ class ControllerCLF:
         return cp.sum_squares(u)
 
     def control(self, x_torch, t):
-        state_goal = self.state_goal
+        state_goal = self.planner.plan(t)
         import cvxpy as cp # pip install cvxpy
         x = x_torch
         uvar = cp.Variable(self.u_dim)
@@ -366,18 +361,19 @@ class ControllerCLF:
 
 class ControllerPID:
     def __init__(self,
-                 state_goal,
+                 planner,
                  # simulation parameters
                  Kp_rho = 9,
                  Kp_alpha = -15,
                  Kp_beta = -3):
-        self.state_goal = state_goal
+        self.planner = planner
         self.Kp_rho = Kp_rho
         self.Kp_alpha = Kp_alpha
         self.Kp_beta = Kp_beta
 
     def control(self, x, t):
-        rho, alpha, beta = cartesian2polar(x, self.state_goal)
+        state_goal = self.planner.plan(t)
+        rho, alpha, beta = cartesian2polar(x, state_goal)
         Kp_rho   = self.Kp_rho
         Kp_alpha = self.Kp_alpha
         Kp_beta  = self.Kp_beta
@@ -392,8 +388,8 @@ class ControllerPID:
         return rho < 1e-3
 
 class Visualizer:
-    def __init__(self, state_goal, dt):
-        self.state_goal = state_goal
+    def __init__(self, planner, dt):
+        self.planner = planner
         self.dt = dt
         self.state_start = None
         self.x_traj, self.y_traj = [], []
@@ -406,7 +402,10 @@ class Visualizer:
         x_start, y_start, theta_start = self.state_start
         plt.arrow(x_start, y_start, torch.cos(theta_start),
                     torch.sin(theta_start), color='r', width=0.1)
-        x_goal, y_goal, theta_goal = self.state_goal
+        x_plan, y_plan, theta_plan = self.planner.plan(t)
+        plt.arrow(x_plan, y_plan, torch.cos(theta_plan),
+                    torch.sin(theta_plan), color='g', width=0.05, linewidth=0.01)
+        x_goal, y_goal, theta_goal = self.planner.x_goal
         plt.arrow(x_goal, y_goal, torch.cos(theta_goal),
                     torch.sin(theta_goal), color='g', width=0.1)
         x, y, theta = state
@@ -481,6 +480,27 @@ def transformation_matrix(x, y, theta):
     ])
 
 
+class NoPlanner:
+    def __init__(self, x_goal):
+        self.x_goal = x_goal
+
+    def plan(self, t):
+        return self.x_goal
+
+    def dot_plan(self, t):
+        return torch.zeros_like(self.x_goal)
+
+
+class LinearPlanner:
+    def __init__(self, x_goal):
+        self.x_goal = x_goal
+
+    def plan(self, t):
+        pass
+
+    def dot_plan(self, t):
+        pass
+
 class Configs:
     @property
     def clf_polar(self):
@@ -489,7 +509,7 @@ class Configs:
                 x , x_g,
                 dynamics=CartesianDynamics(),
                 controller=ControllerCLF(
-                    x_g,
+                    NoPlanner(x_g),
                     coordinate_converter = cartesian2polar,
                     dynamics=PolarDynamics(),
                     clf = CLFPolar()
@@ -503,7 +523,7 @@ class Configs:
             lambda x, x_g, **kw: move_to_pose(x, x_g,
                                               dynamics=CartesianDynamics(),
                                               controller=ControllerCLF(
-                                                  x_g,
+                                                  NoPlanner(x_g),
                                                   coordinate_converter = lambda x, x_g: (x),
                                                   dynamics=CartesianDynamics(),
                                                   clf = CLFCartesian()
@@ -514,7 +534,7 @@ class Configs:
         return dict(simulator=partial(
             lambda x, x_g, **kw: move_to_pose(x, x_g,
                                       dynamics=CartesianDynamics(),
-                                      controller=ControllerPID(x_g))))
+                                      controller=ControllerPID(NoPlanner(x_g)))))
 
     @property
     def sim_cartesian_clf(self):
@@ -524,7 +544,7 @@ class Configs:
                                       dynamics_model=CartesianDynamics(),
                                       D=200,
                                       controller=ControllerCLF(
-                                          x_g,
+                                          NoPlanner(x_g),
                                           coordinate_converter = lambda x, x_g: x,
                                           dynamics = CartesianDynamics(),
                                           clf = CLFCartesian()
@@ -533,29 +553,27 @@ class Configs:
                                       x0=x,
                                       dt=dt)))
 
-
-
-
-def sample_generator_trajectory(dynamics_model, D, dt=0.01, x0=None,
-                                true_model=None,
-                                controller=None,
-                                visualizer=None):
-    m = dynamics_model.ctrl_size
-    n = dynamics_model.state_size
-    U = torch.empty((D, m))
-    X = torch.zeros((D+1, n))
-    X[0, :] = torch.rand(n) if x0 is None else x0
-    Xdot = torch.zeros((D, n))
-    # Single trajectory
-    dynamics_model.set_init_state(X[0, :])
-    for t in range(D):
-        U[t, :] = controller(X[t, :], t=t)
-        visualizer.setStateCtrl(X[t, :], U[t, :], t=t)
-        obs = dynamics_model.step(U[t, :], dt)
-        Xdot[t, :] = obs['xdot'] # f(X[t, :]) + g(X[t, :]) @ U[t, :]
-        X[t+1, :] = obs['x'] # normalize_state(X[t, :] + Xdot[t, :] * dt)
-    return Xdot, X, U
-
+    @property
+    def sim_cartesian_clf_traj(self):
+        dt = 0.01
+        numSteps = 200
+        return dict(simulator=partial(
+            lambda x, x_g, **kw: sample_generator_trajectory(
+                                      dynamics_model=CartesianDynamics(),
+                                      D=numSteps,
+                                      controller=ControllerCLF(
+                                          PiecewiseLinearPlanner(x, x_g, numSteps, dt),
+                                          coordinate_converter = lambda x, x_g: x,
+                                          dynamics = CartesianDynamics(),
+                                          clf = CLFCartesian(
+                                              Kp = torch.tensor([0.9, 1.5, 0.])
+                                          )
+                                      ).control,
+                                      visualizer=Visualizer(
+                                          PiecewiseLinearPlanner(x, x_g, numSteps, dt),
+                                          dt),
+                                      x0=x,
+                                      dt=dt)))
 
 def main(simulator = move_to_pose):
     simulator(torch.tensor([-3, -1, -math.pi/4]), torch.tensor([0, 0, math.pi/4]))
@@ -577,4 +595,4 @@ def main(simulator = move_to_pose):
 if __name__ == '__main__':
     import doctest
     doctest.testmod() # always run unittests first
-    main(**getattr(Configs(), 'sim_cartesian_clf')) # 'pid', 'clf_polar' or 'clf_cartesian' 'sim_cartesian_clf'
+    main(**getattr(Configs(), 'sim_cartesian_clf_traj')) # 'pid', 'clf_polar' or 'clf_cartesian' 'sim_cartesian_clf', 'sim_cartesian_clf_traj'

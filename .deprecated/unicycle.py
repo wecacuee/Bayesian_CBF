@@ -214,7 +214,6 @@ class UnicycleDynamicsModelPolarWrapper(DynamicsModel):
             name="f_polar(p)")
 
 
-
 class OMPLPlanner(Planner):
     def __init__(self, x0, x_goal, numSteps, dt):
         self.x0 = x0

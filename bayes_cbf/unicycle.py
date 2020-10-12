@@ -11,7 +11,6 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, FancyArrowPatch
-from scipy.interpolate import splrep, splev, spalde
 
 from bayes_cbf.misc import (t_hstack, store_args, DynamicsModel,
                             ZeroDynamicsModel, epsilon, to_numpy,
@@ -27,13 +26,10 @@ from bayes_cbf.plotting import (plot_learned_2D_func, plot_results,
 from bayes_cbf.control_affine_model import ControlAffineRegressor
 from bayes_cbf.controllers import (ControlCBFLearned, NamedAffineFunc,
                                    TensorboardPlotter, LQRController,
-                                   GreedyController, ILQRController, Planner,
+                                   GreedyController, ILQRController,
                                    ZeroController, Controller)
 from bayes_cbf.ilqr import ILQR
-
-
-def normalize_radians(theta):
-    return (theta + math.pi) % (2*math.pi) - math.pi
+from bayes_cbf.planner import PiecewiseLinearPlanner, Planner
 
 
 class UnicycleDynamicsModel(DynamicsModel):
@@ -252,92 +248,6 @@ class ShiftInvariantModel(ControlAffineRegressor):
 
     def g_func(self, Xtest_in):
         return super().g_func(self._filter_state(Xtest_in))
-
-
-class PiecewiseLinearPlanner(Planner):
-    def __init__(self, x0, x_goal, numSteps, dt):
-        self.x0 = x0
-        self.x_goal = x_goal
-        self.numSteps = numSteps
-        assert self.numSteps >= 3
-        self._checkpoint_list = self._checkpoints()
-        self.dt = dt
-
-    def _checkpoints(self):
-        numSteps = self.numSteps
-        x0 = self.x0
-        x_goal = self.x_goal
-        xdiff = (x_goal[:2] - x0[:2])
-        desired_theta = xdiff[1].atan2(xdiff[0])
-        t_second_stage = min(int(numSteps*0.9), numSteps-1)
-        return [(t_second_stage,
-                 torch.cat([x_goal[:2], desired_theta.unsqueeze(-1)])),
-                (numSteps, x_goal)]
-
-    def _get_checkpoint_interval(self, t_step):
-        prev_t, prev_x = 0, self.x0
-        for checkpoint_t, checkpoint_x in self._checkpoint_list:
-            if t_step <= checkpoint_t:
-                break
-            prev_t, prev_x = checkpoint_t, checkpoint_x
-        assert prev_t != checkpoint_t
-        return [(checkpoint_t, checkpoint_x), (prev_t, prev_x)]
-
-    def plan(self, t_step):
-        [(checkpoint_t, checkpoint_x), (prev_t, prev_x)] = self._get_checkpoint_interval(t_step)
-        x_p =  (checkpoint_x - prev_x) * (t_step - prev_t) / (checkpoint_t - prev_t) + prev_x
-        x_p[2] = normalize_radians(x_p[2])
-        return x_p
-
-    def dot_plan(self, t_step):
-        [(checkpoint_t, checkpoint_x), (prev_t, prev_x)] = self._get_checkpoint_interval(t_step)
-        return (checkpoint_x - prev_x) / ((checkpoint_t - prev_t) * self.dt)
-
-class SplinePlanner(Planner):
-    def __init__(self, x0, x_goal, numSteps, dt):
-        self.x0 = x0
-        self.x_goal = x_goal
-        self.numSteps = numSteps
-        assert self.numSteps >= 3
-        knots = self._knots()
-        self._x_spl = splrep(knots[:, 0], knots[:, 1])
-        self._y_spl = splrep(knots[:, 0], knots[:, 2])
-        self._yaw_spl = splrep(knots[:, 0], knots[:, 3])
-        self.dt = dt
-
-    def _knots(self):
-        numSteps = self.numSteps
-        x0 = self.x0
-        x_goal = self.x_goal
-        xdiff = (x_goal[:2] - x0[:2])
-        desired_theta = xdiff[1].atan2(xdiff[0])
-        t_first_step = max(int(numSteps*0.1), 1)
-        t_second_stage = min(int(numSteps*0.9), numSteps-1)
-        dx = (x_goal - x0)/(t_second_stage - t_first_step)
-        t_mid = (t_second_stage + t_first_step)/2
-        x_mid = (x0 + x_goal)/2
-        return torch.tensor([
-            [0, x0[0], x0[1], x0[2]],
-            [t_first_step, x0[0], x0[1], desired_theta],
-            [t_first_step + 1, x0[0]+dx[0], x0[1]+dx[1], desired_theta],
-            [t_mid, x_mid[0], x_mid[1], desired_theta],
-            [t_second_stage - 1, x_goal[0]-dx[0], x_goal[1]-dx[1], desired_theta],
-            [t_second_stage, x_goal[0], x_goal[1], desired_theta],
-            [numSteps, x_goal[0], x_goal[1], x_goal[2]]])
-
-    def plan(self, t_step):
-        return torch.from_numpy(np.hstack([splev(t_step, self._x_spl),
-                                           splev(t_step, self._y_spl),
-                                           splev(t_step, self._yaw_spl)])).to(
-                                device=self.x0.device,
-                                dtype=self.x0.dtype)
-
-    def dot_plan(self, t_step):
-        return torch.from_numpy(np.hstack([spalde(t_step, self._x_spl)[0],
-                                           spalde(t_step, self._y_spl)[0],
-                                           spalde(t_step, self._yaw_spl)[0]])).to(
-                                device=self.x0.device,
-                                dtype=self.x0.dtype)
 
 
 class ControllerUnicycle(ControlCBFLearned):

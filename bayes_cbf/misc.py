@@ -301,3 +301,8 @@ def create_summary_writer(run_dir='data/runs/', exp_tags=[]):
 def random_psd(m):
     M =  torch.rand(m, m)
     return M @ M.T
+
+
+def normalize_radians(theta):
+    return (theta + math.pi) % (2*math.pi) - math.pi
+

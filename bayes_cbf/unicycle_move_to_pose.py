@@ -16,7 +16,7 @@ import sys
 import math
 
 import matplotlib.pyplot as plt
-from matplotlib.patches import Circle
+from matplotlib.patches import Circle, Polygon
 
 import numpy as np
 NUMPY_AS_TORCH = False
@@ -413,9 +413,8 @@ class ControllerCLF:
             LOG.add_scalar("cbf", cbfx, t)
             yield to_numpy(gcbf @ gx), to_numpy(gcbf @ fx + cbf_gamma * cbfx)
 
-    def _cost(self, x, u):
-        import cvxpy as cp # pip install cvxpy
-        return cp.sum_squares(u)
+    def _ctrl_ref(self, x, u):
+        return np.zeros_like(x)
 
     def control(self, x_torch, t):
         state_goal = self.planner.plan(t)
@@ -424,9 +423,12 @@ class ControllerCLF:
         uvar = cp.Variable(self.u_dim)
         uvar.value = np.zeros(self.u_dim)
         relax = cp.Variable(1)
-        obj = cp.Minimize(self._cost(x, uvar) + self.clf_relax_weight *relax)
+        obj = cp.Minimize(cp.sum_squares(uvar) + self.clf_relax_weight * relax)
         clc_bfa, clc_b = self._clc(x, state_goal, t)
-        constraints = [clc_bfa @ uvar + clc_b - relax <= 0]
+        constraints = [
+            uvar >= np.array([-10., -np.pi*5]),
+            uvar <= np.array([10., np.pi*5]),
+            clc_bfa @ uvar + clc_b - relax <= 0]
         for cbc_bfa, cbc_b in self._cbcs(x, t):
             constraints.append(cbc_bfa @ uvar + cbc_b >= 0)
 
@@ -488,17 +490,18 @@ class Visualizer:
 
     def setStateCtrl(self, state, u, t=None, **kw):
         if t == 0:
-            self.state_start = state
+            self.state_start = state.clone()
         plt.cla()
+        scale = (self.planner.x_goal[:2] - self.state_start[:2]).norm() / 10.
         x_start, y_start, theta_start = self.state_start
-        plt.arrow(x_start, y_start, torch.cos(theta_start),
-                    torch.sin(theta_start), color='r', width=0.1)
+        plt.arrow(x_start, y_start, torch.cos(theta_start) * scale,
+                    torch.sin(theta_start)*scale, color='r', width=0.1*scale)
         x_plan, y_plan, theta_plan = self.planner.plan(t)
-        plt.arrow(x_plan, y_plan, torch.cos(theta_plan),
-                    torch.sin(theta_plan), color='g', width=0.05, linewidth=0.01)
+        plt.plot(x_plan, y_plan, 'g+', linewidth=0.01)
         x_goal, y_goal, theta_goal = self.planner.x_goal
-        plt.arrow(x_goal, y_goal, torch.cos(theta_goal),
-                    torch.sin(theta_goal), color='g', width=0.1)
+        plt.plot(x_goal, y_goal, 'g+', linewidth=0.4)
+        plt.gca().add_patch(Circle(np.array([x_goal, y_goal]),
+                                    radius=scale/5, fill=False, color='g'))
         for cbf in self.cbfs:
             circle = Circle(to_numpy(cbf.center),
                             radius=to_numpy(cbf.radius),
@@ -507,7 +510,8 @@ class Visualizer:
         x, y, theta = state
         self.x_traj.append(x)
         self.y_traj.append(y)
-        plot_vehicle(x, y, theta, self.x_traj, self.y_traj, self.dt)
+        plot_vehicle(x, y, theta, self.x_traj, self.y_traj, self.dt,
+                     self.state_start, self.planner.x_goal)
 
 def move_to_pose(state_start, state_goal,
                  dt = 0.01,
@@ -541,20 +545,16 @@ def move_to_pose(state_start, state_goal,
         count = count + 1
 
 
-def plot_vehicle(x, y, theta, x_traj, y_traj, dt):  # pragma: no cover
+def plot_vehicle(x, y, theta, x_traj, y_traj, dt, state_start, state_goal):  # pragma: no cover
     # Corners of triangular vehicle when pointing to the right (0 radians)
-    p1_i = torch.tensor([0.5, 0, 1]).T
-    p2_i = torch.tensor([-0.5, 0.25, 1]).T
-    p3_i = torch.tensor([-0.5, -0.25, 1]).T
+    scale = (state_goal[:2] - state_start[:2]).norm() / 10.
+    triangle = torch.tensor([[0.5, 0],
+                             [-0.5, 0.25],
+                             [-0.5, -0.25]])
 
-    T = transformation_matrix(x, y, theta)
-    p1 = torch.matmul(T, p1_i)
-    p2 = torch.matmul(T, p2_i)
-    p3 = torch.matmul(T, p3_i)
+    tri = (rot_matrix(theta) @ (scale * triangle.T) + torch.tensor([x, y]).reshape(-1, 1)).T
 
-    plt.plot([p1[0], p2[0]], [p1[1], p2[1]], 'k-')
-    plt.plot([p2[0], p3[0]], [p2[1], p3[1]], 'k-')
-    plt.plot([p3[0], p1[0]], [p3[1], p1[1]], 'k-')
+    plt.gca().add_patch(Polygon(to_numpy(tri), fill=False, edgecolor='k'))
 
     plt.plot(x_traj, y_traj, 'b--')
 
@@ -562,17 +562,19 @@ def plot_vehicle(x, y, theta, x_traj, y_traj, dt):  # pragma: no cover
     plt.gcf().canvas.mpl_connect('key_release_event',
             lambda event: [sys.exit(0) if event.key == 'escape' else None])
 
-    plt.xlim(-3.5, 22)
-    plt.ylim(-3.5, 22)
+    plt.gca().set_aspect('equal')
+    state_min = torch.min(state_start[:2], state_goal[:2]).min()
+    state_max = torch.max(state_start[:2], state_goal[:2]).max()
+    plt.xlim(-0.5 + state_min, state_max + 0.5)
+    plt.ylim(-0.5 + state_min, state_max + 0.5)
 
     plt.pause(dt)
 
 
-def transformation_matrix(x, y, theta):
+def rot_matrix(theta):
     return torch.tensor([
-        [torch.cos(theta), -torch.sin(theta), x],
-        [torch.sin(theta), torch.cos(theta), y],
-        [0, 0, 1]
+        [torch.cos(theta), -torch.sin(theta)],
+        [torch.sin(theta),  torch.cos(theta)]
     ])
 
 
@@ -596,6 +598,14 @@ class LinearPlanner:
 
     def dot_plan(self, t):
         pass
+
+def rotmat(theta):
+    return torch.tensor([[theta.cos(), -theta.sin()],
+                         [theta.sin(), theta.cos()]])
+
+def R90():
+    return torch.tensor([[0., -1.],
+                         [1, 0.]])
 
 class Configs:
     @property
@@ -652,10 +662,18 @@ class Configs:
     @property
     def sim_cartesian_clf_traj(self):
         dt = 0.01
-        numSteps = 200
-        cbfs = lambda x, x_g: [ObstacleCBF((x[:2] + x_g[:2])/2,
-                                           (x[:2] - x_g[:2]).norm()/10)]
-        cbf_gammas = [torch.tensor(1.)]
+        numSteps = 400
+        cbfs = lambda x, x_g: [
+            ObstacleCBF((x[:2] + x_g[:2])/2
+                        + R90() @ (x[:2] - x_g[:2])/15,
+                        (x[:2] - x_g[:2]).norm()/20),
+            ObstacleCBF((x[:2] + x_g[:2])/2
+                        - R90() @ (x[:2] - x_g[:2])/15,
+                        (x[:2] - x_g[:2]).norm()/20),
+        ]
+        cbf_gammas = [torch.tensor(10.), torch.tensor(10.)]
+        # cbfs = lambda x, x_g: []
+        # cbf_gammas = []
         return dict(simulator=partial(
             lambda x, x_g, **kw: sample_generator_trajectory(
                                       dynamics_model=CartesianDynamics(),

@@ -14,6 +14,9 @@ from functools import partial
 from collections import namedtuple
 import sys
 import math
+import logging
+LOG = logging.getLogger(__name__)
+LOG.setLevel(logging.INFO)
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Polygon
@@ -36,7 +39,7 @@ from bayes_cbf.misc import to_numpy, normalize_radians
 from bayes_cbf.sampling import sample_generator_trajectory
 from bayes_cbf.planner import PiecewiseLinearPlanner, SplinePlanner
 
-LOG = SummaryWriter('data/runs/unicycle_move_to_pose' + datetime.now().strftime("%m%d-%H%M"))
+TBLOG = None
 
 PolarState = namedtuple('PolarState', 'rho alpha beta'.split())
 CartesianState = namedtuple('CartesianState', 'x y theta'.split())
@@ -143,6 +146,79 @@ class CartesianDynamics(PolarDynamics):
         return torch.tensor([[math.cos(theta), 0],
                          [math.sin(theta), 0],
                          [0, 1]])
+
+
+class LearnedShiftInvariantDynamics:
+    state_size = 3
+    ctrl_size = 2
+    def __init__(self,
+                 dt = None,
+                 learned_dynamics = None,
+                 mean_dynamics = CartesianDynamics(),
+                 max_train = 200,
+                 training_iter = 100,
+                 shift_invariant = True):
+        self.max_train = max_train
+        self.training_iter = training_iter
+        self.dt = dt
+        self.mean_dynamics = mean_dynamics
+        self.learned_dynamics = (learned_dynamics
+                                 if learned_dynamics is not None else
+                                 ControlAffineRegressor(
+                                     self.state_size,
+                                     self.ctrl_size))
+        self.shift_invariant = shift_invariant
+        self.Xtrain = []
+        self.Utrain = []
+
+    def f_func(self, X):
+        if shift_invariant:
+            x_orig = X.clone()
+            x_orig[:2] = 0 # shift invariant, move to origin
+        else:
+            x_orig = X
+        return self.mean_dynamics.f_func(x_orig) + self.learned_dynamics.f_func(x_orig)
+
+    def g_func(self, X):
+        if shift_invariant:
+            x_orig = X.clone()
+            x_orig[:2] = 0 # shift invariant, move to origin
+        else:
+            x_orig = X
+        return self.mean_dynamics.g_func(x_orig) + self.learned_dynamics.g_func(x_orig)
+
+    def train(self):
+        LOG.info("Training GP with dataset size {}".format(len(self.Xtrain)))
+        if not len(self.Xtrain):
+            return
+        assert len(self.Xtrain) == len(self.Utrain), "Call train when Xtrain and Utrain are balanced"
+        Xtrain = torch.cat(self.Xtrain).reshape(-1, self.x_dim)
+        if shift_invariant:
+            Xtrain[:, :2] = 0.
+        Utrain = torch.cat(self.Utrain).reshape(-1, self.u_dim)
+        XdotTrain = (Xtrain[1:, :] - Xtrain[:-1, :]) / self.dt
+        XdotMean = self.mean_dynamics.f_func(Xtrain) + (
+            self.mean_dynamics.g_func(Xtrain).bmm(Utrain.unsqueeze(-1)).squeeze(-1))
+        XdotError = XdotTrain - XdotMean[:-1, :]
+        LOG.info("Training model with datasize {}".format(XdotTrain.shape[0]))
+        if XdotTrain.shape[0] > self.max_train:
+            indices = torch.randint(XdotTrain.shape[0], (self.max_train,))
+            train_data = Xtrain[indices, :], Utrain[indices, :], XdotError[indices, :],
+        else:
+            train_data = Xtrain[:-1, :], Utrain[:-1, :], XdotError
+
+        self.learned_dynamics.fit(*train_data, training_iter=100)
+
+    def fu_func_gp(self, U):
+        md = self.mean_dynamics
+        return DeterministicGP(lambda x: md.f_func(x) + md.g_func(x) @ U) + self.learned_dynamics.fu_func_gp(U)
+
+    def step(self, u_torch, dt):
+        x = self.current_state
+        xdot = self.f_func(x) + self.g_func(x) @ u_torch
+        self.current_state = x + xdot * dt
+        return dict(xdot = xdot,
+                    x = self.current_state)
 
 
 def angdiff(thetap, theta):
@@ -391,7 +467,7 @@ class ControllerCLF:
         gx = self.dynamics.g_func(polar)
         gclf = self.clf.grad_clf(polar, state_goal)
         gclf_goal = self.clf.grad_clf_wrt_goal(polar, state_goal)
-        LOG.add_scalar("x_0", x[0], t)
+        TBLOG.add_scalar("x_0", x[0], t)
         # print("x :", x)
         # print("clf terms :", self.clf.clf_terms(polar, state_goal))
         # print("clf:", self.clf.clf_terms(polar, state_goal).sum())
@@ -410,7 +486,7 @@ class ControllerCLF:
         for cbf, cbf_gamma in zip(self.cbfs, self.cbf_gammas):
             gcbf = cbf.grad_cbf(x)
             cbfx = cbf.cbf(x)
-            LOG.add_scalar("cbf", cbfx, t)
+            TBLOG.add_scalar("cbf", cbfx, t)
             yield to_numpy(gcbf @ gx), to_numpy(gcbf @ fx + cbf_gamma * cbfx)
 
     def _ctrl_ref(self, x, u):
@@ -588,17 +664,6 @@ class NoPlanner:
     def dot_plan(self, t):
         return torch.zeros_like(self.x_goal)
 
-
-class LinearPlanner:
-    def __init__(self, x_goal):
-        self.x_goal = x_goal
-
-    def plan(self, t):
-        pass
-
-    def dot_plan(self, t):
-        pass
-
 def rotmat(theta):
     return torch.tensor([[theta.cos(), -theta.sin()],
                          [theta.sin(), theta.cos()]])
@@ -697,8 +762,13 @@ class Configs:
                                       dt=dt)))
 
 def main(simulator = move_to_pose):
+    global TBLOG
+    TBLOG = SummaryWriter('data/runs/unicycle_move_to_pose_fixed_'
+                            + datetime.now().strftime("%m%d-%H%M"))
     simulator(torch.tensor([-3, -1, -math.pi/4]), torch.tensor([0, 0, math.pi/4]))
     for i in range(5):
+        TBLOG = SummaryWriter(('data/runs/unicycle_move_to_pose_%d_' % i)
+                              + datetime.now().strftime("%m%d-%H%M"))
         x_start = 20 * random()
         y_start = 20 * random()
         theta_start = 2 * math.pi * random() - math.pi

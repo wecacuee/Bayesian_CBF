@@ -600,6 +600,7 @@ class ControllerCLFBayesian:
     def convert_cbc_terms_to_socp_terms(bfe, e, V, bfv, v, extravars,
                                         testing=True):
         assert (torch.diag(V).abs() > 1e-6).all()
+        assert v.abs() > 1e-6
         m = bfe.shape[-1]
         bfc = bfe.new_zeros((m+extravars))
         if testing:
@@ -658,20 +659,20 @@ class ControllerCLFBayesian:
         d = e
         return A, bfb, bfc, d
 
-    def _clc(self, state, state_goal, u, t):
+    def _neg_clc(self, state, state_goal, u, t):
         n = state.shape[-1]
-        clf = DeterministicGP(lambda x: self.clf_gamma * self.clf.clf_terms(x, state_goal).sum(), shape=(1,))
-        gclf = DeterministicGP(lambda x: self.clf.grad_clf(x, state_goal), shape=(n,))
+        negclf = DeterministicGP(lambda x: - self.clf_gamma * self.clf.clf_terms(x, state_goal).sum(), shape=(1,))
+        neggclf = DeterministicGP(lambda x: - self.clf.grad_clf(x, state_goal), shape=(n,))
         gclf_goal = DeterministicGP(lambda x: self.clf.grad_clf_wrt_goal(x, state_goal),
                                     shape=(n,))
         fu_func_gp = self.dynamics.fu_func_gp(u)
         dot_plan = DeterministicGP(lambda x: self.planner.dot_plan(t), shape=(n,))
-        return gclf.t() @ fu_func_gp + gclf_goal.t() @ dot_plan + clf
+        return neggclf.t() @ fu_func_gp + gclf_goal.t() @ dot_plan + negclf
 
     def _clc_terms(self, state, state_goal, t):
         m = self.u_dim
         (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(
-            lambda u: self._clc(state, state_goal, u, t),
+            lambda u: self._neg_clc(state, state_goal, u, t),
             state, torch.rand(m))
         assert (torch.diag(V).abs() > 1e-6).all()
         assert (v.abs() > 1e-6).all()
@@ -711,16 +712,16 @@ class ControllerCLFBayesian:
             cp.sum_squares(uvar) + self.clf_relax_weight * relax)
         clc_A, clc_bfb, clc_bfc, clc_d = self._clc_terms(x, state_goal, t)
         constraints = [
-            clc_bfc @ uvar + clc_d - relax >= cp.norm(clc_A @ uvar + clc_bfb)]
+            clc_bfc @ uvar + clc_d - relax >= 0] # cp.norm(clc_A @ uvar + clc_bfb)]
 
         for cbc_A, cbc_bfb, cbc_bfc, cbc_d in self._cbcs(x, state_goal, t):
             constraints.append(
-                cbc_bfc @ uvar + cbc_d >= cp.norm(cbc_A @ uvar + cbc_bfb)
+                cbc_bfc @ uvar + cbc_d >= 0 # cp.norm(cbc_A @ uvar + cbc_bfb)
             )
 
         problem = cp.Problem(obj, constraints)
         problem.solve(solver='GUROBI', verbose=True)
-        if problem.status not in ["infeasible", "unbounded"]:
+        if problem.status not in ["infeasible", "unbounded", "infeasible_inaccurate"]:
             # Otherwise, problem.value is inf or -inf, respectively.
             # print("Optimal value: %s" % problem.value)
             pass
@@ -1072,17 +1073,17 @@ def unicycle_demo_sim_cartesian_clf_traj(
 def unicycle_demo_track_trajectory_clf_bayesian(
         dt = 0.01,
         numSteps = 400,
-        cbfs = lambda x, x_g: [
-            ObstacleCBF((x[:2] + x_g[:2])/2
-                        + R90() @ (x[:2] - x_g[:2])/15,
-                        (x[:2] - x_g[:2]).norm()/20),
-            ObstacleCBF((x[:2] + x_g[:2])/2
-                        - R90() @ (x[:2] - x_g[:2])/15,
-                        (x[:2] - x_g[:2]).norm()/20),
-        ],
-        cbf_gammas = [torch.tensor(10.), torch.tensor(10.)]
-        # cbfs = lambda x, x_g: []
-        # cbf_gammas = []
+        # cbfs = lambda x, x_g: [
+        #     ObstacleCBF((x[:2] + x_g[:2])/2
+        #                 + R90() @ (x[:2] - x_g[:2])/15,
+        #                 (x[:2] - x_g[:2]).norm()/20),
+        #     ObstacleCBF((x[:2] + x_g[:2])/2
+        #                 - R90() @ (x[:2] - x_g[:2])/15,
+        #                 (x[:2] - x_g[:2]).norm()/20),
+        # ],
+        # cbf_gammas = [torch.tensor(10.), torch.tensor(10.)]
+        cbfs = lambda x, x_g: [],
+        cbf_gammas = []
 ):
     return unicycle_demo(simulator=partial(track_trajectory_clf_bayesian,
                                            dt = dt, cbfs = cbfs,

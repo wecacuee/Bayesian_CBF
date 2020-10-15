@@ -35,9 +35,12 @@ else:
 
 from torch.utils.tensorboard import SummaryWriter
 
+from bayes_cbf.gp_algebra import DeterministicGP
+from bayes_cbf.control_affine_model import ControlAffineRegressor
 from bayes_cbf.misc import to_numpy, normalize_radians
 from bayes_cbf.sampling import sample_generator_trajectory
 from bayes_cbf.planner import PiecewiseLinearPlanner, SplinePlanner
+from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, cbc2_safety_factor
 
 TBLOG = None
 
@@ -141,11 +144,19 @@ class CartesianDynamics(PolarDynamics):
     def f_func(self, x : CartesianState):
         return torch.zeros_like(x)
 
-    def g_func(self, state: CartesianState):
-        x, y, theta = state
-        return torch.tensor([[math.cos(theta), 0],
-                         [math.sin(theta), 0],
-                         [0, 1]])
+    def g_func(self, state_in: CartesianState):
+        assert state_in.shape[-1] == self.state_size
+        state = state_in.unsqueeze(0) if state_in.dim() <= 1 else state_in
+
+        x, y, theta = state[..., 0:1], state[..., 1:2], state[..., 2:3]
+        theta_cos = theta.cos().unsqueeze(-1)
+        theta_sin = theta.sin().unsqueeze(-1)
+        zeros_ = torch.zeros_like(theta_cos)
+        ones_ = torch.ones_like(theta_cos)
+        gX = torch.cat([torch.cat([theta_cos, zeros_], dim=-1),
+                          torch.cat([theta_sin, zeros_], dim=-1),
+                          torch.cat([zeros_,    ones_], dim=-1)], dim=-2)
+        return gX.squeeze(0) if state_in.dim() <= 1 else gX
 
 
 class LearnedShiftInvariantDynamics:
@@ -157,7 +168,9 @@ class LearnedShiftInvariantDynamics:
                  mean_dynamics = CartesianDynamics(),
                  max_train = 200,
                  training_iter = 100,
-                 shift_invariant = True):
+                 shift_invariant = True,
+                 train_every_n_steps = 10,
+                 enable_learning = True):
         self.max_train = max_train
         self.training_iter = training_iter
         self.dt = dt
@@ -168,38 +181,60 @@ class LearnedShiftInvariantDynamics:
                                      self.state_size,
                                      self.ctrl_size))
         self.shift_invariant = shift_invariant
+        self._shift_invariant_wrapper = (self._shift_invariant_input
+                                         if shift_invariant else
+                                         lambda x: x)
+        self.train_every_n_steps = train_every_n_steps
+        self.enable_learning = enable_learning
         self.Xtrain = []
         self.Utrain = []
 
+    def _shift_invariant_input(self, X):
+        assert X.shape[-1] == self.state_size
+        return torch.cat(
+            [torch.zeros((*X.shape[:-1], self.state_size-1)),
+             X[..., self.state_size-1:]], dim=-1)
+
     def f_func(self, X):
-        if shift_invariant:
-            x_orig = X.clone()
-            x_orig[:2] = 0 # shift invariant, move to origin
-        else:
-            x_orig = X
+        x_orig = self._shift_invariant_wrapper(X)
         return self.mean_dynamics.f_func(x_orig) + self.learned_dynamics.f_func(x_orig)
 
     def g_func(self, X):
-        if shift_invariant:
-            x_orig = X.clone()
-            x_orig[:2] = 0 # shift invariant, move to origin
-        else:
-            x_orig = X
+        x_orig = self._shift_invariant_wrapper(X)
         return self.mean_dynamics.g_func(x_orig) + self.learned_dynamics.g_func(x_orig)
 
-    def train(self):
+    def train(self, xi, uopt):
+        if (len(self.Xtrain) > 0
+            and len(self.Xtrain) % int(self.train_every_n_steps) == 0
+            and self.enable_learning
+        ):
+            # train every n steps
+            self._train()
+
+        # record the xi, ui pair
+        self.Xtrain.append(xi.detach())
+        self.Utrain.append(uopt.detach())
+        assert len(self.Xtrain) == len(self.Utrain)
+
+    def _train(self):
         LOG.info("Training GP with dataset size {}".format(len(self.Xtrain)))
         if not len(self.Xtrain):
             return
-        assert len(self.Xtrain) == len(self.Utrain), "Call train when Xtrain and Utrain are balanced"
-        Xtrain = torch.cat(self.Xtrain).reshape(-1, self.x_dim)
-        if shift_invariant:
-            Xtrain[:, :2] = 0.
-        Utrain = torch.cat(self.Utrain).reshape(-1, self.u_dim)
+        assert len(self.Xtrain) == len(self.Utrain), \
+            "Call train when Xtrain and Utrain are balanced"
+
+        Xtrain = torch.cat(self.Xtrain).reshape(-1, self.Xtrain[0].shape[-1])
+
+        Utrain = torch.cat(self.Utrain).reshape(-1, self.Utrain[0].shape[-1])
         XdotTrain = (Xtrain[1:, :] - Xtrain[:-1, :]) / self.dt
+
+        if self.shift_invariant:
+            Xtrain[:, :2] = 0.
+
         XdotMean = self.mean_dynamics.f_func(Xtrain) + (
             self.mean_dynamics.g_func(Xtrain).bmm(Utrain.unsqueeze(-1)).squeeze(-1))
         XdotError = XdotTrain - XdotMean[:-1, :]
+
         LOG.info("Training model with datasize {}".format(XdotTrain.shape[0]))
         if XdotTrain.shape[0] > self.max_train:
             indices = torch.randint(XdotTrain.shape[0], (self.max_train,))
@@ -211,7 +246,9 @@ class LearnedShiftInvariantDynamics:
 
     def fu_func_gp(self, U):
         md = self.mean_dynamics
-        return DeterministicGP(lambda x: md.f_func(x) + md.g_func(x) @ U) + self.learned_dynamics.fu_func_gp(U)
+        return (DeterministicGP(lambda x: md.f_func(x) + md.g_func(x) @ U,
+                                shape=(self.state_size,))
+                + self.learned_dynamics.fu_func_gp(U))
 
     def step(self, u_torch, dt):
         x = self.current_state
@@ -468,19 +505,14 @@ class ControllerCLF:
         gclf = self.clf.grad_clf(polar, state_goal)
         gclf_goal = self.clf.grad_clf_wrt_goal(polar, state_goal)
         TBLOG.add_scalar("x_0", x[0], t)
-        # print("x :", x)
-        # print("clf terms :", self.clf.clf_terms(polar, state_goal))
-        # print("clf:", self.clf.clf_terms(polar, state_goal).sum())
-        # print("grad_x clf:", gclf)
-        # print("g(x): ", g(polar))
-        # print("grad_u clf:", gclf @ g(polar))
         bfa = to_numpy(gclf @ gx)
         b = to_numpy(gclf @ fx
-                     - gclf_goal @ self.planner.dot_plan(t) + self.clf_gamma *
-                     self.clf.clf_terms(polar, state_goal).sum())
+                     - gclf_goal @ self.planner.dot_plan(t)
+                     + self.clf_gamma * self.clf.clf_terms(polar, state_goal).sum())
         return bfa, b
 
-    def _cbcs(self, x, t):
+    def _cbcs(self, x_in, state_goal, t):
+        x = self.coordinate_converter(x_in, state_goal)
         fx = self.dynamics.f_func(x)
         gx = self.dynamics.g_func(x)
         for cbf, cbf_gamma in zip(self.cbfs, self.cbf_gammas):
@@ -505,7 +537,7 @@ class ControllerCLF:
             uvar >= np.array([-10., -np.pi*5]),
             uvar <= np.array([10., np.pi*5]),
             clc_bfa @ uvar + clc_b - relax <= 0]
-        for cbc_bfa, cbc_b in self._cbcs(x, t):
+        for cbc_bfa, cbc_b in self._cbcs(x, state_goal, t):
             constraints.append(cbc_bfa @ uvar + cbc_b >= 0)
 
         problem = cp.Problem(obj, constraints)
@@ -518,10 +550,177 @@ class ControllerCLF:
             raise ValueError(problem.status)
         # for variable in problem.variables():
         #     print("Variable %s: value %s" % (variable.name(), variable.value))
-        return torch_to(torch.from_numpy(uvar.value),
+        uopt =  torch_to(torch.from_numpy(uvar.value),
                         device=getattr(x_torch, 'device', None),
                         dtype=x_torch.dtype)
+        if hasattr(self.dynamics, 'train'):
+            self.dynamics.train(x_torch, uopt)
+        return uopt
 
+    def isconverged(self, state, state_goal):
+        return self.clf.isconverged(state, state_goal)
+
+
+class ControllerCLFBayesian:
+    def __init__(self, # simulation parameters
+                 planner,
+                 u_dim = 2,
+                 coordinate_converter = None, # cartesian2polar/ lambda x, xg: x
+                 dynamics = None, # PolarDynamics()/CartesianDynamics()
+                 clf = None, # CLFPolar()/CLFCartesian()
+                 clf_gamma = 10,
+                 clf_relax_weight = 10,
+                 cbfs = [],
+                 cbf_gammas = [],
+                 ctrl_min = np.array([-10., -np.pi*5]),
+                 ctrl_max = np.array([10., np.pi*5])):
+        self.planner = planner
+        self.u_dim = 2
+        self.coordinate_converter = coordinate_converter
+        self.dynamics = dynamics
+        self.clf = clf
+        self.clf_gamma = 10
+        self.clf_relax_weight = 10
+        self.cbfs = cbfs
+        self.cbf_gammas = cbf_gammas
+        self.ctrl_min = ctrl_min
+        self.ctrl_max = ctrl_max
+
+    @staticmethod
+    def convert_cbc_terms_to_socp_terms(bfe, e, V, bfv, v, extravars,
+                                        testing=True):
+        m = bfe.shape[-1]
+        bfc = bfe.new_zeros((m+extravars))
+        if testing:
+            u0 = torch.zeros((m,))
+            u0_hom = torch.cat((torch.tensor([1.]), u0))
+        with torch.no_grad():
+            # [1, u] Asq [1; u]
+            Asq = torch.cat(
+                (
+                    torch.cat((torch.tensor([[v]]),         (bfv / 2).reshape(1, -1)), dim=-1),
+                    torch.cat(((bfv / 2).reshape(-1, 1),    V), dim=-1)
+                ),
+                dim=-2)
+            if testing:
+                np.testing.assert_allclose(u0_hom @ Asq @ u0_hom,
+                                        u0 @ V @ u0 + bfv @ u0 + v)
+
+            # [1, u] Asq [1; u] = |L[1; u]|_2 = |[0, A] [y_1; y_2; u] + b|_2
+            n_constraints = m+1
+            try:
+                L = torch.cholesky(Asq) # (m+1) x (m+1)
+            except RuntimeError as err:
+                if "cholesky" in str(err) and "singular" in str(err):
+                    L = torch.cholesky(Asq + torch.diag(torch.ones(m+1)*1e-3))
+                else:
+                    raise
+            # try:
+            #     n_constraints = m+1
+            #     L = torch.cholesky(Asq) # (m+1) x (m+1)
+            # except RuntimeError as err:
+            #     if "cholesky" in str(err) and "singular" in str(err):
+            #         if torch.allclose(v, torch.zeros((1,))) and torch.allclose(bfv, torch.zeros(bfv.shape[0])):
+            #             L = torch.zeros((m+1, m+1))
+            #             L[1:, 1:] = torch.cholesky(V)
+            #         else:
+            #             diag_e, U = torch.symeig(Asq, eigenvectors=True)
+            #             n_constraints = torch.nonzero(diag_e, as_tuple=True)[0].shape[-1]
+            #             L = torch.diag(diag_e).sqrt() @ U[:, -n_constraints:]
+            #     else:
+            #         raise
+
+        if testing:
+            np.testing.assert_allclose(L @ L.T, Asq, rtol=1e-2, atol=1e-3)
+
+        A = torch.zeros((n_constraints, m + extravars))
+        A[:, extravars:] = L.T[:, 1:]
+        bfb = L.T[:, 0] # (m+1)
+        if testing:
+            y_u0 = torch.cat((torch.zeros(extravars), u0))
+            np.testing.assert_allclose(A @ y_u0 + bfb, L.T @ u0_hom)
+            np.testing.assert_allclose(u0_hom @ Asq @ u0_hom, u0_hom @ L @ L.T @ u0_hom, rtol=1e-2, atol=1e-3)
+            np.testing.assert_allclose(u0 @ V @ u0 + bfv @ u0 + v, (A @ y_u0 + bfb) @ (A @ y_u0 + bfb), rtol=1e-2, atol=1e-3)
+        if extravars >= 1: # "I assumed atleast δ "
+            bfc[extravars-1] = 1 # For delta the relaxation factor
+        bfc[extravars:] = bfe # only affine terms need to be negative?
+        d = e
+        return A, bfb, bfc, d
+
+    def _clc(self, state, state_goal, u, t):
+        n = state.shape[-1]
+        clf = DeterministicGP(lambda x: self.clf_gamma * self.clf.clf_terms(x, state_goal).sum(), shape=(1,))
+        gclf = DeterministicGP(lambda x: self.clf.grad_clf(x, state_goal), shape=(n,))
+        gclf_goal = DeterministicGP(lambda x: self.clf.grad_clf_wrt_goal(x, state_goal),
+                                    shape=(n,))
+        fu_func_gp = self.dynamics.fu_func_gp(u)
+        dot_plan = DeterministicGP(lambda x: self.planner.dot_plan(t), shape=(n,))
+        return gclf.t() @ fu_func_gp + gclf_goal.t() @ dot_plan + clf
+
+    def _clc_terms(self, state, state_goal, t):
+        m = self.u_dim
+        (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(
+            lambda u: self._clc(state, state_goal, u, t),
+            state, torch.rand(m))
+        A, bfb, bfc, d = self.convert_cbc_terms_to_socp_terms(
+            bfe, e, V, bfv, v, 0)
+        return map(to_numpy, (A, bfb, bfc, d))
+
+    def _cbc(self, cbf, cbf_gamma, state, state_goal, u, t):
+        n = state.shape[-1]
+        cbfx = DeterministicGP(lambda x: cbf_gamma * cbf.cbf(x), shape=(1,))
+        gcbfx = DeterministicGP(lambda x: cbf.grad_cbf(x), shape=(n,))
+        fu_func_gp = self.dynamics.fu_func_gp(u)
+        return gcbfx.t() @ fu_func_gp + cbfx
+
+
+    def _cbc_terms(self, cbf, cbf_gamma, state, state_goal, t):
+        m = self.u_dim
+        (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(
+            lambda u: self._cbc(cbf, cbf_gamma, state, state_goal, u, t),
+            state, torch.rand(m))
+        A, bfb, bfc, d = self.convert_cbc_terms_to_socp_terms(
+            bfe, e, V, bfv, v, 0)
+        return map(to_numpy, (A, bfb, bfc, d))
+
+    def _cbcs(self, state, state_goal, t):
+        for cbf, cbf_gamma in zip(self.cbfs, self.cbf_gammas):
+            yield self._cbc_terms(cbf, cbf_gamma, state, state_goal, t)
+
+    def control(self, x_torch, t):
+        import cvxpy as cp # pip install cvxpy
+        state_goal = self.planner.plan(t)
+        x = x_torch
+        uvar = cp.Variable(self.u_dim)
+        uvar.value = np.zeros(self.u_dim)
+        relax = cp.Variable(1)
+        obj = cp.Minimize(
+            cp.sum_squares(uvar) + self.clf_relax_weight * relax)
+        clc_A, clc_bfb, clc_bfc, clc_d = self._clc_terms(x, state_goal, t)
+        constraints = [
+            clc_bfc @ uvar + clc_d - relax >= cp.norm(clc_A @ uvar + clc_bfb)]
+
+        for cbc_A, cbc_bfb, cbc_bfc, cbc_d in self._cbcs(x, state_goal, t):
+            constraints.append(
+                cbc_bfc @ uvar + cbc_d >= cp.norm(cbc_A @ uvar + cbc_bfb)
+            )
+
+        problem = cp.Problem(obj, constraints)
+        problem.solve(solver='GUROBI', verbose=True)
+        if problem.status not in ["infeasible", "unbounded"]:
+            # Otherwise, problem.value is inf or -inf, respectively.
+            # print("Optimal value: %s" % problem.value)
+            pass
+        else:
+            raise ValueError(problem.status)
+        # for variable in problem.variables():
+        #     print("Variable %s: value %s" % (variable.name(), variable.value))
+        uopt = torch_to(torch.from_numpy(uvar.value),
+                        device=getattr(x_torch, 'device', None),
+                        dtype=x_torch.dtype)
+        if hasattr(self.dynamics, 'train'):
+            self.dynamics.train(x_torch, uopt)
+        return uopt
 
     def isconverged(self, state, state_goal):
         return self.clf.isconverged(state, state_goal)
@@ -593,7 +792,9 @@ def move_to_pose(state_start, state_goal,
                  dt = 0.01,
                  show_animation = True,
                  controller=None,
-                 dynamics=CartesianDynamics()):
+                 dynamics=CartesianDynamics(),
+                 visualizer=None
+):
     """
     rho is the distance between the robot and the goal position
     alpha is the angle to the goal relative to the heading of the robot
@@ -602,10 +803,11 @@ def move_to_pose(state_start, state_goal,
     Kp_rho*rho and Kp_alpha*alpha drive the robot along a line towards the goal
     Kp_beta*beta rotates the line so that it is parallel to the goal angle
     """
-
+    visualizer = (Visualizer(NoPlanner(state_goal), dt)
+                  if visualizer is None else
+                  visualizer)
     state = state_start.clone()
     count = 0
-    visualizer = Visualizer(state_goal, dt)
     dynamics.set_init_state(state)
     while not controller.isconverged(state, state_goal):
         x, y, theta = state
@@ -672,96 +874,127 @@ def R90():
     return torch.tensor([[0., -1.],
                          [1, 0.]])
 
-class Configs:
-    @property
-    def clf_polar(self):
-        return dict(simulator=partial(
-            lambda x, x_g, **kw: move_to_pose(
-                x , x_g,
-                dynamics=CartesianDynamics(),
-                controller=ControllerCLF(
-                    NoPlanner(x_g),
-                    coordinate_converter = cartesian2polar,
-                    dynamics=PolarDynamics(),
-                    clf = CLFPolar()
-                ),
-                **kw
-            )))
+####################################################################
+# configured methods
+####################################################################
 
-    @property
-    def clf_cartesian(self):
-        return dict(simulator=partial(
-            lambda x, x_g, **kw: move_to_pose(x, x_g,
-                                              dynamics=CartesianDynamics(),
-                                              controller=ControllerCLF(
-                                                  NoPlanner(x_g),
-                                                  coordinate_converter = lambda x, x_g: (x),
-                                                  dynamics=CartesianDynamics(),
-                                                  clf = CLFCartesian()
-                                              ))))
+def move_to_pose_clf_polar(x, x_g, dt = None, **kw):
+    return move_to_pose(
+            x , x_g,
+            dynamics=CartesianDynamics(),
+            controller=ControllerCLF(
+                NoPlanner(x_g),
+                coordinate_converter = cartesian2polar,
+                dynamics=PolarDynamics(),
+                clf = CLFPolar()
+            ),
+            visualizer=Visualizer(NoPlanner(x_g), dt),
+            dt = dt,
+            **kw)
 
-    @property
-    def pid(self):
-        return dict(simulator=partial(
-            lambda x, x_g, **kw: move_to_pose(x, x_g,
-                                      dynamics=CartesianDynamics(),
-                                      controller=ControllerPID(NoPlanner(x_g)))))
+def move_to_pose_clf_cartesian(x, x_g, dt = None, **kw):
+    return move_to_pose(x, x_g,
+                        dynamics=CartesianDynamics(),
+                        controller=ControllerCLF(
+                            NoPlanner(x_g),
+                            coordinate_converter = lambda x, x_g: (x),
+                            dynamics=CartesianDynamics(),
+                            clf = CLFCartesian()
+                        ),
+                        visualizer=Visualizer(NoPlanner(x_g), dt),
+                        dt = dt,
+                        **kw
+    )
 
-    @property
-    def sim_cartesian_clf(self):
-        dt = 0.01
-        return dict(simulator=partial(
-            lambda x, x_g, **kw: sample_generator_trajectory(
-                                      dynamics_model=CartesianDynamics(),
-                                      D=200,
-                                      controller=ControllerCLF(
-                                          NoPlanner(x_g),
-                                          coordinate_converter = lambda x, x_g: x,
-                                          dynamics = CartesianDynamics(),
-                                          clf = CLFCartesian()
-                                      ).control,
-                                      visualizer=Visualizer(x_g, dt),
-                                      x0=x,
-                                      dt=dt)))
 
-    @property
-    def sim_cartesian_clf_traj(self):
-        dt = 0.01
-        numSteps = 400
-        cbfs = lambda x, x_g: [
-            ObstacleCBF((x[:2] + x_g[:2])/2
-                        + R90() @ (x[:2] - x_g[:2])/15,
-                        (x[:2] - x_g[:2]).norm()/20),
-            ObstacleCBF((x[:2] + x_g[:2])/2
-                        - R90() @ (x[:2] - x_g[:2])/15,
-                        (x[:2] - x_g[:2]).norm()/20),
-        ]
-        cbf_gammas = [torch.tensor(10.), torch.tensor(10.)]
-        # cbfs = lambda x, x_g: []
-        # cbf_gammas = []
-        return dict(simulator=partial(
-            lambda x, x_g, **kw: sample_generator_trajectory(
-                                      dynamics_model=CartesianDynamics(),
-                                      D=numSteps,
-                                      controller=ControllerCLF(
-                                          PiecewiseLinearPlanner(x, x_g, numSteps, dt),
-                                          coordinate_converter = lambda x, x_g: x,
-                                          dynamics = CartesianDynamics(),
-                                          clf = CLFCartesian(
-                                              Kp = torch.tensor([0.9, 1.5, 0.])
-                                          ),
-                                          cbfs = cbfs(x , x_g),
-                                          cbf_gammas = cbf_gammas
-                                      ).control,
-                                      visualizer=Visualizer(
-                                          PiecewiseLinearPlanner(x, x_g, numSteps, dt),
-                                          dt,
-                                          cbfs = cbfs(x, x_g)
-                                      ),
-                                      x0=x,
-                                      dt=dt)))
+def move_to_pose_pid(x, x_g, dt = None, **kw):
+    return move_to_pose(x, x_g,
+                        dynamics=CartesianDynamics(),
+                        controller=ControllerPID(NoPlanner(x_g)),
+                        visualizer=Visualizer(NoPlanner(x_g), dt),
+                        dt = dt,
+                        **kw)
 
-def main(simulator = move_to_pose):
+def move_to_pose_sample_clf_cartesian(x, x_g, dt = None, **kw):
+    return sample_generator_trajectory(
+        dynamics_model=CartesianDynamics(),
+        D=200,
+        controller=ControllerCLF(
+            NoPlanner(x_g),
+            coordinate_converter = lambda x, x_g: x,
+            dynamics = CartesianDynamics(),
+            clf = CLFCartesian()
+        ).control,
+        visualizer=Visualizer(NoPlanner(x_g), dt),
+        x0=x,
+        dt=dt)
+
+def track_trajectory_clf_cartesian(x, x_g, dt = None,
+                                   cbfs = None,
+                                   cbf_gammas = None,
+                                   numSteps = None,
+                                   **kw):
+    return sample_generator_trajectory(
+        dynamics_model=CartesianDynamics(),
+        D=numSteps,
+        controller=ControllerCLF(
+            PiecewiseLinearPlanner(x, x_g, numSteps, dt),
+            coordinate_converter = lambda x, x_g: x,
+            dynamics = CartesianDynamics(),
+            clf = CLFCartesian(
+                Kp = torch.tensor([0.9, 1.5, 0.])
+            ),
+            cbfs = cbfs(x , x_g),
+            cbf_gammas = cbf_gammas
+        ).control,
+        visualizer=Visualizer(
+            PiecewiseLinearPlanner(x, x_g, numSteps, dt),
+            dt,
+            cbfs = cbfs(x, x_g)
+        ),
+        x0=x,
+        dt=dt,
+        **kw)
+
+
+def track_trajectory_clf_bayesian(x, x_g, dt = None,
+                                  cbfs = None,
+                                  cbf_gammas = None,
+                                  numSteps = None,
+                                  **kw):
+    return sample_generator_trajectory(
+        dynamics_model=CartesianDynamics(),
+        D=numSteps,
+        controller=ControllerCLF(
+            PiecewiseLinearPlanner(x, x_g, numSteps, dt),
+            coordinate_converter = lambda x, x_g: x,
+            dynamics = LearnedShiftInvariantDynamics(
+                dt = dt,
+                learned_dynamics = ControlAffineRegressor(
+                    x_dim = x.shape[-1],
+                    u_dim = 2
+                )),
+            clf = CLFCartesian(
+                Kp = torch.tensor([0.9, 1.5, 0.])
+            ),
+            cbfs = cbfs(x , x_g),
+            cbf_gammas = cbf_gammas
+        ).control,
+        visualizer=Visualizer(
+            PiecewiseLinearPlanner(x, x_g, numSteps, dt),
+            dt,
+            cbfs = cbfs(x, x_g)
+        ),
+        x0=x,
+        dt=dt,
+        **kw)
+
+
+####################################################################
+# entry points: Possible main methods
+####################################################################
+
+def unicycle_demo(simulator = move_to_pose):
     global TBLOG
     TBLOG = SummaryWriter('data/runs/unicycle_move_to_pose_fixed_'
                             + datetime.now().strftime("%m%d-%H%M"))
@@ -783,7 +1016,73 @@ def main(simulator = move_to_pose):
         state_start = torch.tensor([x_start, y_start, theta_start])
         simulator(state_start, state_goal)
 
+
+def unicycle_demo_clf_polar(dt = 0.01):
+    return unicycle_demo(simulator=partial(
+        move_to_pose_clf_polar, dt = dt))
+
+
+def unicycle_demo_clf_cartesian(dt = 0.01):
+    return unicycle_demo(simulator=partial(move_to_pose_clf_cartesian, dt = dt))
+
+
+def unicycle_demo_pid(dt = 0.01):
+    return unicycle_demo(simulator=partial(
+        move_to_pose_pid, dt = dt))
+
+
+def unicycle_demo_sim_cartesian_clf(dt = 0.01):
+    return unicycle_demo(simulator=partial(move_to_pose_sample_clf_cartesian, dt = dt))
+
+
+def unicycle_demo_sim_cartesian_clf_traj(
+        dt = 0.01,
+        numSteps = 400,
+        cbfs = lambda x, x_g: [
+            ObstacleCBF((x[:2] + x_g[:2])/2
+                        + R90() @ (x[:2] - x_g[:2])/15,
+                        (x[:2] - x_g[:2]).norm()/20),
+            ObstacleCBF((x[:2] + x_g[:2])/2
+                        - R90() @ (x[:2] - x_g[:2])/15,
+                        (x[:2] - x_g[:2]).norm()/20),
+        ],
+        cbf_gammas = [torch.tensor(10.), torch.tensor(10.)]
+        # cbfs = lambda x, x_g: []
+        # cbf_gammas = []
+):
+    return unicycle_demo(simulator=partial(track_trajectory_clf_cartesian,
+                                           dt = dt, cbfs = cbfs,
+                                           cbf_gammas = cbf_gammas,
+                                           numSteps = numSteps))
+
+def unicycle_demo_track_trajectory_clf_bayesian(
+        dt = 0.01,
+        numSteps = 400,
+        cbfs = lambda x, x_g: [
+            ObstacleCBF((x[:2] + x_g[:2])/2
+                        + R90() @ (x[:2] - x_g[:2])/15,
+                        (x[:2] - x_g[:2]).norm()/20),
+            ObstacleCBF((x[:2] + x_g[:2])/2
+                        - R90() @ (x[:2] - x_g[:2])/15,
+                        (x[:2] - x_g[:2]).norm()/20),
+        ],
+        cbf_gammas = [torch.tensor(10.), torch.tensor(10.)]
+        # cbfs = lambda x, x_g: []
+        # cbf_gammas = []
+):
+    return unicycle_demo(simulator=partial(track_trajectory_clf_bayesian,
+                                           dt = dt, cbfs = cbfs,
+                                           cbf_gammas = cbf_gammas,
+                                           numSteps = numSteps))
+
+
 if __name__ == '__main__':
     import doctest
     doctest.testmod() # always run unittests first
-    main(**getattr(Configs(), 'sim_cartesian_clf_traj')) # 'pid', 'clf_polar' or 'clf_cartesian' 'sim_cartesian_clf', 'sim_cartesian_clf_traj'
+    # Run any one of these
+    # unicycle_demo_pid()
+    # unicycle_demo_clf_polar()
+    # unicycle_demo_clf_cartesian()
+    # unicycle_demo_sim_cartesian_clf()
+    # unicycle_demo_sim_cartesian_clf_traj()
+    unicycle_demo_track_trajectory_clf_bayesian()

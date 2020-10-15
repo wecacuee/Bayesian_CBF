@@ -35,7 +35,7 @@ else:
 
 from torch.utils.tensorboard import SummaryWriter
 
-from bayes_cbf.gp_algebra import DeterministicGP
+from bayes_cbf.gp_algebra import DeterministicGP, GaussianProcess
 from bayes_cbf.control_affine_model import ControlAffineRegressor
 from bayes_cbf.misc import to_numpy, normalize_radians
 from bayes_cbf.sampling import sample_generator_trajectory
@@ -158,6 +158,15 @@ class CartesianDynamics(PolarDynamics):
                           torch.cat([zeros_,    ones_], dim=-1)], dim=-2)
         return gX.squeeze(0) if state_in.dim() <= 1 else gX
 
+    def fu_func_gp(self, u):
+        f, g = self.f_func, self.g_func
+        n = self.state_size
+        return GaussianProcess(
+            mean = lambda x: f(x) + g(x) @ u,
+            knl = lambda x, xp: (u @ u + 1) * torch.eye(n),
+            shape=(n,),
+            name="CartesianDynamics")
+
 
 class LearnedShiftInvariantDynamics:
     state_size = 3
@@ -246,8 +255,9 @@ class LearnedShiftInvariantDynamics:
 
     def fu_func_gp(self, U):
         md = self.mean_dynamics
+        n = self.state_size
         return (DeterministicGP(lambda x: md.f_func(x) + md.g_func(x) @ U,
-                                shape=(self.state_size,))
+                                shape=(n,))
                 + self.learned_dynamics.fu_func_gp(U))
 
     def step(self, u_torch, dt):
@@ -589,6 +599,7 @@ class ControllerCLFBayesian:
     @staticmethod
     def convert_cbc_terms_to_socp_terms(bfe, e, V, bfv, v, extravars,
                                         testing=True):
+        assert (torch.diag(V).abs() > 1e-6).all()
         m = bfe.shape[-1]
         bfc = bfe.new_zeros((m+extravars))
         if testing:
@@ -662,6 +673,8 @@ class ControllerCLFBayesian:
         (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(
             lambda u: self._clc(state, state_goal, u, t),
             state, torch.rand(m))
+        assert (torch.diag(V).abs() > 1e-6).all()
+        assert (v.abs() > 1e-6).all()
         A, bfb, bfc, d = self.convert_cbc_terms_to_socp_terms(
             bfe, e, V, bfv, v, 0)
         return map(to_numpy, (A, bfb, bfc, d))
@@ -965,15 +978,16 @@ def track_trajectory_clf_bayesian(x, x_g, dt = None,
     return sample_generator_trajectory(
         dynamics_model=CartesianDynamics(),
         D=numSteps,
-        controller=ControllerCLF(
+        controller=ControllerCLFBayesian(
             PiecewiseLinearPlanner(x, x_g, numSteps, dt),
             coordinate_converter = lambda x, x_g: x,
-            dynamics = LearnedShiftInvariantDynamics(
-                dt = dt,
-                learned_dynamics = ControlAffineRegressor(
-                    x_dim = x.shape[-1],
-                    u_dim = 2
-                )),
+            # dynamics = LearnedShiftInvariantDynamics(
+            #     dt = dt,
+            #     learned_dynamics = ControlAffineRegressor(
+            #         x_dim = x.shape[-1],
+            #         u_dim = 2
+            #     )),
+            dynamics = CartesianDynamics(),
             clf = CLFCartesian(
                 Kp = torch.tensor([0.9, 1.5, 0.])
             ),

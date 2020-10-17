@@ -31,6 +31,8 @@ else:
     def torch_to(arr, **kw):
         return arr.to(**kw)
     import torch.testing as testing
+    torch.set_default_dtype(torch.float64)
+
 
 
 from torch.utils.tensorboard import SummaryWriter
@@ -578,19 +580,19 @@ class ControllerCLFBayesian:
                  coordinate_converter = None, # cartesian2polar/ lambda x, xg: x
                  dynamics = None, # PolarDynamics()/CartesianDynamics()
                  clf = None, # CLFPolar()/CLFCartesian()
-                 clf_gamma = 10,
+                 clf_gamma = 10.,
                  clf_relax_weight = 10,
                  cbfs = [],
                  cbf_gammas = [],
                  ctrl_min = np.array([-10., -np.pi*5]),
                  ctrl_max = np.array([10., np.pi*5])):
-        self.planner = planner
         self.u_dim = 2
+        self.planner = planner
         self.coordinate_converter = coordinate_converter
         self.dynamics = dynamics
         self.clf = clf
-        self.clf_gamma = 10
-        self.clf_relax_weight = 10
+        self.clf_gamma = clf_gamma
+        self.clf_relax_weight = clf_relax_weight
         self.cbfs = cbfs
         self.cbf_gammas = cbf_gammas
         self.ctrl_min = ctrl_min
@@ -599,8 +601,8 @@ class ControllerCLFBayesian:
     @staticmethod
     def convert_cbc_terms_to_socp_terms(bfe, e, V, bfv, v, extravars,
                                         testing=True):
-        assert (torch.diag(V).abs() > 1e-6).all()
-        assert v.abs() > 1e-6
+        assert (V.eig()[0][:, 0].abs() > 0).all()
+        assert v.abs() > 0
         m = bfe.shape[-1]
         bfc = bfe.new_zeros((m+extravars))
         if testing:
@@ -627,20 +629,6 @@ class ControllerCLFBayesian:
                     L = torch.cholesky(Asq + torch.diag(torch.ones(m+1)*1e-3))
                 else:
                     raise
-            # try:
-            #     n_constraints = m+1
-            #     L = torch.cholesky(Asq) # (m+1) x (m+1)
-            # except RuntimeError as err:
-            #     if "cholesky" in str(err) and "singular" in str(err):
-            #         if torch.allclose(v, torch.zeros((1,))) and torch.allclose(bfv, torch.zeros(bfv.shape[0])):
-            #             L = torch.zeros((m+1, m+1))
-            #             L[1:, 1:] = torch.cholesky(V)
-            #         else:
-            #             diag_e, U = torch.symeig(Asq, eigenvectors=True)
-            #             n_constraints = torch.nonzero(diag_e, as_tuple=True)[0].shape[-1]
-            #             L = torch.diag(diag_e).sqrt() @ U[:, -n_constraints:]
-            #     else:
-            #         raise
 
         if testing:
             np.testing.assert_allclose(L @ L.T, Asq, rtol=1e-2, atol=1e-3)
@@ -659,23 +647,23 @@ class ControllerCLFBayesian:
         d = e
         return A, bfb, bfc, d
 
-    def _neg_clc(self, state, state_goal, u, t):
+    def _clc(self, state, state_goal, u, t):
         n = state.shape[-1]
-        negclf = DeterministicGP(lambda x: - self.clf_gamma * self.clf.clf_terms(x, state_goal).sum(), shape=(1,))
-        neggclf = DeterministicGP(lambda x: - self.clf.grad_clf(x, state_goal), shape=(n,))
-        gclf_goal = DeterministicGP(lambda x: self.clf.grad_clf_wrt_goal(x, state_goal),
+        clfgp = DeterministicGP(lambda x: self.clf_gamma * self.clf.clf_terms(x, state_goal).sum(), shape=(1,))
+        gclfgp = DeterministicGP(lambda x: self.clf.grad_clf(x, state_goal), shape=(n,))
+        neggclf_goal = DeterministicGP(lambda x: - self.clf.grad_clf_wrt_goal(x, state_goal),
                                     shape=(n,))
         fu_func_gp = self.dynamics.fu_func_gp(u)
         dot_plan = DeterministicGP(lambda x: self.planner.dot_plan(t), shape=(n,))
-        return neggclf.t() @ fu_func_gp + gclf_goal.t() @ dot_plan + negclf
+        return gclfgp.t() @ fu_func_gp + neggclf_goal.t() @ dot_plan + clfgp
 
     def _clc_terms(self, state, state_goal, t):
         m = self.u_dim
         (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(
-            lambda u: self._neg_clc(state, state_goal, u, t),
+            lambda u: self._clc(state, state_goal, u, t) * -1.0,
             state, torch.rand(m))
-        assert (torch.diag(V).abs() > 1e-6).all()
-        assert (v.abs() > 1e-6).all()
+        assert (V.eig()[0][:, 0].abs() > 0).all()
+        assert v.abs() > 0
         A, bfb, bfc, d = self.convert_cbc_terms_to_socp_terms(
             bfe, e, V, bfv, v, 0)
         return map(to_numpy, (A, bfb, bfc, d))
@@ -712,15 +700,15 @@ class ControllerCLFBayesian:
             cp.sum_squares(uvar) + self.clf_relax_weight * relax)
         clc_A, clc_bfb, clc_bfc, clc_d = self._clc_terms(x, state_goal, t)
         constraints = [
-            clc_bfc @ uvar + clc_d - relax >= 0] # cp.norm(clc_A @ uvar + clc_bfb)]
+            clc_bfc @ uvar + clc_d + relax >= cp.norm(clc_A @ uvar + clc_bfb)]
 
         for cbc_A, cbc_bfb, cbc_bfc, cbc_d in self._cbcs(x, state_goal, t):
             constraints.append(
-                cbc_bfc @ uvar + cbc_d >= 0 # cp.norm(cbc_A @ uvar + cbc_bfb)
+                cbc_bfc @ uvar + cbc_d >= cp.norm(cbc_A @ uvar + cbc_bfb)
             )
 
         problem = cp.Problem(obj, constraints)
-        problem.solve(solver='GUROBI', verbose=True)
+        problem.solve(solver='GUROBI')
         if problem.status not in ["infeasible", "unbounded", "infeasible_inaccurate"]:
             # Otherwise, problem.value is inf or -inf, respectively.
             # print("Optimal value: %s" % problem.value)
@@ -982,13 +970,8 @@ def track_trajectory_clf_bayesian(x, x_g, dt = None,
         controller=ControllerCLFBayesian(
             PiecewiseLinearPlanner(x, x_g, numSteps, dt),
             coordinate_converter = lambda x, x_g: x,
-            # dynamics = LearnedShiftInvariantDynamics(
-            #     dt = dt,
-            #     learned_dynamics = ControlAffineRegressor(
-            #         x_dim = x.shape[-1],
-            #         u_dim = 2
-            #     )),
-            dynamics = CartesianDynamics(),
+            dynamics = LearnedShiftInvariantDynamics(dt = dt),
+            # dynamics = CartesianDynamics(),
             clf = CLFCartesian(
                 Kp = torch.tensor([0.9, 1.5, 0.])
             ),

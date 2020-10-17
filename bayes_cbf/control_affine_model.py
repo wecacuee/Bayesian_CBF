@@ -535,7 +535,12 @@ class ControlAffineRegressor(DynamicsModel):
                 fu_mean_test = fu_mean_test.reshape(Xtest.shape[0], *self.model.matshape[1:], -1)
             else:
                 fu_mean_test = fu_mean_test.reshape(Xtest.shape[0], *self.model.matshape[1:])
-            return fu_mean_test, k_ss(Xtest, Xtest) * A
+
+            # Compute k(x*,x*) uᵀBu
+            kb_star_starp = k_ss(Xtest, Xtestp) * (UHtest @ B @ UHtestp.t())
+            # 5. k* := k(x*,x*) uᵀBu
+            scalar_var = kb_star_starp
+            return fu_mean_test, torch_kron(scalar_var.unsqueeze(0), A.unsqueeze(0))
 
         MXUHtrain = self.model.train_inputs[0]
         Mtrain, Xtrain, UHtrain = self.model.decoder.decode(MXUHtrain)

@@ -161,6 +161,12 @@ class DynamicsModel(ABC):
     def set_init_state(self, x0):
         self._state = x0.clone()
 
+class BayesianDynamicsModel(DynamicsModel):
+    @abstractmethod
+    def fu_func_gp(self, U):
+        """
+        return a GaussianProcessBase
+        """
 
 class SumDynamicModels(DynamicsModel):
     def __init__(self, *models):
@@ -201,6 +207,7 @@ class ZeroDynamicsModel(DynamicsModel):
 
     def g_func(self, X):
         return torch.zeros((*X.shape, self.m)) * X.unsqueeze(-1)
+
 
 def isleaf(x):
     return x.grad_fn is None

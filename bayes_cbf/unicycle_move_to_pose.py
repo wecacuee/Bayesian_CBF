@@ -16,7 +16,7 @@ import sys
 import math
 import logging
 LOG = logging.getLogger(__name__)
-LOG.setLevel(logging.INFO)
+LOG.setLevel(logging.DEBUG)
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Polygon
@@ -39,7 +39,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from bayes_cbf.gp_algebra import DeterministicGP, GaussianProcess
 from bayes_cbf.control_affine_model import ControlAffineRegressor
-from bayes_cbf.misc import to_numpy, normalize_radians
+from bayes_cbf.misc import to_numpy, normalize_radians, ZeroDynamicsModel
 from bayes_cbf.sampling import sample_generator_trajectory
 from bayes_cbf.planner import PiecewiseLinearPlanner, SplinePlanner
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, cbc2_safety_factor
@@ -168,6 +168,79 @@ class CartesianDynamics(PolarDynamics):
             knl = lambda x, xp: (u @ u + 1) * torch.eye(n),
             shape=(n,),
             name="CartesianDynamics")
+
+
+class AckermanDrive:
+    """
+    ẋ = v cos(θ)
+    ẏ = v sin(θ)
+    θ̇ = (v/L) tan(ϕ)
+
+    L is the distance between front and back wheels
+    state = [x, y, θ]
+    input = [v, v tan(ϕ)]
+    """
+    state_size = 3
+    ctrl_size = 2
+    def __init__(self, L = 0.2):
+        self.L = L
+        self.current_state = None
+
+    def set_init_state(self, x):
+        self.current_state = x
+
+    def f_func(self, x):
+        """
+        ṡ = f(s) + G(s) u
+
+        s = [x, y, θ]
+        u = [v, v tan(ϕ)]
+
+               [ 0 ]
+        f(s) = [ 0 ]
+               [ 0 ]
+        """
+        return torch.zeros_like(x)
+
+    def g_func(self, state_in):
+        """
+        ṡ = f(s) + G(s) u
+
+        s = [x, y, θ]
+        u = [v, v tan(ϕ)]
+
+                [ cos(θ) , 0  ]
+        G(s)u = [ sin(θ) , 0  ] [ v ]
+                [ 0        1/L] [ v tan(ø) ]
+        """
+        assert state_in.shape[-1] == self.state_size
+        state = state_in.unsqueeze(0) if state_in.dim() <= 1 else state_in
+
+        x, y, theta = state[..., 0:1], state[..., 1:2], state[..., 2:3]
+        theta_cos = theta.cos().unsqueeze(-1)
+        theta_sin = theta.sin().unsqueeze(-1)
+        zeros_ = torch.zeros_like(theta_cos)
+        inv_L = torch.ones_like(theta_cos) / self.L
+        gX = torch.cat([torch.cat([theta_cos, zeros_], dim=-1),
+                        torch.cat([theta_sin, zeros_], dim=-1),
+                        torch.cat([zeros_,    inv_L], dim=-1)], dim=-2)
+        return gX.squeeze(0) if state_in.dim() <= 1 else gX
+
+    def fu_func_gp(self, u):
+        f, g = self.f_func, self.g_func
+        n = self.state_size
+        return GaussianProcess(
+            mean = lambda x: f(x) + g(x) @ u,
+            knl = lambda x, xp: (u @ u + 1) * torch.eye(n),
+            shape=(n,),
+            name="AckermanDrive")
+
+    def step(self, u_torch, dt):
+        x = self.current_state
+        xdot = self.f_func(x) + self.g_func(x) @ u_torch
+        self.current_state = x + xdot * dt
+        return dict(xdot = xdot,
+                    x = self.current_state)
 
 
 class LearnedShiftInvariantDynamics:
@@ -573,6 +646,13 @@ class ControllerCLF:
         return self.clf.isconverged(state, state_goal)
 
 
+class ZeroDynamicsBayesian(ZeroDynamicsModel):
+    def fu_func_gp(self, U):
+        return GaussianProcess( shape = (self.state_size,),
+                                mean = lambda x: self.f_func(x) + self.g_func(x) @ U,
+                                knl = lambda x, xp: (U @ U + 1) * torch.eye(self.state_size) )
+
+
 class ControllerCLFBayesian:
     def __init__(self, # simulation parameters
                  planner,
@@ -622,13 +702,7 @@ class ControllerCLFBayesian:
 
             # [1, u] Asq [1; u] = |L[1; u]|_2 = |[0, A] [y_1; y_2; u] + b|_2
             n_constraints = m+1
-            try:
-                L = torch.cholesky(Asq) # (m+1) x (m+1)
-            except RuntimeError as err:
-                if "cholesky" in str(err) and "singular" in str(err):
-                    L = torch.cholesky(Asq + torch.diag(torch.ones(m+1)*1e-3))
-                else:
-                    raise
+            L = torch.cholesky(Asq) # (m+1) x (m+1)
 
         if testing:
             np.testing.assert_allclose(L @ L.T, Asq, rtol=1e-2, atol=1e-3)
@@ -773,8 +847,12 @@ class Visualizer:
         x_start, y_start, theta_start = self.state_start
         plt.arrow(x_start, y_start, torch.cos(theta_start) * scale,
                     torch.sin(theta_start)*scale, color='r', width=0.1*scale)
-        x_plan, y_plan, theta_plan = self.planner.plan(t)
-        plt.plot(x_plan, y_plan, 'g+', linewidth=0.01)
+        x_plan_traj, y_plan_traj = [], []
+        for ti in range(0, t, 10):
+            x_plan, y_plan, theta_plan = self.planner.plan(ti)
+            x_plan_traj.append(x_plan)
+            y_plan_traj.append(y_plan)
+        plt.plot(x_plan_traj, y_plan_traj, 'g+', linewidth=0.01)
         x_goal, y_goal, theta_goal = self.planner.x_goal
         plt.plot(x_goal, y_goal, 'g+', linewidth=0.4)
         plt.gca().add_patch(Circle(np.array([x_goal, y_goal]),
@@ -828,9 +906,9 @@ def move_to_pose(state_start, state_goal,
 def plot_vehicle(x, y, theta, x_traj, y_traj, dt, state_start, state_goal):  # pragma: no cover
     # Corners of triangular vehicle when pointing to the right (0 radians)
     scale = (state_goal[:2] - state_start[:2]).norm() / 10.
-    triangle = torch.tensor([[0.5, 0],
-                             [-0.5, 0.25],
-                             [-0.5, -0.25]])
+    triangle = torch.tensor([[0.0, 0],
+                             [-1.0, 0.25],
+                             [-1.0, -0.25]])
 
     tri = (rot_matrix(theta) @ (scale * triangle.T) + torch.tensor([x, y]).reshape(-1, 1)).T
 
@@ -988,6 +1066,37 @@ def track_trajectory_clf_bayesian(x, x_g, dt = None,
         **kw)
 
 
+def track_trajectory_ackerman_clf_bayesian(x, x_g, dt = None,
+                                           cbfs = None,
+                                           cbf_gammas = None,
+                                           numSteps = None,
+                                           **kw):
+    return sample_generator_trajectory(
+        dynamics_model=AckermanDrive(L = 1.),
+        D=numSteps,
+        controller=ControllerCLFBayesian(
+            PiecewiseLinearPlanner(x, x_g, numSteps, dt),
+            coordinate_converter = lambda x, x_g: x,
+            dynamics = LearnedShiftInvariantDynamics(
+                dt = dt,
+                mean_dynamics = ZeroDynamicsModel(m = 2, n = 3)),
+            # dynamics = ZeroDynamicsBayesian(m = 2, n = 3),
+            clf = CLFCartesian(
+                Kp = torch.tensor([0.9, 1.5, 0.])
+            ),
+            cbfs = cbfs(x , x_g),
+            cbf_gammas = cbf_gammas
+        ).control,
+        visualizer=Visualizer(
+            PiecewiseLinearPlanner(x, x_g, numSteps, dt),
+            dt,
+            cbfs = cbfs(x, x_g)
+        ),
+        x0=x,
+        dt=dt,
+        **kw)
+
+
 ####################################################################
 # entry points: Possible main methods
 ####################################################################
@@ -1056,19 +1165,39 @@ def unicycle_demo_sim_cartesian_clf_traj(
 def unicycle_demo_track_trajectory_clf_bayesian(
         dt = 0.01,
         numSteps = 400,
-        # cbfs = lambda x, x_g: [
-        #     ObstacleCBF((x[:2] + x_g[:2])/2
-        #                 + R90() @ (x[:2] - x_g[:2])/15,
-        #                 (x[:2] - x_g[:2]).norm()/20),
-        #     ObstacleCBF((x[:2] + x_g[:2])/2
-        #                 - R90() @ (x[:2] - x_g[:2])/15,
-        #                 (x[:2] - x_g[:2]).norm()/20),
-        # ],
-        # cbf_gammas = [torch.tensor(10.), torch.tensor(10.)]
-        cbfs = lambda x, x_g: [],
-        cbf_gammas = []
+        cbfs = lambda x, x_g: [
+            ObstacleCBF((x[:2] + x_g[:2])/2
+                        + R90() @ (x[:2] - x_g[:2])/15,
+                        (x[:2] - x_g[:2]).norm()/20),
+            ObstacleCBF((x[:2] + x_g[:2])/2
+                        - R90() @ (x[:2] - x_g[:2])/15,
+                        (x[:2] - x_g[:2]).norm()/20),
+        ],
+        cbf_gammas = [torch.tensor(10.), torch.tensor(10.)]
+        # cbfs = lambda x, x_g: [],
+        # cbf_gammas = []
 ):
     return unicycle_demo(simulator=partial(track_trajectory_clf_bayesian,
+                                           dt = dt, cbfs = cbfs,
+                                           cbf_gammas = cbf_gammas,
+                                           numSteps = numSteps))
+
+def unicycle_demo_track_trajectory_ackerman_clf_bayesian(
+        dt = 0.01,
+        numSteps = 400,
+        cbfs = lambda x, x_g: [
+            ObstacleCBF((x[:2] + x_g[:2])/2
+                        + R90() @ (x[:2] - x_g[:2])/15,
+                        (x[:2] - x_g[:2]).norm()/20),
+            ObstacleCBF((x[:2] + x_g[:2])/2
+                        - R90() @ (x[:2] - x_g[:2])/15,
+                        (x[:2] - x_g[:2]).norm()/20),
+        ],
+        cbf_gammas = [torch.tensor(10.), torch.tensor(10.)]
+        # cbfs = lambda x, x_g: [],
+        # cbf_gammas = []
+):
+    return unicycle_demo(simulator=partial(track_trajectory_ackerman_clf_bayesian,
                                            dt = dt, cbfs = cbfs,
                                            cbf_gammas = cbf_gammas,
                                            numSteps = numSteps))
@@ -1083,4 +1212,5 @@ if __name__ == '__main__':
     # unicycle_demo_clf_cartesian()
     # unicycle_demo_sim_cartesian_clf()
     # unicycle_demo_sim_cartesian_clf_traj()
-    unicycle_demo_track_trajectory_clf_bayesian()
+    # unicycle_demo_track_trajectory_clf_bayesian()
+    unicycle_demo_track_trajectory_ackerman_clf_bayesian()

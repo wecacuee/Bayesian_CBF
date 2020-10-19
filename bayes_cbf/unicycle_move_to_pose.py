@@ -15,6 +15,7 @@ from collections import namedtuple
 import sys
 import math
 import logging
+logging.basicConfig()
 LOG = logging.getLogger(__name__)
 LOG.setLevel(logging.DEBUG)
 
@@ -837,36 +838,45 @@ class Visualizer:
         self.state_start = None
         self.cbfs = cbfs
         self.x_traj, self.y_traj = [], []
+        self.fig, self.axes = plt.subplots(1,1)
 
 
     def setStateCtrl(self, state, u, t=None, **kw):
+        TBLOG.add_scalars(
+            "vis",
+            dict(x0=state[0], x1=state[1], x2=state[2], u0=u[0], u1=u[1]), t)
         if t == 0:
             self.state_start = state.clone()
-        plt.cla()
+        ax = self.axes
+        ax.clear()
         scale = (self.planner.x_goal[:2] - self.state_start[:2]).norm() / 10.
         x_start, y_start, theta_start = self.state_start
-        plt.arrow(x_start, y_start, torch.cos(theta_start) * scale,
+        ax.arrow(x_start, y_start, torch.cos(theta_start) * scale,
                     torch.sin(theta_start)*scale, color='r', width=0.1*scale)
-        x_plan_traj, y_plan_traj = [], []
-        for ti in range(0, t, 10):
-            x_plan, y_plan, theta_plan = self.planner.plan(ti)
-            x_plan_traj.append(x_plan)
-            y_plan_traj.append(y_plan)
-        plt.plot(x_plan_traj, y_plan_traj, 'g+', linewidth=0.01)
+        xy_plan_traj = [self.planner.plan(ti)[:2] for ti in range(0, t, 10)]
+        x_plan, y_plan, theta_plan = self.planner.plan(t)
+        TBLOG.add_scalars(
+            "vis",
+            dict(plan_x0=x_plan, plan_x1=y_plan, plan_x2=theta_plan), t)
+        xy_plan_traj.append((x_plan, y_plan))
+        x_plan_traj, y_plan_traj = zip(*xy_plan_traj)
+        ax.plot(x_plan_traj, y_plan_traj, 'g+', linewidth=0.01)
         x_goal, y_goal, theta_goal = self.planner.x_goal
-        plt.plot(x_goal, y_goal, 'g+', linewidth=0.4)
-        plt.gca().add_patch(Circle(np.array([x_goal, y_goal]),
-                                    radius=scale/5, fill=False, color='g'))
+        ax.plot(x_goal, y_goal, 'g+', linewidth=0.4)
+        ax.add_patch(Circle(np.array([x_goal, y_goal]),
+                            radius=scale/5, fill=False, color='g'))
         for cbf in self.cbfs:
             circle = Circle(to_numpy(cbf.center),
                             radius=to_numpy(cbf.radius),
                             fill=False, color='r')
-            plt.gca().add_patch(circle)
+            ax.add_patch(circle)
         x, y, theta = state
         self.x_traj.append(x)
         self.y_traj.append(y)
-        plot_vehicle(x, y, theta, self.x_traj, self.y_traj, self.dt,
+        plot_vehicle(ax, x, y, theta, self.x_traj, self.y_traj,
                      self.state_start, self.planner.x_goal)
+
+        plt.pause(self.dt)
 
 def move_to_pose(state_start, state_goal,
                  dt = 0.01,
@@ -903,7 +913,7 @@ def move_to_pose(state_start, state_goal,
         count = count + 1
 
 
-def plot_vehicle(x, y, theta, x_traj, y_traj, dt, state_start, state_goal):  # pragma: no cover
+def plot_vehicle(ax, x, y, theta, x_traj, y_traj, state_start, state_goal):  # pragma: no cover
     # Corners of triangular vehicle when pointing to the right (0 radians)
     scale = (state_goal[:2] - state_start[:2]).norm() / 10.
     triangle = torch.tensor([[0.0, 0],
@@ -912,21 +922,19 @@ def plot_vehicle(x, y, theta, x_traj, y_traj, dt, state_start, state_goal):  # p
 
     tri = (rot_matrix(theta) @ (scale * triangle.T) + torch.tensor([x, y]).reshape(-1, 1)).T
 
-    plt.gca().add_patch(Polygon(to_numpy(tri), fill=False, edgecolor='k'))
+    ax.add_patch(Polygon(to_numpy(tri), fill=False, edgecolor='k'))
 
-    plt.plot(x_traj, y_traj, 'b--')
+    ax.plot(x_traj, y_traj, 'b--')
 
     # for stopping simulation with the esc key.
-    plt.gcf().canvas.mpl_connect('key_release_event',
-            lambda event: [sys.exit(0) if event.key == 'escape' else None])
+    # self.fig.canvas.mpl_connect('key_release_event',
+    #         lambda event: [sys.exit(0) if event.key == 'escape' else None])
 
-    plt.gca().set_aspect('equal')
+    ax.set_aspect('equal')
     state_min = torch.min(state_start[:2], state_goal[:2]).min()
     state_max = torch.max(state_start[:2], state_goal[:2]).max()
-    plt.xlim(-0.5 + state_min, state_max + 0.5)
-    plt.ylim(-0.5 + state_min, state_max + 0.5)
-
-    plt.pause(dt)
+    ax.set_xlim(-0.5 + state_min, state_max + 0.5)
+    ax.set_ylim(-0.5 + state_min, state_max + 0.5)
 
 
 def rot_matrix(theta):
@@ -1079,7 +1087,8 @@ def track_trajectory_ackerman_clf_bayesian(x, x_g, dt = None,
             coordinate_converter = lambda x, x_g: x,
             dynamics = LearnedShiftInvariantDynamics(
                 dt = dt,
-                mean_dynamics = ZeroDynamicsModel(m = 2, n = 3)),
+                #mean_dynamics = ZeroDynamicsModel(m = 2, n = 3)),
+                mean_dynamics = AckermanDrive(L = 10.0)),
             # dynamics = ZeroDynamicsBayesian(m = 2, n = 3),
             clf = CLFCartesian(
                 Kp = torch.tensor([0.9, 1.5, 0.])
@@ -1101,14 +1110,16 @@ def track_trajectory_ackerman_clf_bayesian(x, x_g, dt = None,
 # entry points: Possible main methods
 ####################################################################
 
-def unicycle_demo(simulator = move_to_pose):
+def unicycle_demo(simulator = move_to_pose, exp_tags = []):
     global TBLOG
     TBLOG = SummaryWriter('data/runs/unicycle_move_to_pose_fixed_'
-                            + datetime.now().strftime("%m%d-%H%M"))
+                          + '_'.join(exp_tags)
+                          + '_' + datetime.now().strftime("%m%d-%H%M"))
     simulator(torch.tensor([-3, -1, -math.pi/4]), torch.tensor([0, 0, math.pi/4]))
     for i in range(5):
         TBLOG = SummaryWriter(('data/runs/unicycle_move_to_pose_%d_' % i)
-                              + datetime.now().strftime("%m%d-%H%M"))
+                              + '_'.join(exp_tags)
+                              + '_' + datetime.now().strftime("%m%d-%H%M"))
         x_start = 20 * random()
         y_start = 20 * random()
         theta_start = 2 * math.pi * random() - math.pi
@@ -1193,14 +1204,15 @@ def unicycle_demo_track_trajectory_ackerman_clf_bayesian(
                         - R90() @ (x[:2] - x_g[:2])/15,
                         (x[:2] - x_g[:2]).norm()/20),
         ],
-        cbf_gammas = [torch.tensor(10.), torch.tensor(10.)]
+        cbf_gammas = [torch.tensor(5.), torch.tensor(5.)]
         # cbfs = lambda x, x_g: [],
         # cbf_gammas = []
 ):
     return unicycle_demo(simulator=partial(track_trajectory_ackerman_clf_bayesian,
                                            dt = dt, cbfs = cbfs,
                                            cbf_gammas = cbf_gammas,
-                                           numSteps = numSteps))
+                                           numSteps = numSteps),
+                         exp_tags = ['ackerman', 'true_L=1', 'exp_L=10'])
 
 
 if __name__ == '__main__':

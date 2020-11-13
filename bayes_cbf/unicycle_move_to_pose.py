@@ -878,15 +878,16 @@ class Visualizer:
         ax.clear()
         self._plot_static(ax, self.planner.x_goal, self.state_start, self.cbfs)
         xy_plan_traj = [self.planner.plan(ti)[:2] for ti in range(0, t, 10)]
-        xy_plan_traj.append((x_plan, y_plan))
-        x_plan_traj, y_plan_traj = zip(*xy_plan_traj)
-        ax.plot(x_plan_traj, y_plan_traj, 'g+', linewidth=0.01)
+        if len(xy_plan_traj):
+            x_plan_traj, y_plan_traj = zip(*xy_plan_traj)
+            ax.plot(x_plan_traj, y_plan_traj, 'g+', linewidth=0.01)
         x, y, theta = state
         self.x_traj.append(x)
         self.y_traj.append(y)
         plot_vehicle(ax, x, y, theta, self.x_traj, self.y_traj,
                      to_numpy(self.state_start), to_numpy(self.planner.x_goal))
 
+        ax.figure.savefig('data/animation/frame%04d.png' % t)
         plt.pause(self.dt)
 
 class Logger:
@@ -1163,8 +1164,8 @@ def track_trajectory_ackerman_clf_bayesian(x, x_g, dt = None,
             coordinate_converter = lambda x, x_g: x,
             dynamics = LearnedShiftInvariantDynamics(
                 dt = dt,
-                #mean_dynamics = ZeroDynamicsModel(m = 2, n = 3)),
-                mean_dynamics = AckermanDrive(L = 10.0),
+                mean_dynamics = ZeroDynamicsModel(m = 2, n = 3),
+                #mean_dynamics = AckermanDrive(L = 10.0),
                 enable_learning = enable_learning
             ),
             # dynamics = ZeroDynamicsBayesian(m = 2, n = 3),
@@ -1174,7 +1175,7 @@ def track_trajectory_ackerman_clf_bayesian(x, x_g, dt = None,
             cbfs = cbfs(x , x_g),
             cbf_gammas = cbf_gammas
         ).control,
-        visualizer=Logger(
+        visualizer=Visualizer(
             PiecewiseLinearPlanner(x, x_g, numSteps, dt),
             dt,
             cbfs = cbfs(x, x_g)
@@ -1302,7 +1303,7 @@ unicycle_demo_track_trajectory_ackerman_clf_bayesian = partial(
                       cbf_gammas = [5., 5.],
                       # cbfs = lambda x, x_g: [],
                       # cbf_gammas = [],
-                      enable_learning = False),
+                      enable_learning = True),
     exp_tags = ['ackerman', 'true_L=1', 'exp_L=10', 'with_learning']
 )
 

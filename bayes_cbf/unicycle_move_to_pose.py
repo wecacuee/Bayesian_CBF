@@ -12,15 +12,23 @@ from datetime import datetime
 from random import random
 from functools import partial
 from collections import namedtuple
+import inspect
 import sys
+import os.path as osp
 import math
 import logging
+import json
+import glob
+from kwplus.functools import recpartial
+from kwplus import default_kw
 logging.basicConfig()
 LOG = logging.getLogger(__name__)
 LOG.setLevel(logging.DEBUG)
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Polygon
+
+CONFIG_FILE_BASENAME = 'config.json'
 
 import numpy as np
 NUMPY_AS_TORCH = False
@@ -37,6 +45,7 @@ else:
 
 
 from torch.utils.tensorboard import SummaryWriter
+from tensorboard.backend.event_processing import event_file_loader
 
 from bayes_cbf.gp_algebra import DeterministicGP, GaussianProcess
 from bayes_cbf.control_affine_model import ControlAffineRegressor
@@ -831,6 +840,10 @@ class ControllerPID:
         rho, alpha, beta = cartesian2polar(x, state_goal)
         return rho < 1e-3
 
+def add_scalars(tag, var_dict, t):
+    for k, v in var_dict.items():
+        TBLOG.add_scalar("/".join((tag, k)), v, t)
+
 class Visualizer:
     def __init__(self, planner, dt, cbfs=[]):
         self.planner = planner
@@ -840,43 +853,97 @@ class Visualizer:
         self.x_traj, self.y_traj = [], []
         self.fig, self.axes = plt.subplots(1,1)
 
-
-    def setStateCtrl(self, state, u, t=None, **kw):
-        TBLOG.add_scalars(
-            "vis",
-            dict(x0=state[0], x1=state[1], x2=state[2], u0=u[0], u1=u[1]), t)
-        if t == 0:
-            self.state_start = state.clone()
-        ax = self.axes
-        ax.clear()
-        scale = (self.planner.x_goal[:2] - self.state_start[:2]).norm() / 10.
-        x_start, y_start, theta_start = self.state_start
+    @staticmethod
+    def _plot_static(ax, state_goal, state_start, cbfs):
+        scale = (state_goal[:2] - state_start[:2]).norm() / 10.
+        x_start, y_start, theta_start = state_start
         ax.arrow(x_start, y_start, torch.cos(theta_start) * scale,
                     torch.sin(theta_start)*scale, color='r', width=0.1*scale)
-        xy_plan_traj = [self.planner.plan(ti)[:2] for ti in range(0, t, 10)]
-        x_plan, y_plan, theta_plan = self.planner.plan(t)
-        TBLOG.add_scalars(
-            "vis",
-            dict(plan_x0=x_plan, plan_x1=y_plan, plan_x2=theta_plan), t)
-        xy_plan_traj.append((x_plan, y_plan))
-        x_plan_traj, y_plan_traj = zip(*xy_plan_traj)
-        ax.plot(x_plan_traj, y_plan_traj, 'g+', linewidth=0.01)
-        x_goal, y_goal, theta_goal = self.planner.x_goal
+        x_goal, y_goal, theta_goal = state_goal
         ax.plot(x_goal, y_goal, 'g+', linewidth=0.4)
         ax.add_patch(Circle(np.array([x_goal, y_goal]),
                             radius=scale/5, fill=False, color='g'))
-        for cbf in self.cbfs:
+
+        for cbf in cbfs:
             circle = Circle(to_numpy(cbf.center),
                             radius=to_numpy(cbf.radius),
                             fill=False, color='r')
             ax.add_patch(circle)
+
+
+    def setStateCtrl(self, state, u, t=None, **kw):
+        if t == 0:
+            self.state_start = state.clone()
+        ax = self.axes
+        ax.clear()
+        self._plot_static(ax, self.planner.x_goal, self.state_start, self.cbfs)
+        xy_plan_traj = [self.planner.plan(ti)[:2] for ti in range(0, t, 10)]
+        xy_plan_traj.append((x_plan, y_plan))
+        x_plan_traj, y_plan_traj = zip(*xy_plan_traj)
+        ax.plot(x_plan_traj, y_plan_traj, 'g+', linewidth=0.01)
         x, y, theta = state
         self.x_traj.append(x)
         self.y_traj.append(y)
         plot_vehicle(ax, x, y, theta, self.x_traj, self.y_traj,
-                     self.state_start, self.planner.x_goal)
+                     to_numpy(self.state_start), to_numpy(self.planner.x_goal))
 
         plt.pause(self.dt)
+
+class Logger:
+    def __init__(self, planner, dt, cbfs=[]):
+        self.planner = planner
+        self.dt = dt
+        self.state_start = None
+        self.cbfs = cbfs
+        self.x_traj, self.y_traj = [], []
+
+    def setStateCtrl(self, state, u, t=None, **kw):
+        add_scalars("vis", dict(x0=state[0], x1=state[1], x2=state[2], u0=u[0], u1=u[1]), t)
+        x_plan, y_plan, theta_plan = self.planner.plan(t)
+        add_scalars("vis", dict(plan_x0=x_plan, plan_x1=y_plan, plan_x2=theta_plan), t)
+
+
+class PlaybackVisualizer:
+    def __init__(self, planner, dt, cbfs=[]):
+        self.planner = planner
+        self.dt = dt
+        self.state_start = None
+        self.cbfs = cbfs
+        self.x_traj, self.y_traj = [], []
+        self.fig, self.axes = plt.subplots(1,1)
+
+
+def load_tensorboard_scalars(event_file):
+    loader = event_file_loader.EventFileLoader(event_file)
+    groupby_tag = dict()
+    for event in loader.Load():
+        t = event.step
+        if event.summary is not None and len(event.summary.value):
+            val = event.summary.value[0]
+            tag = val.tag
+            value = val.simple_value or val.tensor.float_val[0]
+            groupby_tag.setdefault(tag, []).append( (t, value))
+    return groupby_tag
+
+
+def visualize_tensorboard_logs(events_dir, ax = None):
+    events_file = glob.glob(osp.join(events_dir, "*.tfevents*"))[0]
+    config = json.load(open(osp.join(events_dir, CONFIG_FILE_BASENAME)))
+    grouped_by_tag = load_tensorboard_scalars(events_file)
+    x_traj = np.array(list(zip(*grouped_by_tag['vis/x0']))[1])
+    y_traj = np.array(list(zip(*grouped_by_tag['vis/x1']))[1])
+    theta_traj = np.array(list(zip(*grouped_by_tag['vis/x2']))[1])
+    x = x_traj[-1]
+    y = y_traj[-1]
+    theta = theta_traj[-1]
+    if ax is None:
+        fig, ax = plt.subplots(1,1)
+    state_start = np.array([x_traj[0], y_traj[0], theta_traj[0]])
+    x_goal = np.array(config['state_goal'])
+    plot_vehicle(ax, x, y, theta, x_traj, y_traj,
+                 state_start, x_goal)
+    plt.show()
+
 
 def move_to_pose(state_start, state_goal,
                  dt = 0.01,
@@ -915,14 +982,14 @@ def move_to_pose(state_start, state_goal,
 
 def plot_vehicle(ax, x, y, theta, x_traj, y_traj, state_start, state_goal):  # pragma: no cover
     # Corners of triangular vehicle when pointing to the right (0 radians)
-    scale = (state_goal[:2] - state_start[:2]).norm() / 10.
-    triangle = torch.tensor([[0.0, 0],
-                             [-1.0, 0.25],
-                             [-1.0, -0.25]])
+    scale = np.linalg.norm(state_goal[:2] - state_start[:2]) / 10.
+    triangle = np.array([[0.0, 0],
+                         [-1.0, 0.25],
+                         [-1.0, -0.25]])
 
-    tri = (rot_matrix(theta) @ (scale * triangle.T) + torch.tensor([x, y]).reshape(-1, 1)).T
+    tri = (rot_matrix(theta) @ (scale * triangle.T) + np.array([x, y]).reshape(-1, 1)).T
 
-    ax.add_patch(Polygon(to_numpy(tri), fill=False, edgecolor='k'))
+    ax.add_patch(Polygon(tri, fill=False, edgecolor='k'))
 
     ax.plot(x_traj, y_traj, 'b--')
 
@@ -931,16 +998,16 @@ def plot_vehicle(ax, x, y, theta, x_traj, y_traj, state_start, state_goal):  # p
     #         lambda event: [sys.exit(0) if event.key == 'escape' else None])
 
     ax.set_aspect('equal')
-    state_min = torch.min(state_start[:2], state_goal[:2]).min()
-    state_max = torch.max(state_start[:2], state_goal[:2]).max()
+    state_min = np.minimum(state_start[:2], state_goal[:2]).min()
+    state_max = np.maximum(state_start[:2], state_goal[:2]).max()
     ax.set_xlim(-0.5 + state_min, state_max + 0.5)
     ax.set_ylim(-0.5 + state_min, state_max + 0.5)
 
 
 def rot_matrix(theta):
-    return torch.tensor([
-        [torch.cos(theta), -torch.sin(theta)],
-        [torch.sin(theta),  torch.cos(theta)]
+    return np.array([
+        [np.cos(theta), -np.sin(theta)],
+        [np.sin(theta),  np.cos(theta)]
     ])
 
 
@@ -954,13 +1021,19 @@ class NoPlanner:
     def dot_plan(self, t):
         return torch.zeros_like(self.x_goal)
 
-def rotmat(theta):
-    return torch.tensor([[theta.cos(), -theta.sin()],
-                         [theta.sin(), theta.cos()]])
 
 def R90():
     return torch.tensor([[0., -1.],
                          [1, 0.]])
+
+
+def extract_keywords(func):
+    keywords = default_kw(func)
+    for k, v in keywords.items():
+        if callable(v):
+            keywords[k] = extract_keywords(v)
+    return keywords
+
 
 ####################################################################
 # configured methods
@@ -1021,6 +1094,7 @@ def track_trajectory_clf_cartesian(x, x_g, dt = None,
                                    cbfs = None,
                                    cbf_gammas = None,
                                    numSteps = None,
+                                   Kp = [0.9, 1.5, 0.],
                                    **kw):
     return sample_generator_trajectory(
         dynamics_model=CartesianDynamics(),
@@ -1030,7 +1104,7 @@ def track_trajectory_clf_cartesian(x, x_g, dt = None,
             coordinate_converter = lambda x, x_g: x,
             dynamics = CartesianDynamics(),
             clf = CLFCartesian(
-                Kp = torch.tensor([0.9, 1.5, 0.])
+                Kp = torch.tensor(Kp)
             ),
             cbfs = cbfs(x , x_g),
             cbf_gammas = cbf_gammas
@@ -1049,6 +1123,7 @@ def track_trajectory_clf_bayesian(x, x_g, dt = None,
                                   cbfs = None,
                                   cbf_gammas = None,
                                   numSteps = None,
+                                  Kp = [0.9, 1.5, 0.],
                                   **kw):
     return sample_generator_trajectory(
         dynamics_model=CartesianDynamics(),
@@ -1059,10 +1134,10 @@ def track_trajectory_clf_bayesian(x, x_g, dt = None,
             dynamics = LearnedShiftInvariantDynamics(dt = dt),
             # dynamics = CartesianDynamics(),
             clf = CLFCartesian(
-                Kp = torch.tensor([0.9, 1.5, 0.])
+                Kp = torch.tensor(Kp)
             ),
             cbfs = cbfs(x , x_g),
-            cbf_gammas = cbf_gammas
+            cbf_gammas = torch.tensor(cbf_gammas)
         ).control,
         visualizer=Visualizer(
             PiecewiseLinearPlanner(x, x_g, numSteps, dt),
@@ -1078,6 +1153,7 @@ def track_trajectory_ackerman_clf_bayesian(x, x_g, dt = None,
                                            cbfs = None,
                                            cbf_gammas = None,
                                            numSteps = None,
+                                           enable_learning = True,
                                            **kw):
     return sample_generator_trajectory(
         dynamics_model=AckermanDrive(L = 1.),
@@ -1088,7 +1164,9 @@ def track_trajectory_ackerman_clf_bayesian(x, x_g, dt = None,
             dynamics = LearnedShiftInvariantDynamics(
                 dt = dt,
                 #mean_dynamics = ZeroDynamicsModel(m = 2, n = 3)),
-                mean_dynamics = AckermanDrive(L = 10.0)),
+                mean_dynamics = AckermanDrive(L = 10.0),
+                enable_learning = enable_learning
+            ),
             # dynamics = ZeroDynamicsBayesian(m = 2, n = 3),
             clf = CLFCartesian(
                 Kp = torch.tensor([0.9, 1.5, 0.])
@@ -1096,7 +1174,7 @@ def track_trajectory_ackerman_clf_bayesian(x, x_g, dt = None,
             cbfs = cbfs(x , x_g),
             cbf_gammas = cbf_gammas
         ).control,
-        visualizer=Visualizer(
+        visualizer=Logger(
             PiecewiseLinearPlanner(x, x_g, numSteps, dt),
             dt,
             cbfs = cbfs(x, x_g)
@@ -1112,14 +1190,20 @@ def track_trajectory_ackerman_clf_bayesian(x, x_g, dt = None,
 
 def unicycle_demo(simulator = move_to_pose, exp_tags = []):
     global TBLOG
-    TBLOG = SummaryWriter('data/runs/unicycle_move_to_pose_fixed_'
+    state_start, state_goal = [-3, -1, -math.pi/4], [0, 0, math.pi/4]
+    directory_name = ('data/runs/unicycle_move_to_pose_fixed_'
                           + '_'.join(exp_tags)
                           + '_' + datetime.now().strftime("%m%d-%H%M"))
-    simulator(torch.tensor([-3, -1, -math.pi/4]), torch.tensor([0, 0, math.pi/4]))
-    for i in range(5):
-        TBLOG = SummaryWriter(('data/runs/unicycle_move_to_pose_%d_' % i)
-                              + '_'.join(exp_tags)
-                              + '_' + datetime.now().strftime("%m%d-%H%M"))
+    TBLOG = SummaryWriter(directory_name)
+    json.dump(dict(extract_keywords(simulator),
+                    state_start=state_start,
+                    state_goal=state_goal),
+               open(osp.join(directory_name , CONFIG_FILE_BASENAME), 'w'),
+               skipkeys=True, indent=True)
+    simulator(torch.tensor(state_start), torch.tensor(state_goal))
+    for i in range(0):
+        if TBLOG is not None:
+            TBLOG.close()
         x_start = 20 * random()
         y_start = 20 * random()
         theta_start = 2 * math.pi * random() - math.pi
@@ -1130,9 +1214,18 @@ def unicycle_demo(simulator = move_to_pose, exp_tags = []):
               (x_start, y_start, theta_start))
         print("Goal x: %.2f m\nGoal y: %.2f m\nGoal theta: %.2f rad\n" %
               (x_goal, y_goal, theta_goal))
-        state_goal = torch.tensor([x_goal, y_goal, theta_goal])
-        state_start = torch.tensor([x_start, y_start, theta_start])
-        simulator(state_start, state_goal)
+        state_goal = [x_goal, y_goal, theta_goal]
+        state_start =[x_start, y_start, theta_start]
+        directory_name = (('data/runs/unicycle_move_to_pose_%d_' % i)
+                              + '_'.join(exp_tags)
+                              + '_' + datetime.now().strftime("%m%d-%H%M"))
+        TBLOG = SummaryWriter(directory_name)
+        json.dump(dict(extract_keywords(simulator),
+                        state_start=state_start,
+                        state_goal=state_goal),
+                open(osp.join(directory_name , CONFIG_FILE_BASENAME), 'w'),
+                skipkeys=True, indent=True)
+        simulator(torch.tensor(state_start), torch.tensor(state_goal))
 
 
 def unicycle_demo_clf_polar(dt = 0.01):
@@ -1193,26 +1286,25 @@ def unicycle_demo_track_trajectory_clf_bayesian(
                                            cbf_gammas = cbf_gammas,
                                            numSteps = numSteps))
 
-def unicycle_demo_track_trajectory_ackerman_clf_bayesian(
-        dt = 0.01,
-        numSteps = 400,
-        cbfs = lambda x, x_g: [
-            ObstacleCBF((x[:2] + x_g[:2])/2
-                        + R90() @ (x[:2] - x_g[:2])/15,
-                        (x[:2] - x_g[:2]).norm()/20),
-            ObstacleCBF((x[:2] + x_g[:2])/2
-                        - R90() @ (x[:2] - x_g[:2])/15,
-                        (x[:2] - x_g[:2]).norm()/20),
-        ],
-        cbf_gammas = [torch.tensor(5.), torch.tensor(5.)]
-        # cbfs = lambda x, x_g: [],
-        # cbf_gammas = []
-):
-    return unicycle_demo(simulator=partial(track_trajectory_ackerman_clf_bayesian,
-                                           dt = dt, cbfs = cbfs,
-                                           cbf_gammas = cbf_gammas,
-                                           numSteps = numSteps),
-                         exp_tags = ['ackerman', 'true_L=1', 'exp_L=10'])
+unicycle_demo_track_trajectory_ackerman_clf_bayesian = partial(
+    unicycle_demo,
+    simulator=partial(track_trajectory_ackerman_clf_bayesian,
+                      dt = 0.01,
+                      numSteps = 400,
+                      cbfs = lambda x, x_g: [
+                          ObstacleCBF((x[:2] + x_g[:2])/2
+                                      + R90() @ (x[:2] - x_g[:2])/15,
+                                      (x[:2] - x_g[:2]).norm()/20),
+                          ObstacleCBF((x[:2] + x_g[:2])/2
+                                      - R90() @ (x[:2] - x_g[:2])/15,
+                                      (x[:2] - x_g[:2]).norm()/20),
+                      ],
+                      cbf_gammas = [5., 5.],
+                      # cbfs = lambda x, x_g: [],
+                      # cbf_gammas = [],
+                      enable_learning = False),
+    exp_tags = ['ackerman', 'true_L=1', 'exp_L=10', 'with_learning']
+)
 
 
 if __name__ == '__main__':

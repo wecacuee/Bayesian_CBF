@@ -927,7 +927,7 @@ def load_tensorboard_scalars(event_file):
     return groupby_tag
 
 
-def visualize_tensorboard_logs(events_dir, ax = None):
+def visualize_tensorboard_logs(events_dir, ax = None, traj_marker='b--', label=None):
     events_file = glob.glob(osp.join(events_dir, "*.tfevents*"))[0]
     config = json.load(open(osp.join(events_dir, CONFIG_FILE_BASENAME)))
     grouped_by_tag = load_tensorboard_scalars(events_file)
@@ -939,11 +939,52 @@ def visualize_tensorboard_logs(events_dir, ax = None):
     theta = theta_traj[-1]
     if ax is None:
         fig, ax = plt.subplots(1,1)
-    state_start = np.array([x_traj[0], y_traj[0], theta_traj[0]])
+
+    #state_start = np.array([x_traj[0], y_traj[0], theta_traj[0]])
+    state_start = np.array(config['state_start'])
     x_goal = np.array(config['state_goal'])
+    cbfs = obstacles_at_mid_from_start_and_goal(torch.from_numpy(state_start), torch.from_numpy(x_goal))
+    Visualizer._plot_static(ax, torch.from_numpy(x_goal),
+                            torch.from_numpy(state_start), cbfs)
     plot_vehicle(ax, x, y, theta, x_traj, y_traj,
-                 state_start, x_goal)
-    plt.show()
+                 state_start, x_goal, traj_marker=traj_marker, label=label)
+    return ax
+
+def filter_log_files(runs_dir="data/runs",
+                     test_config=lambda c: 'state_goal' in c,
+                     topk=2):
+    valid_files = []
+    for f in sorted(glob.glob(osp.join(runs_dir, "*", CONFIG_FILE_BASENAME)),
+                    key=osp.getmtime):
+        try: config = json.load(open(f))
+        except json.JSONDecodeError:
+            continue
+        if test_config(config):
+            valid_files.append(f)
+        if len(valid_files) >= topk:
+            break
+
+    return valid_files
+
+def visualize_last_n_files(runs_dir="data/runs",
+                           last_n=2,
+                           file_filter=filter_log_files,
+                           traj_markers=['b--', 'r--', 'k--']):
+    fig, ax = plt.subplots(1,1)
+    for config_file, traj_marker in zip(
+            file_filter(runs_dir=runs_dir, topk=last_n),
+            traj_markers):
+        config = json.load(open(config_file))
+        start_goal = tuple(config['state_start'] + config['state_goal'])
+        run_dir = osp.dirname(config_file)
+        visualize_tensorboard_logs(
+            run_dir, ax = ax,
+            traj_marker=traj_marker,
+            label='Learning enabled: {}'.format(config['enable_learning']))
+        ax.set_title('true L = %.02f' % config['true_dynamics_gen']['L']
+                    + '; mean L = %.02f' % config['mean_dynamics_gen']['L'])
+        ax.legend()
+        fig.savefig(osp.join(run_dir, 'vis.pdf'))
 
 
 def move_to_pose(state_start, state_goal,
@@ -981,7 +1022,8 @@ def move_to_pose(state_start, state_goal,
         count = count + 1
 
 
-def plot_vehicle(ax, x, y, theta, x_traj, y_traj, state_start, state_goal):  # pragma: no cover
+def plot_vehicle(ax, x, y, theta, x_traj, y_traj, state_start, state_goal,
+                 traj_marker='b--', **plot_kw): # pragma: no cover
     # Corners of triangular vehicle when pointing to the right (0 radians)
     scale = np.linalg.norm(state_goal[:2] - state_start[:2]) / 10.
     triangle = np.array([[0.0, 0],
@@ -992,7 +1034,7 @@ def plot_vehicle(ax, x, y, theta, x_traj, y_traj, state_start, state_goal):  # p
 
     ax.add_patch(Polygon(tri, fill=False, edgecolor='k'))
 
-    ax.plot(x_traj, y_traj, 'b--')
+    ax.plot(x_traj, y_traj, traj_marker, **plot_kw)
 
     # for stopping simulation with the esc key.
     # self.fig.canvas.mpl_connect('key_release_event',
@@ -1028,17 +1070,37 @@ def R90():
                          [1, 0.]])
 
 
+def getfuncname(func):
+    # handle partials
+    while not hasattr(func, "__name__") and hasattr(func, "func"):
+        func = func.func
+    return getattr(func, "__name__", "")
+
 def extract_keywords(func):
     keywords = default_kw(func)
     for k, v in keywords.items():
         if callable(v):
             keywords[k] = extract_keywords(v)
+            funcname = getfuncname(v)
+            if funcname:
+                keywords[k]["__callable_name__"] = funcname
     return keywords
 
+
+def applyall(fs, *a, **kw):
+    return  [f(*a, **kw) for f in fs]
 
 ####################################################################
 # configured methods
 ####################################################################
+
+def obstacles_at_mid_from_start_and_goal(x, x_g):
+    return [ObstacleCBF((x[:2] + x_g[:2])/2
+                        + R90() @ (x[:2] - x_g[:2])/15,
+                        (x[:2] - x_g[:2]).norm()/20),
+            ObstacleCBF((x[:2] + x_g[:2])/2
+                        - R90() @ (x[:2] - x_g[:2])/15,
+                        (x[:2] - x_g[:2]).norm()/20)]
 
 def move_to_pose_clf_polar(x, x_g, dt = None, **kw):
     return move_to_pose(
@@ -1155,17 +1217,24 @@ def track_trajectory_ackerman_clf_bayesian(x, x_g, dt = None,
                                            cbf_gammas = None,
                                            numSteps = None,
                                            enable_learning = True,
+                                           mean_dynamics_gen=partial(AckermanDrive,
+                                                                     L = 10.0),
+                                           true_dynamics_gen=partial(AckermanDrive,
+                                                                     L = 1.0),
+                                           visualizer_class=Visualizer,
                                            **kw):
+    """
+    mean_dynamics is either ZeroDynamicsModel(m = 2, n = 3) or AckermanDrive(L = 10.0)
+    """
     return sample_generator_trajectory(
-        dynamics_model=AckermanDrive(L = 1.),
+        dynamics_model=true_dynamics_gen(),
         D=numSteps,
         controller=ControllerCLFBayesian(
             PiecewiseLinearPlanner(x, x_g, numSteps, dt),
             coordinate_converter = lambda x, x_g: x,
             dynamics = LearnedShiftInvariantDynamics(
                 dt = dt,
-                mean_dynamics = ZeroDynamicsModel(m = 2, n = 3),
-                #mean_dynamics = AckermanDrive(L = 10.0),
+                mean_dynamics = mean_dynamics_gen(),
                 enable_learning = enable_learning
             ),
             # dynamics = ZeroDynamicsBayesian(m = 2, n = 3),
@@ -1175,7 +1244,7 @@ def track_trajectory_ackerman_clf_bayesian(x, x_g, dt = None,
             cbfs = cbfs(x , x_g),
             cbf_gammas = cbf_gammas
         ).control,
-        visualizer=Visualizer(
+        visualizer=visualizer_class(
             PiecewiseLinearPlanner(x, x_g, numSteps, dt),
             dt,
             cbfs = cbfs(x, x_g)
@@ -1270,14 +1339,7 @@ def unicycle_demo_sim_cartesian_clf_traj(
 def unicycle_demo_track_trajectory_clf_bayesian(
         dt = 0.01,
         numSteps = 400,
-        cbfs = lambda x, x_g: [
-            ObstacleCBF((x[:2] + x_g[:2])/2
-                        + R90() @ (x[:2] - x_g[:2])/15,
-                        (x[:2] - x_g[:2]).norm()/20),
-            ObstacleCBF((x[:2] + x_g[:2])/2
-                        - R90() @ (x[:2] - x_g[:2])/15,
-                        (x[:2] - x_g[:2]).norm()/20),
-        ],
+        cbfs = obstacles_at_mid_from_start_and_goal,
         cbf_gammas = [torch.tensor(10.), torch.tensor(10.)]
         # cbfs = lambda x, x_g: [],
         # cbf_gammas = []
@@ -1292,21 +1354,22 @@ unicycle_demo_track_trajectory_ackerman_clf_bayesian = partial(
     simulator=partial(track_trajectory_ackerman_clf_bayesian,
                       dt = 0.01,
                       numSteps = 400,
-                      cbfs = lambda x, x_g: [
-                          ObstacleCBF((x[:2] + x_g[:2])/2
-                                      + R90() @ (x[:2] - x_g[:2])/15,
-                                      (x[:2] - x_g[:2]).norm()/20),
-                          ObstacleCBF((x[:2] + x_g[:2])/2
-                                      - R90() @ (x[:2] - x_g[:2])/15,
-                                      (x[:2] - x_g[:2]).norm()/20),
-                      ],
+                      cbfs = obstacles_at_mid_from_start_and_goal,
                       cbf_gammas = [5., 5.],
                       # cbfs = lambda x, x_g: [],
                       # cbf_gammas = [],
+                      visualizer_class=Logger,
+                      true_dynamics_gen=partial(AckermanDrive, L = 1.0),
+                      mean_dynamics_gen=partial(AckermanDrive, L = 10.0),
                       enable_learning = True),
     exp_tags = ['ackerman', 'true_L=1', 'exp_L=10', 'with_learning']
 )
 
+unicycle_demo_track_trajectory_ackerman_clf_bayesian_mult = partial(
+    applyall,
+    [unicycle_demo_track_trajectory_ackerman_clf_bayesian,
+     recpartial(unicycle_demo_track_trajectory_ackerman_clf_bayesian,
+                {'simulator.enable_learning' : False})])
 
 if __name__ == '__main__':
     import doctest
@@ -1318,4 +1381,5 @@ if __name__ == '__main__':
     # unicycle_demo_sim_cartesian_clf()
     # unicycle_demo_sim_cartesian_clf_traj()
     # unicycle_demo_track_trajectory_clf_bayesian()
-    unicycle_demo_track_trajectory_ackerman_clf_bayesian()
+    # unicycle_demo_track_trajectory_ackerman_clf_bayesian()
+    unicycle_demo_track_trajectory_ackerman_clf_bayesian_mult()

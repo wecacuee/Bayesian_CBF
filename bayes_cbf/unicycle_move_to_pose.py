@@ -866,17 +866,21 @@ class Visualizer:
         scale = (state_goal[:2] - state_start[:2]).norm() / 10.
         x_start, y_start, theta_start = state_start
         ax.arrow(x_start, y_start, torch.cos(theta_start) * scale,
-                    torch.sin(theta_start)*scale, color='r', width=0.1*scale)
+                    torch.sin(theta_start)*scale, color='c', width=0.1*scale,
+                 label='Start')
         x_goal, y_goal, theta_goal = state_goal
-        ax.plot(x_goal, y_goal, 'g+', linewidth=0.4)
+        ax.plot(x_goal, y_goal, 'g+', linewidth=0.4, label='Goal')
         ax.add_patch(Circle(np.array([x_goal, y_goal]),
                             radius=scale/5, fill=False, color='g'))
 
+        labelled_once = False
         for cbf in cbfs:
             circle = Circle(to_numpy(cbf.center),
                             radius=to_numpy(cbf.radius),
-                            fill=False, color='r')
+                            fill=True, color='r',
+                            label=(None if labelled_once else 'Obstacles'))
             ax.add_patch(circle)
+            labelled_once = True
 
 
     def setStateCtrl(self, state, u, t=None, **kw):
@@ -945,15 +949,14 @@ def visualize_tensorboard_logs(events_dir, ax = None, traj_marker='b--', label=N
     x = x_traj[-1]
     y = y_traj[-1]
     theta = theta_traj[-1]
+    state_start = np.array(config['state_start'])
+    x_goal = np.array(config['state_goal'])
     if ax is None:
         fig, ax = plt.subplots(1,1)
 
-    #state_start = np.array([x_traj[0], y_traj[0], theta_traj[0]])
-    state_start = np.array(config['state_start'])
-    x_goal = np.array(config['state_goal'])
-    cbfs = obstacles_at_mid_from_start_and_goal(torch.from_numpy(state_start), torch.from_numpy(x_goal))
-    Visualizer._plot_static(ax, torch.from_numpy(x_goal),
-                            torch.from_numpy(state_start), cbfs)
+        cbfs = obstacles_at_mid_from_start_and_goal(torch.from_numpy(state_start), torch.from_numpy(x_goal))
+        Visualizer._plot_static(ax, torch.from_numpy(x_goal),
+                                torch.from_numpy(state_start), cbfs)
     plot_vehicle(ax, x, y, theta, x_traj, y_traj,
                  state_start, x_goal, traj_marker=traj_marker, label=label)
     return ax
@@ -980,23 +983,23 @@ def visualize_last_n_files(runs_dir="data/runs",
                            last_n=2,
                            file_filter=filter_log_files,
                            traj_markers=['b--', 'r--', 'k--', 'c--']):
-    fig, ax = plt.subplots(1,1)
+    ax = None
     for config_file, traj_marker in zip(
             file_filter(runs_dir=runs_dir, topk=last_n),
             traj_markers):
         config = json.load(open(config_file))
         start_goal = tuple(config['state_start'] + config['state_goal'])
         run_dir = osp.dirname(config_file)
-        visualize_tensorboard_logs(
+        ax = visualize_tensorboard_logs(
             run_dir, ax = ax,
             traj_marker=traj_marker,
             label='{}; {}'.format(('Learning' if config['enable_learning'] else 'No Learning'),
-                                  ('Bayes CBF' if config['controller_class']['__callable_name__'] == ControllerCLFBayesian.__name__ else 'Mean CBF'))),
+                                  ('Bayes CBF' if config['controller_class']['__callable_name__'] == ControllerCLFBayesian.__name__ else 'Mean CBF')))
         ax.set_title('true L = %.02f' % config['true_dynamics_gen']['L']
-                    + '; mean L = %.02f' % config['mean_dynamics_gen']['L'])
+                    + '; prior L = %.02f' % config['mean_dynamics_gen']['L'])
         ax.legend()
-        fig.savefig(osp.join(run_dir, 'vis.pdf'))
-    plt.close(fig.number)
+        ax.figure.savefig(osp.join(run_dir, 'vis.pdf'))
+    plt.close(ax.figure.number)
 
 
 def move_to_pose(state_start, state_goal,

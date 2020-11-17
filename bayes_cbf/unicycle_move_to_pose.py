@@ -19,6 +19,8 @@ import math
 import logging
 import json
 import glob
+from scipy.special import erfinv
+from kwplus.variations import kwvariations, expand_variations
 from kwplus.functools import recpartial
 from kwplus import default_kw
 logging.basicConfig()
@@ -263,7 +265,7 @@ class LearnedShiftInvariantDynamics:
                  max_train = 200,
                  training_iter = 100,
                  shift_invariant = True,
-                 train_every_n_steps = 10,
+                 train_every_n_steps = 20,
                  enable_learning = True):
         self.max_train = max_train
         self.training_iter = training_iter
@@ -674,8 +676,9 @@ class ControllerCLFBayesian:
                  clf_relax_weight = 10,
                  cbfs = [],
                  cbf_gammas = [],
-                 ctrl_min = np.array([-10., -np.pi*5]),
-                 ctrl_max = np.array([10., np.pi*5])):
+                 ctrl_min = [-10., -np.pi*5],
+                 ctrl_max = [10., np.pi*5],
+                 max_risk = 1e-2):
         self.u_dim = 2
         self.planner = planner
         self.coordinate_converter = coordinate_converter
@@ -685,8 +688,9 @@ class ControllerCLFBayesian:
         self.clf_relax_weight = clf_relax_weight
         self.cbfs = cbfs
         self.cbf_gammas = cbf_gammas
-        self.ctrl_min = ctrl_min
-        self.ctrl_max = ctrl_max
+        self.ctrl_min = np.array(ctrl_min)
+        self.ctrl_max = np.array(ctrl_max)
+        self.max_risk = max_risk
 
     @staticmethod
     def convert_cbc_terms_to_socp_terms(bfe, e, V, bfv, v, extravars,
@@ -773,6 +777,9 @@ class ControllerCLFBayesian:
         for cbf, cbf_gamma in zip(self.cbfs, self.cbf_gammas):
             yield self._cbc_terms(cbf, cbf_gamma, state, state_goal, t)
 
+    def _factor(self):
+        return math.sqrt(2)*erfinv(1-2*self.max_risk)
+
     def control(self, x_torch, t):
         import cvxpy as cp # pip install cvxpy
         state_goal = self.planner.plan(t)
@@ -783,12 +790,13 @@ class ControllerCLFBayesian:
         obj = cp.Minimize(
             cp.sum_squares(uvar) + self.clf_relax_weight * relax)
         clc_A, clc_bfb, clc_bfc, clc_d = self._clc_terms(x, state_goal, t)
+        rho = self._factor()
         constraints = [
-            clc_bfc @ uvar + clc_d + relax >= cp.norm(clc_A @ uvar + clc_bfb)]
+            clc_bfc @ uvar + clc_d + relax >= rho * cp.norm(clc_A @ uvar + clc_bfb)]
 
         for cbc_A, cbc_bfb, cbc_bfc, cbc_d in self._cbcs(x, state_goal, t):
             constraints.append(
-                cbc_bfc @ uvar + cbc_d >= cp.norm(cbc_A @ uvar + cbc_bfb)
+                cbc_bfc @ uvar + cbc_d >= rho * cp.norm(cbc_A @ uvar + cbc_bfb)
             )
 
         problem = cp.Problem(obj, constraints)
@@ -950,12 +958,14 @@ def visualize_tensorboard_logs(events_dir, ax = None, traj_marker='b--', label=N
                  state_start, x_goal, traj_marker=traj_marker, label=label)
     return ax
 
-def filter_log_files(runs_dir="data/runs",
-                     test_config=lambda c: 'state_goal' in c,
-                     topk=2):
+def filter_log_files(
+        runs_dir="data/runs",
+        test_config=lambda c: ('state_goal' in c
+                               and 'Logger' == c['visualizer_class']['__callable_name__']),
+        topk=2):
     valid_files = []
     for f in sorted(glob.glob(osp.join(runs_dir, "*", CONFIG_FILE_BASENAME)),
-                    key=osp.getmtime):
+                    key=osp.getmtime, reverse=True):
         try: config = json.load(open(f))
         except json.JSONDecodeError:
             continue
@@ -969,7 +979,7 @@ def filter_log_files(runs_dir="data/runs",
 def visualize_last_n_files(runs_dir="data/runs",
                            last_n=2,
                            file_filter=filter_log_files,
-                           traj_markers=['b--', 'r--', 'k--']):
+                           traj_markers=['b--', 'r--', 'k--', 'c--']):
     fig, ax = plt.subplots(1,1)
     for config_file, traj_marker in zip(
             file_filter(runs_dir=runs_dir, topk=last_n),
@@ -980,11 +990,13 @@ def visualize_last_n_files(runs_dir="data/runs",
         visualize_tensorboard_logs(
             run_dir, ax = ax,
             traj_marker=traj_marker,
-            label='Learning enabled: {}'.format(config['enable_learning']))
+            label='{}; {}'.format(('Learning' if config['enable_learning'] else 'No Learning'),
+                                  ('Bayes CBF' if config['controller_class']['__callable_name__'] == ControllerCLFBayesian.__name__ else 'Mean CBF'))),
         ax.set_title('true L = %.02f' % config['true_dynamics_gen']['L']
                     + '; mean L = %.02f' % config['mean_dynamics_gen']['L'])
         ax.legend()
         fig.savefig(osp.join(run_dir, 'vis.pdf'))
+    plt.close(fig.number)
 
 
 def move_to_pose(state_start, state_goal,
@@ -1222,6 +1234,7 @@ def track_trajectory_ackerman_clf_bayesian(x, x_g, dt = None,
                                            true_dynamics_gen=partial(AckermanDrive,
                                                                      L = 1.0),
                                            visualizer_class=Visualizer,
+                                           controller_class=ControllerCLFBayesian,
                                            **kw):
     """
     mean_dynamics is either ZeroDynamicsModel(m = 2, n = 3) or AckermanDrive(L = 10.0)
@@ -1229,7 +1242,7 @@ def track_trajectory_ackerman_clf_bayesian(x, x_g, dt = None,
     return sample_generator_trajectory(
         dynamics_model=true_dynamics_gen(),
         D=numSteps,
-        controller=ControllerCLFBayesian(
+        controller=controller_class(
             PiecewiseLinearPlanner(x, x_g, numSteps, dt),
             coordinate_converter = lambda x, x_g: x,
             dynamics = LearnedShiftInvariantDynamics(
@@ -1358,18 +1371,20 @@ unicycle_demo_track_trajectory_ackerman_clf_bayesian = partial(
                       cbf_gammas = [5., 5.],
                       # cbfs = lambda x, x_g: [],
                       # cbf_gammas = [],
-                      visualizer_class=Logger,
+                      controller_class=ControllerCLFBayesian, # or ControllerCLF
+                      visualizer_class=Logger, # or Visualizer
                       true_dynamics_gen=partial(AckermanDrive, L = 1.0),
-                      mean_dynamics_gen=partial(AckermanDrive, L = 10.0),
+                      mean_dynamics_gen=partial(AckermanDrive, L = 4.0), # or ZeroDynamicsBayesian
                       enable_learning = True),
-    exp_tags = ['ackerman', 'true_L=1', 'exp_L=10', 'with_learning']
+    exp_tags = ['ackerman']
 )
 
 unicycle_demo_track_trajectory_ackerman_clf_bayesian_mult = partial(
     applyall,
-    [unicycle_demo_track_trajectory_ackerman_clf_bayesian,
-     recpartial(unicycle_demo_track_trajectory_ackerman_clf_bayesian,
-                {'simulator.enable_learning' : False})])
+    map(partial(recpartial,unicycle_demo_track_trajectory_ackerman_clf_bayesian),
+        expand_variations(
+                {'simulator.enable_learning' : kwvariations([True, False]),
+                 'simulator.controller_class': kwvariations([ControllerCLFBayesian, ControllerCLF])})))
 
 if __name__ == '__main__':
     import doctest

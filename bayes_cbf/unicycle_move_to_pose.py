@@ -55,6 +55,7 @@ from bayes_cbf.misc import to_numpy, normalize_radians, ZeroDynamicsModel
 from bayes_cbf.sampling import sample_generator_trajectory
 from bayes_cbf.planner import PiecewiseLinearPlanner, SplinePlanner
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, cbc2_safety_factor
+from bayes_cbf.plotting import (draw_ellipse, var_to_scale_theta)
 
 TBLOG = None
 
@@ -194,9 +195,10 @@ class AckermanDrive:
     """
     state_size = 3
     ctrl_size = 2
-    def __init__(self, L = 0.2):
+    def __init__(self, L = 0.2, kernel_scale=1.0):
         self.L = L
         self.current_state = None
+        self.kernel_scale = kernel_scale
 
     def set_init_state(self, x):
         self.current_state = x
@@ -241,9 +243,10 @@ class AckermanDrive:
     def fu_func_gp(self, u):
         f, g = self.f_func, self.g_func
         n = self.state_size
+        s = self.kernel_scale
         return GaussianProcess(
             mean = lambda x: f(x) + g(x) @ u,
-            knl = lambda x, xp: (u @ u + 1) * torch.eye(n),
+            knl = lambda x, xp: s * (u @ u + 1) * torch.eye(n),
             shape=(n,),
             name="AckermanDrive")
 
@@ -341,11 +344,15 @@ class LearnedShiftInvariantDynamics:
         self.learned_dynamics.fit(*train_data, training_iter=100)
 
     def fu_func_gp(self, U):
-        md = self.mean_dynamics
-        n = self.state_size
-        return (DeterministicGP(lambda x: md.f_func(x) + md.g_func(x) @ U,
-                                shape=(n,))
-                + self.learned_dynamics.fu_func_gp(U))
+        if self.enable_learning:
+            md = self.mean_dynamics
+            n = self.state_size
+            return (DeterministicGP(lambda x: md.f_func(x) + md.g_func(x) @ U,
+                                    shape=(n,))
+                    + self.learned_dynamics.fu_func_gp(U))
+        else:
+            gp = self.mean_dynamics.fu_func_gp(U)
+            return gp
 
     def step(self, u_torch, dt):
         x = self.current_state
@@ -543,16 +550,69 @@ class CLFCartesian:
 
 
 class ObstacleCBF:
-    def __init__(self, center, radius):
+    def __init__(self, center, radius, term_weights=[0.5, 0.5]):
         self.center = center
         self.radius = radius
+        self.term_weights = term_weights
+
+    def _cbf_radial(self, state):
+        return ((state[:2] - self.center)**2).sum() - self.radius**2
+
+    def _cbf_heading(self, state):
+        good_heading = state[:2] - self.center
+        good_heading_norm = good_heading / torch.norm(good_heading)
+        return torch.cos(state[2]) * good_heading_norm[0] + torch.sin(state[2]) * good_heading_norm[1]
+
+    def _cbf_terms(self, state):
+        return [self._cbf_radial(state), self._cbf_heading(state)]
 
     def cbf(self, state):
         self.center, self.radius = map(partial(torch_to,
                                                device=state.device,
                                                dtype=state.dtype),
                                        (self.center, self.radius))
-        return ((state[:2] - self.center)**2).sum() - self.radius**2
+        return sum(w * t for w, t in zip(self.term_weights, self._cbf_terms(state)))
+
+    def _grad_cbf_radial(self, state):
+        """
+        >>> self = ObstacleCBF(torch.rand(2), torch.rand(1))
+        >>> x0 = torch.rand(3)
+        >>> ajac = self._grad_cbf_radial(x0)
+        >>> njac = numerical_jac(lambda x: self._cbf_radial(x), x0, 1e-6)[0]
+        >>> testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        """
+        gcbf = torch.zeros_like(state)
+        gcbf[:2] = 2*(state[:2]-self.center)
+        return gcbf
+
+    def _grad_cbf_heading(self, state):
+        """
+        α = atan2(y, x)
+
+        [∂ cos(α-θ),     ∂ cos(α - θ)  ∂ cos(θ - α) ]
+        [------------,   ------------, -----------  ]
+        [∂ x             ∂ y           ∂ θ          ]
+        >>> self = ObstacleCBF(torch.rand(2), torch.rand(1))
+        >>> x0 = torch.rand(3)
+        >>> ajac = self._grad_cbf_heading(x0)
+        >>> njac = numerical_jac(lambda x: self._cbf_heading(x), x0, 1e-6)[0]
+        >>> testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
+        """
+        gcbf = torch.zeros_like(state)
+        θ = state[2]
+        good_heading = state[:2] - self.center
+        ρ = torch.norm(good_heading)
+        α = torch.atan2(good_heading[1], good_heading[0])
+        # ∂ / ∂ x cos(α-θ) = sin(α - θ) y / ρ²
+        gcbf[0] = (α - θ).sin() * good_heading[1] / ρ**2
+        # ∂ / ∂ y cos(α-θ) = - sin(α - θ) x / ρ²
+        gcbf[1] = - (α - θ).sin() * good_heading[0] / ρ**2
+        # ∂ / ∂ θ cos(θ-α) = - sin(θ - α)
+        gcbf[2] = - (θ-α).sin()
+        return gcbf
+
+    def _grad_cbf_terms(self, state):
+        return [self._grad_cbf_radial(state), self._grad_cbf_heading(state)]
 
     def grad_cbf(self, state):
         """
@@ -566,9 +626,8 @@ class ObstacleCBF:
                                                device=state.device,
                                                dtype=state.dtype),
                                        (self.center, self.radius))
-        gcbf = torch.zeros_like(state)
-        gcbf[:2] = 2*(state[:2]-self.center)
-        return gcbf
+        return sum(w * t for w, t in zip(self.term_weights,
+                                         self._grad_cbf_terms(state)))
 
 
 class ControllerCLF:
@@ -594,6 +653,10 @@ class ControllerCLF:
         self.clf_relax_weight = 10
         self.cbfs = cbfs
         self.cbf_gammas = cbf_gammas
+
+    @property
+    def model(self):
+        return self.dynamics
 
     def _clc(self, x, state_goal, t):
         polar = self.coordinate_converter(x, state_goal)
@@ -673,11 +736,12 @@ class ControllerCLFBayesian:
                  dynamics = None, # PolarDynamics()/CartesianDynamics()
                  clf = None, # CLFPolar()/CLFCartesian()
                  clf_gamma = 10.,
-                 clf_relax_weight = 10,
+                 cost_weights = [0.33, 0.33, 0.33],
                  cbfs = [],
                  cbf_gammas = [],
                  ctrl_min = [-10., -np.pi*5],
                  ctrl_max = [10., np.pi*5],
+                 ctrl_ref = [0., 0.],
                  max_risk = 1e-2):
         self.u_dim = 2
         self.planner = planner
@@ -685,12 +749,17 @@ class ControllerCLFBayesian:
         self.dynamics = dynamics
         self.clf = clf
         self.clf_gamma = clf_gamma
-        self.clf_relax_weight = clf_relax_weight
+        self.cost_weights = cost_weights
         self.cbfs = cbfs
         self.cbf_gammas = cbf_gammas
         self.ctrl_min = np.array(ctrl_min)
         self.ctrl_max = np.array(ctrl_max)
+        self.ctrl_ref = np.array(ctrl_ref)
         self.max_risk = max_risk
+
+    @property
+    def model(self):
+        return self.dynamics
 
     @staticmethod
     def convert_cbc_terms_to_socp_terms(bfe, e, V, bfv, v, extravars,
@@ -787,24 +856,33 @@ class ControllerCLFBayesian:
         uvar = cp.Variable(self.u_dim)
         uvar.value = np.zeros(self.u_dim)
         relax = cp.Variable(1)
-        obj = cp.Minimize(
-            cp.sum_squares(uvar) + self.clf_relax_weight * relax)
+        u_ref = np.array(self.ctrl_ref)
+        cost_terms = [cp.sum_squares(uvar[0] - u_ref[0]),
+                      cp.sum_squares(uvar[1] - u_ref[1]),
+                      relax**2]
+
+        assert len(self.cost_weights) == len(cost_terms), 'assumed same cost terms'
+        obj = cp.Minimize(sum([w * t for w, t in zip(self.cost_weights, cost_terms)]))
         clc_A, clc_bfb, clc_bfc, clc_d = self._clc_terms(x, state_goal, t)
         rho = self._factor()
         constraints = [
-            clc_bfc @ uvar + clc_d + relax >= rho * cp.norm(clc_A @ uvar + clc_bfb)]
+            clc_bfc @ uvar + clc_d + relax >= 0 ] # rho * cp.norm(clc_A @ uvar + clc_bfb)]
 
         for cbc_A, cbc_bfb, cbc_bfc, cbc_d in self._cbcs(x, state_goal, t):
             constraints.append(
-                cbc_bfc @ uvar + cbc_d >= rho * cp.norm(cbc_A @ uvar + cbc_bfb)
+                cbc_bfc @ uvar + cbc_d >= 0 # rho * cp.norm(cbc_A @ uvar + cbc_bfb)
             )
 
         problem = cp.Problem(obj, constraints)
         problem.solve(solver='GUROBI')
         if problem.status not in ["infeasible", "unbounded", "infeasible_inaccurate"]:
             # Otherwise, problem.value is inf or -inf, respectively.
-            # print("Optimal value: %s" % problem.value)
-            pass
+            TBLOG.add_scalar("opt/rho", rho, t)
+            TBLOG.add_scalar("opt/value", problem.value, t)
+            TBLOG.add_scalar("opt/cost_vel", self.cost_weights[0] *
+                             (uvar.value[0] - u_ref[0])**2, t)
+            TBLOG.add_scalar("opt/cost_relax", (self.cost_weights[2] * relax.value**2), t)
+            TBLOG.add_scalar("opt/cbc_norm", np.linalg.norm(cbc_A @ uvar.value + cbc_bfb), t)
         else:
             raise ValueError(problem.status)
         # for variable in problem.variables():
@@ -812,6 +890,7 @@ class ControllerCLFBayesian:
         uopt = torch_to(torch.from_numpy(uvar.value),
                         device=getattr(x_torch, 'device', None),
                         dtype=x_torch.dtype)
+        TBLOG.add_scalar("opt/var", torch.det(self.dynamics.fu_func_gp(uopt).knl(x_torch, x_torch)), t)
         if hasattr(self.dynamics, 'train'):
             self.dynamics.train(x_torch, uopt)
         return uopt
@@ -883,7 +962,7 @@ class Visualizer:
             labelled_once = True
 
 
-    def setStateCtrl(self, state, u, t=None, **kw):
+    def setStateCtrl(self, state, u, t=None, xtp1=None, xtp1_var=None):
         if t == 0:
             self.state_start = state.clone()
         ax = self.axes
@@ -898,6 +977,11 @@ class Visualizer:
         self.y_traj.append(y)
         plot_vehicle(ax, x, y, theta, self.x_traj, self.y_traj,
                      to_numpy(self.state_start), to_numpy(self.planner.x_goal))
+        pos = to_numpy(xtp1[:2])
+        pos_var = to_numpy(xtp1_var[:2, :2])
+        scale, theta = var_to_scale_theta(pos_var)
+        if (scale > 1e-6).all():
+            draw_ellipse(ax, scale * 1e4, theta, pos)
 
         ax.figure.savefig('data/animation/frame%04d.png' % t)
         plt.pause(self.dt)
@@ -1116,6 +1200,12 @@ def obstacles_at_mid_from_start_and_goal(x, x_g):
             ObstacleCBF((x[:2] + x_g[:2])/2
                         - R90() @ (x[:2] - x_g[:2])/15,
                         (x[:2] - x_g[:2]).norm()/20)]
+
+
+def single_obstacle_at_mid_from_start_and_goal(x, x_g):
+    return [ObstacleCBF((x[:2] + x_g[:2])/2 + R90() @ (x[:2] - x_g[:2]) / 5,
+                        (x[:2] - x_g[:2]).norm()/4)]
+
 
 def move_to_pose_clf_polar(x, x_g, dt = None, **kw):
     return move_to_pose(
@@ -1356,7 +1446,7 @@ def unicycle_demo_track_trajectory_clf_bayesian(
         dt = 0.01,
         numSteps = 400,
         cbfs = obstacles_at_mid_from_start_and_goal,
-        cbf_gammas = [torch.tensor(10.), torch.tensor(10.)]
+        cbf_gammas = [10., 10.]
         # cbfs = lambda x, x_g: [],
         # cbf_gammas = []
 ):
@@ -1382,12 +1472,31 @@ unicycle_demo_track_trajectory_ackerman_clf_bayesian = partial(
     exp_tags = ['ackerman']
 )
 
+# Nov 16th
+# Run four experiments
 unicycle_demo_track_trajectory_ackerman_clf_bayesian_mult = partial(
     applyall,
     map(partial(recpartial,unicycle_demo_track_trajectory_ackerman_clf_bayesian),
         expand_variations(
                 {'simulator.enable_learning' : kwvariations([True, False]),
                  'simulator.controller_class': kwvariations([ControllerCLFBayesian, ControllerCLF])})))
+
+# Nov 18th
+# Force the unicycle around the obstacle by controlling the uncertainity
+unicycle_force_around_obstacle = partial(
+    unicycle_demo,
+    simulator=partial(track_trajectory_ackerman_clf_bayesian,
+                      dt = 0.01,
+                      numSteps = 400,
+                      cbfs = single_obstacle_at_mid_from_start_and_goal,
+                      cbf_gammas = [5., 5.],
+                      controller_class=ControllerCLFBayesian, # or ControllerCLF
+                      visualizer_class=Visualizer, # or Logger
+                      true_dynamics_gen=partial(AckermanDrive, L = 1.0),
+                      mean_dynamics_gen=partial(AckermanDrive, L = 1.0,
+                                                kernel_scale=1e-2),
+                      enable_learning = False),
+    exp_tags = ['around_obstacle'])
 
 if __name__ == '__main__':
     import doctest
@@ -1400,4 +1509,5 @@ if __name__ == '__main__':
     # unicycle_demo_sim_cartesian_clf_traj()
     # unicycle_demo_track_trajectory_clf_bayesian()
     # unicycle_demo_track_trajectory_ackerman_clf_bayesian()
-    unicycle_demo_track_trajectory_ackerman_clf_bayesian_mult()
+    # unicycle_demo_track_trajectory_ackerman_clf_bayesian_mult()
+    unicycle_force_around_obstacle()

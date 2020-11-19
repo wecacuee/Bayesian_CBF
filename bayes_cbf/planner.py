@@ -17,13 +17,14 @@ class Planner(ABC):
         pass
 
 class PiecewiseLinearPlanner(Planner):
-    def __init__(self, x0, x_goal, numSteps, dt):
+    def __init__(self, x0, x_goal, numSteps, dt, frac_time_to_reach_goal=0.7):
         self.x0 = x0
         self.x_goal = x_goal
         self.numSteps = numSteps
         assert self.numSteps >= 3
-        self._checkpoint_list = self._checkpoints()
+        self.frac_time_to_reach_goal = frac_time_to_reach_goal
         self.dt = dt
+        self._checkpoint_list = self._checkpoints()
 
     def _checkpoints(self):
         numSteps = self.numSteps
@@ -31,7 +32,7 @@ class PiecewiseLinearPlanner(Planner):
         x_goal = self.x_goal
         xdiff = (x_goal[:2] - x0[:2])
         xdiff_norm = xdiff / xdiff.norm()
-        t_second_stage = min(int(numSteps*0.8), numSteps-1)
+        t_second_stage = min(int(numSteps*self.frac_time_to_reach_goal), numSteps-1)
         return [(t_second_stage,
                  torch.cat([x_goal[:2], xdiff_norm])),
                 (numSteps,

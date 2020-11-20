@@ -195,10 +195,10 @@ class AckermanDrive:
     """
     state_size = 3
     ctrl_size = 2
-    def __init__(self, L = 0.2, kernel_scale=[1.0, 1.0, 1.0]):
+    def __init__(self, L = 0.2, kernel_diag_A=[1.0, 1.0, 1.0]):
         self.L = L
         self.current_state = None
-        self.kernel_scale = torch.tensor(kernel_scale)
+        self.kernel_diag_A = torch.tensor(kernel_diag_A)
 
     def set_init_state(self, x):
         self.current_state = x
@@ -243,13 +243,15 @@ class AckermanDrive:
     def fu_func_gp(self, u):
         f, g = self.f_func, self.g_func
         n = self.state_size
-        self.kernel_scale = torch_to(self.kernel_scale,
+        self.kernel_diag_A = torch_to(self.kernel_diag_A,
                                      device=u.device,
                                      dtype=u.dtype)
-        s = torch.diag(self.kernel_scale)
+        A = torch.diag(self.kernel_diag_A)
+        u_hom = torch.cat([torch.tensor([1.]), u])
+        B = torch.eye(u_hom.shape[0])
         return GaussianProcess(
             mean = lambda x: f(x) + g(x) @ u,
-            knl = lambda x, xp:  (u @ u + 1) * torch.eye(n) * s,
+            knl = lambda x, xp:  (u_hom @ B @ u_hom) * A,
             shape=(n,),
             name="AckermanDrive")
 
@@ -953,11 +955,17 @@ class Visualizer:
         self.dt = dt
         self.state_start = None
         self.cbfs = cbfs
-        self.x_traj, self.y_traj = [], []
-        self.fig, self.axes = plt.subplots(1,1)
+        self.x_traj, self.y_traj, self.u_traj, self.cbc_traj = [], [], [], []
+        self.fig = plt.figure(figsize=(6, 10))
+        self.axes = self._subplots()
         self.info = dict()
         self._cbc_value_grid_cache = None
         self.compute_contour_every_n_steps = compute_contour_every_n_steps
+
+
+    def _subplots(self):
+        return self.fig.subplots(3,1, gridspec_kw=dict(
+            height_ratios=[0.6, 0.2, 0.2]))
 
     def add_info(self, t, key, value):
         self.info.setdefault(t, dict())[key] = value
@@ -965,10 +973,10 @@ class Visualizer:
     @staticmethod
     def _plot_static(ax, state_goal, state_start, cbfs):
         scale = (state_goal[:2] - state_start[:2]).norm() / 10.
-        x_start, y_start, theta_start = state_start
-        ax.arrow(x_start, y_start, torch.cos(theta_start) * scale,
-                    torch.sin(theta_start)*scale, color='c', width=0.1*scale,
-                 label='Start')
+        # x_start, y_start, theta_start = state_start
+        # ax.arrow(x_start, y_start, torch.cos(theta_start) * scale,
+        #             torch.sin(theta_start)*scale, color='c', width=0.1*scale,
+        #          label='Start')
         x_goal, y_goal, theta_goal = state_goal
         ax.plot(x_goal, y_goal, 'g+', linewidth=0.4, label='Goal')
         ax.add_patch(Circle(np.array([x_goal, y_goal]),
@@ -999,7 +1007,7 @@ class Visualizer:
         return cbc_value_grid
 
     def _plot_cbf_contour(self, rho, cbcs, state, uopt, t, npts=15):
-        ax = self.axes
+        ax = self.axes[0]
         xmin, xmax = ax.get_xlim()
         xstep = (xmax - xmin) / (npts-1)
         ymin, ymax = ax.get_ylim()
@@ -1014,12 +1022,25 @@ class Visualizer:
         # cbar = ax.figure.colorbar(CS)
         # cbar.ax.set_ylabel('CBC value')
 
-    def setStateCtrl(self, state, u, t=None, **kw):
+    def _plot_ctrl(self, ax, u_traj):
+        #ax.set_yscale('log')
+        ax.plot(u_traj)
+        ax.set_ylabel(r'$|v|$')
+        ax.set_xlabel(r'timesteps')
+
+    def _plot_cbc(self, ax, cbc_traj):
+        ax.plot(cbc_traj)
+        ax.set_ylabel(r'CBC')
+        ax.set_xlabel(r'timesteps')
+
+
+    def setStateCtrl(self, state, uopt, t=None, **kw):
         if t == 0:
             self.state_start = state.clone()
         self.fig.clf()
-        self.axes = self.fig.subplots(1, 1)
-        ax = self.axes
+        self.axes = self._subplots()
+        self._plot_ctrl(self.axes[1], [abs(float(uopt[0])) for uopt in self.u_traj])
+        ax = self.axes[0]
         ax.set_aspect('equal')
         state_goal = self.planner.x_goal
         state_min = np.minimum(self.state_start[:2], state_goal[:2]).min()
@@ -1031,7 +1052,12 @@ class Visualizer:
         if 'cbcs' in self.info[t]:
             cbcs = self.info[t]['cbcs']
             rho = self.info[t]['rho']
-            self._plot_cbf_contour(rho, cbcs, state, to_numpy(u), t)
+            uopt_np = to_numpy(uopt)
+            self._plot_cbf_contour(rho, cbcs, state, uopt_np, t)
+            self._plot_cbc(self.axes[2], self.cbc_traj)
+            self.cbc_traj.append(
+                min([c @ uopt_np + d - rho * np.linalg.norm(A @ uopt_np  + b)
+                        for A, b, c, d in cbcs(state, t)]))
         self._plot_static(ax, self.planner.x_goal, self.state_start, self.cbfs)
         xy_plan_traj = [self.planner.plan(ti)[:2] for ti in range(0, t, 10)]
         if len(xy_plan_traj):
@@ -1040,7 +1066,8 @@ class Visualizer:
         x, y, theta = state
         self.x_traj.append(x)
         self.y_traj.append(y)
-        plot_vehicle(ax, x, y, theta, self.x_traj, self.y_traj,
+        self.u_traj.append(to_numpy(uopt))
+        plot_vehicle(ax, x, y, theta, uopt, self.x_traj, self.y_traj,
                      to_numpy(self.state_start), to_numpy(self.planner.x_goal))
 
         # Plot uncertainty ellipse
@@ -1052,7 +1079,6 @@ class Visualizer:
         if (scale > 1e-6).all():
             TBLOG.add_patch("vis/scale", np.linalg.norm(scale), t)
             draw_ellipse(ax, scale * 1e4, theta, pos)
-
 
         ax.figure.savefig('data/animation/frame%04d.png' % t)
         plt.pause(self.dt)
@@ -1101,6 +1127,8 @@ def visualize_tensorboard_logs(events_dir, ax = None, traj_marker='b--', label=N
     x_traj = np.array(list(zip(*grouped_by_tag['vis/x0']))[1])
     y_traj = np.array(list(zip(*grouped_by_tag['vis/x1']))[1])
     theta_traj = np.array(list(zip(*grouped_by_tag['vis/x2']))[1])
+    u0_traj = np.array(list(zip(*grouped_by_tag['vis/u0']))[1])
+    u1_traj = np.array(list(zip(*grouped_by_tag['vis/u1']))[1])
     x = x_traj[-1]
     y = y_traj[-1]
     theta = theta_traj[-1]
@@ -1112,7 +1140,8 @@ def visualize_tensorboard_logs(events_dir, ax = None, traj_marker='b--', label=N
         cbfs = obstacles_at_mid_from_start_and_goal(torch.from_numpy(state_start), torch.from_numpy(x_goal))
         Visualizer._plot_static(ax, torch.from_numpy(x_goal),
                                 torch.from_numpy(state_start), cbfs)
-    plot_vehicle(ax, x, y, theta, x_traj, y_traj,
+    uopt = torch.tensor([u0_traj[-1], u1_traj[-1]])
+    plot_vehicle(ax, x, y, theta, uopt, x_traj, y_traj,
                  state_start, x_goal, traj_marker=traj_marker, label=label)
     return ax
 
@@ -1192,7 +1221,7 @@ def move_to_pose(state_start, state_goal,
         count = count + 1
 
 
-def plot_vehicle(ax, x, y, theta, x_traj, y_traj, state_start, state_goal,
+def plot_vehicle(ax, x, y, theta, uopt, x_traj, y_traj, state_start, state_goal,
                  traj_marker='b--', **plot_kw): # pragma: no cover
     # Corners of triangular vehicle when pointing to the right (0 radians)
     scale = np.linalg.norm(state_goal[:2] - state_start[:2]) / 10.
@@ -1205,6 +1234,11 @@ def plot_vehicle(ax, x, y, theta, x_traj, y_traj, state_start, state_goal,
     ax.add_patch(Polygon(tri, fill=False, edgecolor='k'))
 
     ax.plot(x_traj, y_traj, traj_marker, **plot_kw)
+    ax.arrow(x, y,
+             torch.cos(uopt[1] + theta) * uopt[0] * scale,
+             torch.sin(uopt[1] + theta) * uopt[0] * scale,
+             color='c',
+             width=0.1*scale, label='Control')
 
     # for stopping simulation with the esc key.
     # self.fig.canvas.mpl_connect('key_release_event',
@@ -1409,7 +1443,8 @@ def track_trajectory_ackerman_clf_bayesian(x, x_g, dt = None,
         dynamics_model=true_dynamics_gen(),
         D=numSteps,
         controller=controller_class(
-            PiecewiseLinearPlanner(x, x_g, numSteps, dt),
+            PiecewiseLinearPlanner(x, x_g, numSteps, dt,
+                                   frac_time_to_reach_goal=0.95),
             coordinate_converter = lambda x, x_g: x,
             dynamics = LearnedShiftInvariantDynamics(
                 dt = dt,
@@ -1560,13 +1595,13 @@ unicycle_force_around_obstacle = partial(
                       numSteps = 400,
                       cbfs = partial(
                           obstacles_at_mid_from_start_and_goal,
-                          term_weights=[1.0, 0.0]),
+                          term_weights=[0.8, 0.2]),
                       cbf_gammas = [5., 5.],
                       controller_class=ControllerCLFBayesian, # or ControllerCLF
                       visualizer_class=Visualizer, # or Logger
                       true_dynamics_gen=partial(AckermanDrive, L = 1.0),
                       mean_dynamics_gen=partial(AckermanDrive, L = 1.0,
-                                                kernel_scale=[1e-2, 1e-2, 1e-2]),
+                                                kernel_diag_A=[1e-2, 1e-2, 1e-2]),
                       enable_learning = False),
     exp_tags = ['around_obstacle'])
 
@@ -1576,7 +1611,7 @@ unicycle_force_around_obstacle_mult = partial(
     applyall,
     map(partial(recpartial, unicycle_force_around_obstacle),
         expand_variations(
-            {'simulator.mean_dynamics_gen.kernel_scale':
+            {'simulator.mean_dynamics_gen.kernel_diag_A':
              kwvariations([[1e-2, 1e-2, 1e-2],
                            [5e-2, 5e-2, 5e-2]])})))
 

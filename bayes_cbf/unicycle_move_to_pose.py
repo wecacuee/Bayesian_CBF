@@ -14,6 +14,7 @@ from functools import partial
 from collections import namedtuple
 import inspect
 import sys
+import subprocess
 import os.path as osp
 import math
 import logging
@@ -47,6 +48,9 @@ else:
 
 
 from torch.utils.tensorboard import SummaryWriter
+from tensorboard.compat.proto.summary_pb2 import Summary
+from tensorboard.compat.proto.tensor_pb2 import TensorProto
+from tensorboard.compat.proto.tensor_shape_pb2 import TensorShapeProto
 from tensorboard.backend.event_processing import event_file_loader
 
 from bayes_cbf.gp_algebra import DeterministicGP, GaussianProcess
@@ -64,6 +68,13 @@ CartesianState = namedtuple('CartesianState', 'x y theta'.split())
 CartesianStateWithGoal = namedtuple('CartesianStateWithGoal',
                                     'state state_goal'.split())
 
+def make_tensor_summary(name, nparray):
+    tensor_pb = TensorProto(dtype='DT_FLOAT',
+                         float_val=nparray.reshape(-1).tolist(),
+                         tensor_shape=TensorShapeProto(
+                             dim=[TensorShapeProto.Dim(size=s)
+                                  for s in nparray.shape]))
+    return Summary(value=[Summary.Value(tag=name, tensor=tensor_pb)])
 
 def polar2cartesian(x: PolarState, state_goal : CartesianState) -> CartesianState:
     """
@@ -945,9 +956,19 @@ class ControllerPID:
         rho, alpha, beta = cartesian2polar(x, state_goal)
         return rho < 1e-3
 
+
 def add_scalars(tag, var_dict, t):
     for k, v in var_dict.items():
         TBLOG.add_scalar("/".join((tag, k)), v, t)
+
+
+def add_tensors(tag, var_dict, t):
+    for k, v in var_dict.items():
+        TBLOG._get_file_writer().add_summary(
+            make_tensor_summary("/".join((tag, k)),
+                                v),
+            t
+        )
 
 class Visualizer:
     def __init__(self, planner, dt, cbfs=[], compute_contour_every_n_steps=20):
@@ -959,7 +980,6 @@ class Visualizer:
         self.fig = plt.figure(figsize=(6, 10))
         self.axes = self._subplots()
         self.info = dict()
-        self._cbc_value_grid_cache = None
         self.compute_contour_every_n_steps = compute_contour_every_n_steps
 
 
@@ -1013,11 +1033,13 @@ class Visualizer:
         ymin, ymax = ax.get_ylim()
         ystep = (ymax - ymin) / (npts-1)
         grid = np.mgrid[ymin:ymax+xstep:ystep, xmin:xmax+xstep:xstep]
-        if t % self.compute_contour_every_n_steps == 0 or self._cbc_value_grid_cache is None:
-            self._cbc_value_grid_cache = self._compute_contour_grid(
+        ccens = self.compute_contour_every_n_steps
+        t_cache = t - (t % ccens)
+        if t % ccens == 0 and 'cbc_value_grid' not in self.info.get(t_cache, {}):
+            self.info[t]['cbc_value_grid'] = self._compute_contour_grid(
                 grid, rho, cbcs, state, uopt, t, npts)
 
-        CS = ax.contour(grid[0], grid[1], self._cbc_value_grid_cache)
+        CS = ax.contour(grid[0], grid[1], self.info[t_cache]['cbc_value_grid'])
         ax.clabel(CS, CS.levels, inline=True, fmt='%r', fontsize=8)
         # cbar = ax.figure.colorbar(CS)
         # cbar.ax.set_ylabel('CBC value')
@@ -1033,6 +1055,14 @@ class Visualizer:
         ax.set_ylabel(r'CBC')
         ax.set_xlabel(r'timesteps')
 
+    @staticmethod
+    def _get_bbox(state_start, state_goal):
+        state_min = np.minimum(state_start[:2], state_goal[:2]).min()
+        state_max = np.maximum(state_start[:2], state_goal[:2]).max()
+        state_dist = state_max - state_min
+        ymin = xmin = state_min - 0.1 * state_dist
+        ymax = xmax = state_max + 0.1 * state_dist
+        return [xmin, xmax, ymin, ymax]
 
     def setStateCtrl(self, state, uopt, t=None, **kw):
         if t == 0:
@@ -1042,11 +1072,10 @@ class Visualizer:
         self._plot_ctrl(self.axes[1], [abs(float(uopt[0])) for uopt in self.u_traj])
         ax = self.axes[0]
         ax.set_aspect('equal')
-        state_goal = self.planner.x_goal
-        state_min = np.minimum(self.state_start[:2], state_goal[:2]).min()
-        state_max = np.maximum(self.state_start[:2], state_goal[:2]).max()
-        ax.set_xlim(-0.5 + state_min, state_max + 0.5)
-        ax.set_ylim(-0.5 + state_min, state_max + 0.5)
+        xmin, xmax, ymin, ymax = self._get_bbox(to_numpy(self.state_start),
+                                                to_numpy(self.planner.x_goal))
+        ax.set_xlim(xmin, xmax)
+        ax.set_ylim(ymin, ymax)
 
         # Plot CBF contour
         if 'cbcs' in self.info[t]:
@@ -1071,52 +1100,122 @@ class Visualizer:
                      to_numpy(self.state_start), to_numpy(self.planner.x_goal))
 
         # Plot uncertainty ellipse
-        xtp1 = self.info[t]['xtp1']
-        xtp1_var = self.info[t]['xtp1_var']
-        pos = to_numpy(xtp1[:2])
-        pos_var = to_numpy(xtp1_var[:2, :2])
-        scale, theta = var_to_scale_theta(pos_var)
-        if (scale > 1e-6).all():
-            TBLOG.add_patch("vis/scale", np.linalg.norm(scale), t)
-            draw_ellipse(ax, scale * 1e4, theta, pos)
+        if 'xtp1' in self.info[t] and 'xtp1_var' in self.info[t]:
+            xtp1 = self.info[t]['xtp1']
+            xtp1_var = self.info[t]['xtp1_var']
+            pos = to_numpy(xtp1[:2])
+            pos_var = to_numpy(xtp1_var[:2, :2])
+            scale, theta = var_to_scale_theta(pos_var)
+            if (scale > 1e-6).all():
+                draw_ellipse(ax, scale * 1e4, theta, pos)
 
         ax.figure.savefig('data/animation/frame%04d.png' % t)
         plt.pause(self.dt)
 
 class Logger:
-    def __init__(self, planner, dt, cbfs=[]):
+    def __init__(self, planner, dt, cbfs=[], compute_contour_every_n_steps=20):
         self.planner = planner
         self.dt = dt
         self.state_start = None
         self.cbfs = cbfs
-        self.x_traj, self.y_traj = [], []
+        self.info = dict()
+        self.compute_contour_every_n_steps = compute_contour_every_n_steps
 
-    def setStateCtrl(self, state, u, t=None, **kw):
-        add_scalars("vis", dict(x0=state[0], x1=state[1], x2=state[2], u0=u[0], u1=u[1]), t)
-        x_plan, y_plan, theta_plan = self.planner.plan(t)
-        add_scalars("vis", dict(plan_x0=x_plan, plan_x1=y_plan, plan_x2=theta_plan), t)
+    def _log_cbf_contour(self, rho, cbcs, state, uopt, t, npts=15):
+        xmin, xmax, ymin, ymax = Visualizer._get_bbox()
+        xstep = (xmax - xmin) / (npts-1)
+        ystep = (ymax - ymin) / (npts-1)
+        grid = np.mgrid[ymin:ymax+xstep:ystep, xmin:xmax+xstep:xstep]
+        if t % self.compute_contour_every_n_steps == 0:
+            cbc_value_grid = Visualizer._compute_contour_grid(
+                grid, rho, cbcs, state, uopt, t, npts)
+            add_tensors("vis", dict(grid=grid,
+                                    cbc_value_grid=cbc_value_grid),
+                        t)
+
+    def add_info(self, t, key, value):
+        self.info.setdefault(t, dict())[key] = value
+
+    def setStateCtrl(self, state, uopt, t=None, **kw):
+        if t == 0:
+            self.state_start = state.clone()
+        plan_x = self.planner.plan(t)
+
+        add_tensors("vis", dict(state=to_numpy(state), uopt=to_numpy(uopt),
+                                plan_x=to_numpy(plan_x)),
+                    t)
+        if 'cbcs' in self.info[t]:
+            cbcs = self.info[t]['cbcs']
+            rho = self.info[t]['rho']
+            uopt_np = to_numpy(uopt)
+            self._log_cbf_contour(rho, cbcs, state, uopt_np, t)
+            add_tensors("vis",
+                        dict(cbc_value=min(
+                            [c @ uopt_np + d - rho * np.linalg.norm(A @ uopt_np  + b)
+                             for A, b, c, d in cbcs(state, t)])),
+                        t)
+            add_scalars("vis", dict(rho=rho), t)
+        for k, v in self.info[t].items():
+            if isinstance(v, torch.Tensor):
+                v = to_numpy(v)
+            if isinstance(v, np.ndarray):
+                add_tensors("vis", dict(k=v), t)
+
+    @classmethod
+    def _reconstruct_cbcs(cls, state, uopt, cache):
+        def cbcs(state, t):
+            m = uopt.shape[0]
+            A = np.zeros((0, m))
+            b = np.zeros((0,))
+            c = np.zeros((m,))
+            try:
+                d = cache['vis/cbc_value']
+            except KeyError:
+                print(cache)
+                raise
+            return [(A, b, c, d)]
+        return cbcs
+
+    @classmethod
+    def _make_info(cls, state, uopt, cache):
+        info = dict()
+        info['rho'] = cache['vis/rho']
+        if 'vis/cbc_value_grid' in cache:
+            info['cbc_value_grid'] = cache['vis/cbc_value_grid']
+        info['cbcs'] = cls._reconstruct_cbcs(state, uopt, cache)
+        return info
 
 
-class PlaybackVisualizer:
-    def __init__(self, planner, dt, cbfs=[]):
-        self.planner = planner
-        self.dt = dt
-        self.state_start = None
-        self.cbfs = cbfs
-        self.x_traj, self.y_traj = [], []
-        self.fig, self.axes = plt.subplots(1,1)
+    def load_visualizer(self, event_file):
+        cache = dict()
+        running_t = 0
+        for t, tag, value in stream_tensorboard_scalars(event_file):
+            if t > running_t:
+                state = torch.tensor(cache[running_t].pop('vis/state'))
+                uopt = torch.tensor(cache[running_t].pop('vis/uopt'))
+                info = self._make_info(state, uopt, cache[running_t])
+                del cache[running_t]
+                yield running_t, state, uopt, info
+            cache.setdefault(t, dict())[tag] = value
+            running_t = t
 
 
-def load_tensorboard_scalars(event_file):
+def stream_tensorboard_scalars(event_file):
     loader = event_file_loader.EventFileLoader(event_file)
-    groupby_tag = dict()
     for event in loader.Load():
         t = event.step
         if event.summary is not None and len(event.summary.value):
             val = event.summary.value[0]
             tag = val.tag
-            value = val.simple_value or val.tensor.float_val[0]
-            groupby_tag.setdefault(tag, []).append( (t, value))
+            value = val.simple_value or np.array(val.tensor.float_val).reshape(
+                                                 [d.size for d in val.tensor.tensor_shape.dim])
+            yield t, tag, value
+
+
+def load_tensorboard_scalars(event_file):
+    groupby_tag = dict()
+    for t, tag, value in stream_tensorboard_scalars(event_file):
+        groupby_tag.setdefault(tag, []).append( (t, value))
     return groupby_tag
 
 
@@ -1184,6 +1283,27 @@ def visualize_last_n_files(runs_dir="data/runs",
         ax.legend()
         ax.figure.savefig(osp.join(run_dir, 'vis.pdf'))
     plt.close(ax.figure.number)
+
+
+def playback_logfile(events_dir):
+    config_file = osp.join(events_dir, CONFIG_FILE_BASENAME)
+    config = json.load(open(config_file))
+    run_dir = osp.dirname(config_file)
+    state_start = torch.tensor(config['state_start'])
+    state_goal = torch.tensor(config['state_goal'])
+    numSteps = config['numSteps']
+    dt = config['dt']
+    planner = PiecewiseLinearPlanner(state_start, state_goal, numSteps, dt)
+    cbfs_gen = globals()[config['cbfs'].pop('__callable_name__')]
+    cbfs = cbfs_gen(state_start, state_goal, **config['cbfs'])
+    logger = Logger(planner, dt, cbfs)
+    visualizer = Visualizer(planner, dt, cbfs)
+    events_file = glob.glob(osp.join(events_dir, '*tfevents*'))[0]
+    for t, state, uopt, info in logger.load_visualizer(events_file):
+        for k, v in info.items():
+            visualizer.add_info(t, k, v)
+        visualizer.setStateCtrl(state, uopt, t)
+
 
 
 def move_to_pose(state_start, state_goal,
@@ -1465,6 +1585,11 @@ def track_trajectory_ackerman_clf_bayesian(x, x_g, dt = None,
         **kw)
 
 
+def gitdescribe(f):
+    return subprocess.run("git describe".split(),
+                          cwd=os.path.dirname(f) or '.',
+                          capture_output=True).stdout.decode('utf-8')
+
 ####################################################################
 # entry points: Possible main methods
 ####################################################################
@@ -1503,7 +1628,8 @@ def unicycle_demo(simulator = move_to_pose, exp_tags = []):
         TBLOG = SummaryWriter(directory_name)
         json.dump(dict(extract_keywords(simulator),
                         state_start=state_start,
-                        state_goal=state_goal),
+                        state_goal=state_goal,
+                        gitdescribe=gitdescribe(__file__)),
                 open(osp.join(directory_name , CONFIG_FILE_BASENAME), 'w'),
                 skipkeys=True, indent=True)
         simulator(torch.tensor(state_start), torch.tensor(state_goal))
@@ -1594,11 +1720,11 @@ unicycle_force_around_obstacle = partial(
                       dt = 0.01,
                       numSteps = 400,
                       cbfs = partial(
-                          obstacles_at_mid_from_start_and_goal,
-                          term_weights=[0.8, 0.2]),
+                          single_obstacle_at_mid_from_start_and_goal,
+                          term_weights=[0.5, 0.5]),
                       cbf_gammas = [5., 5.],
                       controller_class=ControllerCLFBayesian, # or ControllerCLF
-                      visualizer_class=Visualizer, # or Logger
+                      visualizer_class=Logger, # or Visualizer
                       true_dynamics_gen=partial(AckermanDrive, L = 1.0),
                       mean_dynamics_gen=partial(AckermanDrive, L = 1.0,
                                                 kernel_diag_A=[1e-2, 1e-2, 1e-2]),

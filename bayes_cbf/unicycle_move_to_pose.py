@@ -659,7 +659,9 @@ class ControllerCLF:
                  clf_gamma = 10,
                  clf_relax_weight = 10,
                  cbfs = [],
-                 cbf_gammas = []):
+                 cbf_gammas = [],
+                 max_risk=1e-2,
+                 visualizer = None):
         self.planner = planner
         self.u_dim = 2
         self.coordinate_converter = coordinate_converter
@@ -669,6 +671,8 @@ class ControllerCLF:
         self.clf_relax_weight = 10
         self.cbfs = cbfs
         self.cbf_gammas = cbf_gammas
+        self.max_risk = max_risk
+        self.visualizer = visualizer
 
     @property
     def model(self):
@@ -865,6 +869,7 @@ class ControllerCLFBayesian:
             yield self._cbc_terms(cbf, cbf_gamma, state, t)
 
     def _factor(self):
+        assert self.max_risk <= 0.5 and self.max_risk >= 0
         return math.sqrt(2)*erfinv(1-2*self.max_risk)
 
     def control(self, x_torch, t):
@@ -1078,7 +1083,7 @@ class Visualizer:
         ax.set_ylim(ymin, ymax)
 
         # Plot CBF contour
-        if 'cbcs' in self.info[t]:
+        if 'cbcs' in self.info.get(t, {}):
             cbcs = self.info[t]['cbcs']
             rho = self.info[t]['rho']
             uopt_np = to_numpy(uopt)
@@ -1098,9 +1103,11 @@ class Visualizer:
         self.u_traj.append(to_numpy(uopt))
         plot_vehicle(ax, x, y, theta, uopt, self.x_traj, self.y_traj,
                      to_numpy(self.state_start), to_numpy(self.planner.x_goal))
+        if any(cbf.cbf(state) < 0 for cbf in self.cbfs):
+            ax.text(x, y, "Crash", bbox=dict(facecolor='red', fill=True))
 
         # Plot uncertainty ellipse
-        if 'xtp1' in self.info[t] and 'xtp1_var' in self.info[t]:
+        if 'xtp1' in self.info.get(t, {}) and 'xtp1_var' in self.info.get(t, {}):
             xtp1 = self.info[t]['xtp1']
             xtp1_var = self.info[t]['xtp1_var']
             pos = to_numpy(xtp1[:2])
@@ -1144,7 +1151,7 @@ class Logger:
         add_tensors("vis", dict(state=to_numpy(state), uopt=to_numpy(uopt),
                                 plan_x=to_numpy(plan_x)),
                     t)
-        if 'cbcs' in self.info[t]:
+        if 'cbcs' in self.info.get(t, {}):
             cbcs = self.info[t]['cbcs']
             rho = self.info[t]['rho']
             uopt_np = to_numpy(uopt)
@@ -1741,6 +1748,25 @@ unicycle_force_around_obstacle_mult = partial(
              kwvariations([[1e-2, 1e-2, 1e-2],
                            [5e-2, 5e-2, 5e-2]])})))
 
+# Nov 20th
+# Make it collide without BayesCBF
+unicycle_mean_cbf_collides_obstacle = partial(
+    unicycle_demo,
+    simulator=partial(track_trajectory_ackerman_clf_bayesian,
+                      dt = 0.05,
+                      numSteps = 150,
+                      cbfs = partial(
+                          obstacles_at_mid_from_start_and_goal,
+                          term_weights=[0.7, 0.3]),
+                      cbf_gammas = [5., 5.],
+                      controller_class=partial(ControllerCLFBayesian,
+                                               max_risk=0.01), # or ControllerCLFBayesian
+                      visualizer_class=Visualizer, # or Logger
+                      true_dynamics_gen=partial(AckermanDrive, L = 8.0),
+                      mean_dynamics_gen=partial(AckermanDrive, L = 1.0,
+                                                kernel_diag_A=[1e-2, 1e-2, 1e-2]),
+                      enable_learning = False),
+    exp_tags = ['mean_cbf_collides'])
 
 if __name__ == '__main__':
     import doctest

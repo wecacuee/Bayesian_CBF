@@ -32,7 +32,7 @@ from bayes_cbf.controllers import (Controller, ControlCBFLearned,
                                    NamedAffineFunc, NamedFunc, ConstraintPlotter)
 from bayes_cbf.misc import (t_vstack, t_hstack, to_numpy, store_args,
                             DynamicsModel, ZeroDynamicsModel, variable_required_grad,
-                            epsilon, SumDynamicModels)
+                            epsilon)
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, RelDeg2Safety
 
 

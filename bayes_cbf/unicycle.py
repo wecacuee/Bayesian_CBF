@@ -143,7 +143,7 @@ def rotmat(θ):
 
 class RelDeg1CLF:
     def __init__(self, model, gamma=2.0, max_unstable_prop=0.01,
-                 diagP=[1., 15., 40.], planner=None):
+                 diagP=[1., 15.], planner=None):
         self._gamma = gamma
         self._model = model
         self._max_unsafe_prob = max_unstable_prop

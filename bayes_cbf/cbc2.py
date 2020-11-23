@@ -1,7 +1,7 @@
 from abc import ABC, abstractproperty, abstractmethod
 import math
 import torch
-from .gp_algebra import *
+from .gp_algebra import DeterministicGP, GradientGP
 from .misc import to_numpy, get_affine_terms, get_quadratic_terms
 
 def cbc2_quadratic_terms(cbc2, x, u):

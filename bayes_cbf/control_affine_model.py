@@ -45,28 +45,6 @@ class GaussianProcessFunc(namedtuple('GaussianProcessFunc', ["mean", "knl"])):
 
 
 
-class DifferentiableGaussianProcess(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, regressor, compute_cov, Utest, Xtest):
-        ctx.save_for_backward(regressor, return_cov, Utest, Xtest)
-        mean, cov = regressor.custom_predict(Xtest, Utest, compute_cov=compute_cov)
-        return mean, cov # 2 inputs to backward
-
-    @staticmethod
-    def backward(ctx, grad_mean, grad_cov):
-        assert not ctx.needs_input_grad[0]
-        assert not ctx.needs_input_grad[1]
-        assert not ctx.needs_input_grad[2]
-        regressor, compute_cov, Utest, Xtest = ctx.saved_tensors
-
-        grad_Xtest = None
-        if ctx.needs_input_grad[2]:
-            mean, cov = self.regressor.custom_predict( Xtest, Utest,
-                grad_gp=True, compute_cov=compute_cov)
-            grad_Xtest = grad_mean @ mean + grad_cov @ cov
-        return None, None, None, grad_Xtest # 4 inputs to foward
-
-
 class Namespace:
     """
     Makes a class as a namespace for static functions
@@ -900,3 +878,44 @@ class ControlAffineRegressor(DynamicsModel):
 
     def load(self, path='/tmp/saved.pickle'):
         self.load_state_dict(torch.load(path))
+
+class MatrixVariateGP(ControlAffineExactGP):
+    def fit(self, *args, max_cg_iterations=2000, **kwargs):
+        with warnings.catch_warnings(), \
+              gpsettings.max_cg_iterations(max_cg_iterations):
+            warnings.simplefilter("ignore")
+            return self._fit_with_warnings(*args, **kwargs)
+
+    def _fit_with_warnings(self, Xtrain_in, Utrain_in, XdotTrain_in,
+                           training_iter = 50, lr=0.1):
+        pass
+
+    def fu_func_gp(self, u):
+        pass
+
+class CorregionalizationGP(ControlAffineExactGP):
+    def fit(self, *args, max_cg_iterations=2000, **kwargs):
+        with warnings.catch_warnings(), \
+              gpsettings.max_cg_iterations(max_cg_iterations):
+            warnings.simplefilter("ignore")
+            return self._fit_with_warnings(*args, **kwargs)
+
+    def _fit_with_warnings(self, Xtrain_in, Utrain_in, XdotTrain_in,
+                           training_iter = 50, lr=0.1):
+        pass
+    def fu_func_gp(self, u):
+        pass
+
+
+class IndependentGP(ControlAffineExactGP):
+    def fit(self, *args, max_cg_iterations=2000, **kwargs):
+        with warnings.catch_warnings(), \
+              gpsettings.max_cg_iterations(max_cg_iterations):
+            warnings.simplefilter("ignore")
+            return self._fit_with_warnings(*args, **kwargs)
+
+    def _fit_with_warnings(self, Xtrain_in, Utrain_in, XdotTrain_in,
+                           training_iter = 50, lr=0.1):
+        pass
+    def fu_func_gp(self, u):
+        pass

@@ -17,7 +17,7 @@ from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, cbc2_safety_factor
 from bayes_cbf.gp_algebra import DeterministicGP
 from bayes_cbf.ilqr import ILQR
 from bayes_cbf.misc import (store_args, ZeroDynamicsModel, epsilon, t_jac,
-                            variable_required_grad, SumDynamicModels, clip,
+                            variable_required_grad, clip,
                             create_summary_writer, DynamicsModel)
 from bayes_cbf.optimizers import (optimizer_socp_cvxopt,
                                   InfeasibleProblemError, optimizer_socp_cvxpy,
@@ -286,6 +286,36 @@ class EpsilonGreedyController(ABC):
                 if (random.random() < eps)
                     else u0)
         return clip(uegreedy, min_, max_)
+
+
+class SumDynamicModels(DynamicsModel):
+    def __init__(self, *models):
+        assert len(models) >= 2
+        self.models = models
+
+    @property
+    def ctrl_size(self):
+        return self.models[0].ctrl_size
+
+    @property
+    def state_size(self):
+        return self.models[0].state_size
+
+    def f_func(self, x):
+        return sum(m.f_func(x) for m in self.models)
+
+    def g_func(self, x):
+        return sum(m.g_func(x) for m in self.models)
+
+    def fu_func_gp(self, u):
+        fu_func = lambda m, x: m.f_func(x) + m.g_func(x) @ u
+        return sum([
+            (m.fu_func_gp(u)
+             if hasattr(m, "fu_func_gp")
+             else
+             DeterministicGP(partial(fu_func, m), shape=(self.state_size,)))
+            for m in self.models],
+                   DeterministicGP(lambda x: 0, shape=(self.state_size,)))
 
 
 class MeanAdjustedModel(SumDynamicModels):

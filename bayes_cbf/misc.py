@@ -168,25 +168,6 @@ class BayesianDynamicsModel(DynamicsModel):
         return a GaussianProcessBase
         """
 
-class SumDynamicModels(DynamicsModel):
-    def __init__(self, *models):
-        assert len(models) >= 2
-        self.models = models
-
-    @property
-    def ctrl_size(self):
-        return self.models[0].ctrl_size
-
-    @property
-    def state_size(self):
-        return self.models[0].state_size
-
-    def f_func(self, x):
-        return sum(m.f_func(x) for m in self.models)
-
-    def g_func(self, x):
-        return sum(m.g_func(x) for m in self.models)
-
 class ZeroDynamicsModel(DynamicsModel):
     def __init__(self, m, n):
         self.m = m

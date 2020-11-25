@@ -915,16 +915,18 @@ class ControllerCLFBayesian:
                         dtype=x_torch.dtype)
         if self.visualizer is not None:
             fu_gp = self.dynamics.fu_func_gp(uopt)
-            self.visualizer.add_info(t, 'xtp1', fu_gp.mean(x_torch))
-            xtp1_sigma = cbc_A @ uvar.value + cbc_bfb
-            xtp1_var = torch_to(torch.from_numpy(
-                xtp1_sigma.reshape(-1, 1) @ xtp1_sigma.reshape(1, -1)),
+            self.visualizer.add_info(t, 'xtp1',
+                                     x_torch + fu_gp.mean(x_torch) * self.planner.dt)
+            self.visualizer.add_info(t, 'xtp1_var', fu_gp.knl(x_torch, x_torch))
+            cbc_sigma = cbc_A @ uvar.value + cbc_bfb
+            cbc_var = torch_to(torch.from_numpy(
+                cbc_sigma.reshape(-1, 1) @ cbc_sigma.reshape(1, -1)),
                                 device=x_torch.device,
                                 dtype=x_torch.dtype)
             self.visualizer.add_info(t, 'cbcs', self._cbcs)
             self.visualizer.add_info(t, 'rho', rho)
-            self.visualizer.add_info(t, 'xtp1_var', rho**2 * xtp1_var)
-            TBLOG.add_scalar("opt/var", torch.det(xtp1_var), t)
+            self.visualizer.add_info(t, 'cbc_var', rho**2 * cbc_var)
+            TBLOG.add_scalar("opt/cbc_var", torch.det(cbc_var), t)
         if hasattr(self.dynamics, 'train'):
             self.dynamics.train(x_torch, uopt)
         return uopt
@@ -975,22 +977,74 @@ def add_tensors(tag, var_dict, t):
             t
         )
 
+class VisualizerScalarPlotCtrl:
+    def __init__(self):
+        self.u_traj = []
+
+    def setStateCtrl(self, ax, info, state, uopt, t=None, **kw):
+        self.u_traj.append(to_numpy(uopt))
+        self._plot_ctrl(ax, [abs(float(uopt[0])) for uopt in self.u_traj])
+
+    def _plot_ctrl(self, ax, u_traj):
+        #ax.set_yscale('log')
+        ax.plot(u_traj)
+        ax.set_ylabel(r'$|v|$')
+        ax.set_xlabel(r'timesteps')
+
+class VisualizerScalarPlotCBC:
+    def __init__(self):
+        self.cbc_traj = []
+
+    def setStateCtrl(self, ax, info, state, uopt, t=None, **kw):
+        cbcs = info[t]['cbcs']
+        rho = info[t]['rho']
+        uopt_np = to_numpy(uopt)
+        self.cbc_traj.append(
+            min([c @ uopt_np + d - rho * np.linalg.norm(A @ uopt_np  + b)
+                        for A, b, c, d in cbcs(state, t)]))
+        self._plot_cbc(ax, self.cbc_traj)
+
+    def _plot_cbc(self, ax, cbc_traj):
+        ax.plot(cbc_traj)
+        ax.set_ylabel(r'CBC')
+        ax.set_xlabel(r'timesteps')
+
+class VisualizerScalarPlotDetKnl:
+    def __init__(self):
+        self.det_knl_traj = []
+
+    def setStateCtrl(self, ax, info, state, uopt, t=None, **kw):
+        xtp1_var = info[t]['xtp1_var']
+        self.det_knl_traj.append(to_numpy(torch.det(xtp1_var)))
+        self._plot_det_knl(ax, self.det_knl_traj)
+
+    def _plot_det_knl(self, ax, det_knl_traj):
+        ax.plot(det_knl_traj)
+        ax.set_ylabel(r'$|uB(x,x)u \otimes A*dt|$')
+        ax.set_xlabel(r'timesteps')
+        ax.set_yscale('log')
+
 class Visualizer:
-    def __init__(self, planner, dt, cbfs=[], compute_contour_every_n_steps=20):
+    SCALAR_PLOTS_GEN=dict(Ctrl=VisualizerScalarPlotCtrl,
+                          DetKnl=VisualizerScalarPlotDetKnl,
+                          CBC=VisualizerScalarPlotCBC)
+    def __init__(self, planner, dt, cbfs=[], compute_contour_every_n_steps=20,
+                 scalar_plots = ['Ctrl', 'CBC']):
         self.planner = planner
         self.dt = dt
         self.state_start = None
         self.cbfs = cbfs
-        self.x_traj, self.y_traj, self.u_traj, self.cbc_traj = [], [], [], []
+        self.x_traj, self.y_traj = [], []
         self.fig = plt.figure(figsize=(6, 10))
-        self.axes = self._subplots()
         self.info = dict()
         self.compute_contour_every_n_steps = compute_contour_every_n_steps
-
+        self.scalar_plots = [self.SCALAR_PLOTS_GEN[s]() for s in scalar_plots]
+        self.axes = self._subplots()
 
     def _subplots(self):
-        return self.fig.subplots(3,1, gridspec_kw=dict(
-            height_ratios=[0.6, 0.2, 0.2]))
+        h = 0.4 / len(self.scalar_plots)
+        return self.fig.subplots(1+len(self.scalar_plots),1, gridspec_kw=dict(
+            height_ratios=[0.6] + [h]*len(self.scalar_plots)))
 
     def add_info(self, t, key, value):
         self.info.setdefault(t, dict())[key] = value
@@ -1049,17 +1103,6 @@ class Visualizer:
         # cbar = ax.figure.colorbar(CS)
         # cbar.ax.set_ylabel('CBC value')
 
-    def _plot_ctrl(self, ax, u_traj):
-        #ax.set_yscale('log')
-        ax.plot(u_traj)
-        ax.set_ylabel(r'$|v|$')
-        ax.set_xlabel(r'timesteps')
-
-    def _plot_cbc(self, ax, cbc_traj):
-        ax.plot(cbc_traj)
-        ax.set_ylabel(r'CBC')
-        ax.set_xlabel(r'timesteps')
-
     @staticmethod
     def _get_bbox(state_start, state_goal):
         state_min = np.minimum(state_start[:2], state_goal[:2]).min()
@@ -1074,7 +1117,6 @@ class Visualizer:
             self.state_start = state.clone()
         self.fig.clf()
         self.axes = self._subplots()
-        self._plot_ctrl(self.axes[1], [abs(float(uopt[0])) for uopt in self.u_traj])
         ax = self.axes[0]
         ax.set_aspect('equal')
         xmin, xmax, ymin, ymax = self._get_bbox(to_numpy(self.state_start),
@@ -1088,10 +1130,6 @@ class Visualizer:
             rho = self.info[t]['rho']
             uopt_np = to_numpy(uopt)
             self._plot_cbf_contour(rho, cbcs, state, uopt_np, t)
-            self._plot_cbc(self.axes[2], self.cbc_traj)
-            self.cbc_traj.append(
-                min([c @ uopt_np + d - rho * np.linalg.norm(A @ uopt_np  + b)
-                        for A, b, c, d in cbcs(state, t)]))
         self._plot_static(ax, self.planner.x_goal, self.state_start, self.cbfs)
         xy_plan_traj = [self.planner.plan(ti)[:2] for ti in range(0, t, 10)]
         if len(xy_plan_traj):
@@ -1100,14 +1138,13 @@ class Visualizer:
         x, y, theta = state
         self.x_traj.append(x)
         self.y_traj.append(y)
-        self.u_traj.append(to_numpy(uopt))
         plot_vehicle(ax, x, y, theta, uopt, self.x_traj, self.y_traj,
                      to_numpy(self.state_start), to_numpy(self.planner.x_goal))
         if any(cbf.cbf(state) < 0 for cbf in self.cbfs):
             ax.text(x, y, "Crash", bbox=dict(facecolor='red', fill=True))
 
         # Plot uncertainty ellipse
-        if 'xtp1' in self.info.get(t, {}) and 'xtp1_var' in self.info.get(t, {}):
+        if False and 'xtp1' in self.info.get(t, {}) and 'xtp1_var' in self.info.get(t, {}):
             xtp1 = self.info[t]['xtp1']
             xtp1_var = self.info[t]['xtp1_var']
             pos = to_numpy(xtp1[:2])
@@ -1116,11 +1153,14 @@ class Visualizer:
             if (scale > 1e-6).all():
                 draw_ellipse(ax, scale * 1e4, theta, pos)
 
+        for ax, sp in zip(self.axes[1:], self.scalar_plots):
+            sp.setStateCtrl(ax, self.info, state, uopt, t=t, **kw)
         ax.figure.savefig('data/animation/frame%04d.png' % t)
         plt.pause(self.dt)
 
 class Logger:
-    def __init__(self, planner, dt, cbfs=[], compute_contour_every_n_steps=20):
+    def __init__(self, planner, dt, cbfs=[], compute_contour_every_n_steps=20,
+                 scalar_plots=['Ctrl', 'CBC']):
         self.planner = planner
         self.dt = dt
         self.state_start = None
@@ -1557,6 +1597,7 @@ def track_trajectory_ackerman_clf_bayesian(x, x_g, dt = None,
                                                                      L = 1.0),
                                            visualizer_class=Visualizer,
                                            controller_class=ControllerCLFBayesian,
+                                           train_every_n_steps = 20,
                                            **kw):
     """
     mean_dynamics is either ZeroDynamicsModel(m = 2, n = 3) or AckermanDrive(L = 10.0)
@@ -1576,7 +1617,8 @@ def track_trajectory_ackerman_clf_bayesian(x, x_g, dt = None,
             dynamics = LearnedShiftInvariantDynamics(
                 dt = dt,
                 mean_dynamics = mean_dynamics_gen(),
-                enable_learning = enable_learning
+                enable_learning = enable_learning,
+                train_every_n_steps = train_every_n_steps
             ),
             # dynamics = ZeroDynamicsBayesian(m = 2, n = 3),
             clf = CLFCartesian(
@@ -1750,6 +1792,7 @@ unicycle_force_around_obstacle_mult = partial(
 
 # Nov 20th
 # Make it collide without BayesCBF
+# Change max_risk in [0.01, 0.50]
 unicycle_mean_cbf_collides_obstacle = partial(
     unicycle_demo,
     simulator=partial(track_trajectory_ackerman_clf_bayesian,
@@ -1768,6 +1811,29 @@ unicycle_mean_cbf_collides_obstacle = partial(
                       enable_learning = False),
     exp_tags = ['mean_cbf_collides'])
 
+# Nov 21th
+# Learning makes it pass, otherwise it gets stuck
+# Change enable_learning in [True, False]
+unicycle_learning_helps_avoid_getting_stuck = partial(
+    unicycle_demo,
+    simulator=partial(track_trajectory_ackerman_clf_bayesian,
+                      dt = 0.01,
+                      numSteps = 200,
+                      cbfs = partial(
+                          obstacles_at_mid_from_start_and_goal,
+                          term_weights=[0.7, 0.3]),
+                      cbf_gammas = [5., 5.],
+                      controller_class=partial(ControllerCLFBayesian,
+                                               max_risk=0.01), # or ControllerCLFBayesian
+                      visualizer_class=partial(Visualizer, # or Logger
+                                               scalar_plots=['DetKnl', 'CBC']),
+                      true_dynamics_gen=partial(AckermanDrive, L = 1.0),
+                      mean_dynamics_gen=partial(AckermanDrive, L = 8.0,
+                                                kernel_diag_A=[1e-6, 1e-6, 1e-6]),
+                      train_every_n_steps = 200,
+                      enable_learning = True),
+    exp_tags = ['learning_helps_avoid_getting_stuck'])
+
 if __name__ == '__main__':
     import doctest
     doctest.testmod() # always run unittests first
@@ -1780,4 +1846,6 @@ if __name__ == '__main__':
     # unicycle_demo_track_trajectory_clf_bayesian()
     # unicycle_demo_track_trajectory_ackerman_clf_bayesian()
     # unicycle_demo_track_trajectory_ackerman_clf_bayesian_mult()
-    unicycle_force_around_obstacle()
+    # unicycle_force_around_obstacle()
+    unicycle_learning_helps_avoid_getting_stuck()
+

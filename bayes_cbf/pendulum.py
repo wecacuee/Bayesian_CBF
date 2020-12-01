@@ -347,22 +347,24 @@ def learn_dynamics(
     Xtrain_numpy = Xtrain.detach().cpu().numpy()
     plot_results(torch.arange(U.shape[0]), omega_vec=X[:, 0],
                  theta_vec=X[:, 1], u_vec=U[:, 0])
-    axs = plot_learned_2D_func(Xtrain_numpy, dgp.f_func,
-                               pend_env.f_func,
-                               axtitle="f(x)[{i}]")
-    plt_savefig_with_data(axs.flatten()[0].figure,
-                          'data/plots/f_orig_learned_vs_f_true.pdf')
+    #axs = plot_learned_2D_func(Xtrain_numpy, dgp.f_func,
+    #                           pend_env.f_func,
+    #                           axtitle="f(x)[{i}]")
+    #plt_savefig_with_data(axs.flatten()[0].figure,
+    #                      'data/plots/f_orig_learned_vs_f_true.pdf')
     axs = plot_learned_2D_func(Xtrain_numpy, dgp.f_func_mean,
                                pend_env.f_func,
                                axtitle="f(x)[{i}]")
     plt_savefig_with_data(axs.flatten()[0].figure,
-                          'data/plots/f_custom_learned_vs_f_true.pdf')
+                          'data/plots/f_learned_vs_f_true.pdf')
+    plt.show()
     axs = plot_learned_2D_func(Xtrain_numpy,
-                               dgp.g_func,
+                               dgp.g_func_mean,
                                pend_env.g_func,
                                axtitle="g(x)[{i}]")
     plt_savefig_with_data(axs.flatten()[0].figure,
                           'data/plots/g_learned_vs_g_true.pdf')
+    plt.show()
 
     # within train set
     dX_98 = dgp.fu_func_mean(U[98:99, :], X[98:99,:])

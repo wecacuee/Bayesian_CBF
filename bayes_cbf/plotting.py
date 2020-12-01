@@ -20,7 +20,9 @@ def plot_2D_f_func(f_func,
                    axtitle="f(x)[{i}]",
                    figtitle="Learned vs True",
                    xsample=torch.zeros(2,),
-                   contour_levels=None):
+                   contour_levels=None,
+                   ylabel=r"$\omega$",
+                   xlabel=r"$\theta$"):
     # Plot true f(x)
     theta_omega_grid = np.mgrid[theta_range, omega_range]
     _, N, M = theta_omega_grid.shape
@@ -41,9 +43,9 @@ def plot_2D_f_func(f_func,
                                levels=lvl)
         plt.colorbar(ctf0, ax=axs[i])
         contour_sets.append(ctf0)
-        axs[i].set_title(axtitle.format(i=i))
-        axs[i].set_ylabel(r"$\omega$")
-        axs[i].set_xlabel(r"$\theta$")
+        if axtitle: axs[i].set_title(axtitle.format(i=i))
+        if ylabel and i == 0: axs[i].set_ylabel(ylabel)
+        if xlabel: axs[i].set_xlabel(xlabel)
 
     fig = axs[0].figure
     fig.suptitle(figtitle)
@@ -102,13 +104,14 @@ def plot_learned_2D_func(Xtrain, learned_f_func, true_f_func,
                         (Xtrain[:, 1].max() - Xtrain[:, 1].min()) / 20)
     csets = plot_2D_f_func(learned_f_func, axes_gen=lambda _: axs[1, :],
                            theta_range=theta_range, omega_range=omega_range,
-                           axtitle="Learned " + axtitle,
+                           axtitle=None, #"Learned " + axtitle,
                            xsample=Xtrain[-1, :])
     csets = plot_2D_f_func(true_f_func, axes_gen=lambda _: axs[0, :],
                            theta_range=theta_range, omega_range=omega_range,
                            axtitle="True " + axtitle,
                            xsample=Xtrain[-1, :],
-                           contour_levels=[c.levels for c in csets])
+                           contour_levels=[c.levels for c in csets],
+                           xlabel=None)
     ax = axs[2,0]
     ax.plot(Xtrain[:, 0], Xtrain[:, 1], marker='*', linestyle='')
     ax.set_ylabel(r"$\omega$")
@@ -119,7 +122,7 @@ def plot_learned_2D_func(Xtrain, learned_f_func, true_f_func,
     fig.suptitle(figtitle)
     if hasattr(fig, "canvas") and hasattr(fig.canvas, "set_window_title"):
         fig.canvas.set_window_title(figtitle)
-    fig.subplots_adjust(wspace=0.3,hspace=0.8)
+    fig.subplots_adjust(wspace=0.4,hspace=0.4)
     return axs
 
 class LinePlotSerialization:

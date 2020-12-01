@@ -841,13 +841,16 @@ class ControlAffineRegressor(DynamicsModel):
         mean_gx = mean_gx.to(dtype=Xtest_in.dtype, device=Xtest_in.device)
         return mean_gx.transpose(-2, -1)
 
-    def _gu_func(self, Xtest_in, Utest_in, return_cov=False, Xtestp_in=None):
+    def _gu_func(self, Xtest_in, Utest_in=None, return_cov=False, Xtestp_in=None):
         Xtest = (Xtest_in.unsqueeze(0)
                  if Xtest_in.ndim == 1
                  else Xtest_in)
-        Utest = (Utest_in.unsqueeze(0)
-                 if Utest_in.ndim == 1
-                 else Utest_in)
+        if Utest_in is not None:
+            Utest = (Utest_in.unsqueeze(0)
+                    if Utest_in.ndim == 1
+                    else Utest_in)
+        else:
+            Utest = Xtest_in.new_ones(Xtest.shape[0], self.u_dim)
         mean_gu, var_gu = self.custom_predict(Xtest, Utest, UHfill=0,
                                               Xtestp_in=Xtestp_in,
                                               compute_cov=True)
@@ -855,6 +858,9 @@ class ControlAffineRegressor(DynamicsModel):
             mean_gu = mean_gu.squeeze(0)
             var_gu = var_gu.squeeze(0)
         return (mean_gu, var_gu * A) if return_cov else mean_gu
+
+    def g_func_mean(self, Xtest_in):
+        return self._gu_func(Xtest_in, return_cov=False)
 
     def _cbf_func(self, Xtest, grad_htest, return_cov=False):
         if return_cov:
@@ -880,58 +886,16 @@ class ControlAffineRegressor(DynamicsModel):
         self.load_state_dict(torch.load(path))
 
 
-def independent_marginalize(knl,
-                            Xtrain, Utrain,
-                            Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None,
-                            Utestp_in=None, UHfillp=1,
-                            compute_cov=True,
-                            grad_gp=False,
-                            grad_check=False,
-                            scalar_var_only=False):
-    pass
+class IndependentControlAffineGP:
+    def __init__(self, x_dim, u_dim):
+        self.x_dim = x_dim
+        self.u_dim = u_dim
 
-def corregional_marginalize(Knl,
-                            Xtrain, Utrain,
-                            Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None,
-                            Utestp_in=None, UHfillp=1,
-                            compute_cov=True,
-                            grad_gp=False,
-                            grad_check=False,
-                            scalar_var_only=False):
-    pass
+    def fit(self, Xtrain, Utrain, XdotTrain, training_iter):
+        pass
 
+    def f_func_mean(self, Xtest_in):
+        pass
 
-def matrix_variate_marginalize(A, B, knl,
-                            Xtrain, Utrain,
-                            Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None,
-                            Utestp_in=None, UHfillp=1,
-                            compute_cov=True,
-                            grad_gp=False,
-                            grad_check=False,
-                            scalar_var_only=False):
-    """
-    Matrix variate GP: Separate A and B
-
-        f(x; u) ~ 𝕄𝕍𝔾(mean(x)u, A, B k(x, x'))
-        vec(f)(x; u) ~ ℕ(μ(x)u, uᵀBu ⊗ A k(x, x'))
-
-        K⁻¹(XU,XU):= [k(xᵢ,xⱼ)uᵢᵀBuⱼ]ᵢⱼ
-        k* := [k(xᵢ, x*)uᵀᵢB]ᵢ
-
-
-        F*(x*) ∼ 𝕄𝕍𝔾(M₀(x) + (Ẋ - MU)(UBU + σ²I)⁻¹ UB,
-                       A,
-                       B₀(x, x') - BU (UBU + σ²I)⁻¹ UB )
-        F*(x*)u ~ 𝕄𝕍𝔾( {[k*ᵀ K⁻¹] ⊗ Iₙ}(Y-μ(x)u), A,
-                        uᵀ[k(x*,x*)B - k*ᵀK⁻¹k*]u)
-    Algorithm (Rasmussen and Williams 2006)
-        1. L := cholesky(K)
-        2. α := Lᵀ \ ( L \ Y )
-        3. μ := kb*ᵀ α
-        4. v := L \ kb*
-        5. k* := k(x*,x*) - vᵀv
-        6. log p(y|X) := -0.5 yᵀ α - ∑ log Lᵢᵢ - 0.5 n log(2π)
-    """
-
-    pass
-
+    def g_func_mean(self, Xtest_in):
+        pass

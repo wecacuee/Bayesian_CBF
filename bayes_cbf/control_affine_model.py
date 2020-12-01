@@ -879,43 +879,59 @@ class ControlAffineRegressor(DynamicsModel):
     def load(self, path='/tmp/saved.pickle'):
         self.load_state_dict(torch.load(path))
 
-class MatrixVariateGP(ControlAffineExactGP):
-    def fit(self, *args, max_cg_iterations=2000, **kwargs):
-        with warnings.catch_warnings(), \
-              gpsettings.max_cg_iterations(max_cg_iterations):
-            warnings.simplefilter("ignore")
-            return self._fit_with_warnings(*args, **kwargs)
 
-    def _fit_with_warnings(self, Xtrain_in, Utrain_in, XdotTrain_in,
-                           training_iter = 50, lr=0.1):
-        pass
+def independent_marginalize(knl,
+                            Xtrain, Utrain,
+                            Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None,
+                            Utestp_in=None, UHfillp=1,
+                            compute_cov=True,
+                            grad_gp=False,
+                            grad_check=False,
+                            scalar_var_only=False):
+    pass
 
-    def fu_func_gp(self, u):
-        pass
-
-class CorregionalizationGP(ControlAffineExactGP):
-    def fit(self, *args, max_cg_iterations=2000, **kwargs):
-        with warnings.catch_warnings(), \
-              gpsettings.max_cg_iterations(max_cg_iterations):
-            warnings.simplefilter("ignore")
-            return self._fit_with_warnings(*args, **kwargs)
-
-    def _fit_with_warnings(self, Xtrain_in, Utrain_in, XdotTrain_in,
-                           training_iter = 50, lr=0.1):
-        pass
-    def fu_func_gp(self, u):
-        pass
+def corregional_marginalize(Knl,
+                            Xtrain, Utrain,
+                            Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None,
+                            Utestp_in=None, UHfillp=1,
+                            compute_cov=True,
+                            grad_gp=False,
+                            grad_check=False,
+                            scalar_var_only=False):
+    pass
 
 
-class IndependentGP(ControlAffineExactGP):
-    def fit(self, *args, max_cg_iterations=2000, **kwargs):
-        with warnings.catch_warnings(), \
-              gpsettings.max_cg_iterations(max_cg_iterations):
-            warnings.simplefilter("ignore")
-            return self._fit_with_warnings(*args, **kwargs)
+def matrix_variate_marginalize(A, B, knl,
+                            Xtrain, Utrain,
+                            Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None,
+                            Utestp_in=None, UHfillp=1,
+                            compute_cov=True,
+                            grad_gp=False,
+                            grad_check=False,
+                            scalar_var_only=False):
+    """
+    Matrix variate GP: Separate A and B
 
-    def _fit_with_warnings(self, Xtrain_in, Utrain_in, XdotTrain_in,
-                           training_iter = 50, lr=0.1):
-        pass
-    def fu_func_gp(self, u):
-        pass
+        f(x; u) ~ 𝕄𝕍𝔾(mean(x)u, A, B k(x, x'))
+        vec(f)(x; u) ~ ℕ(μ(x)u, uᵀBu ⊗ A k(x, x'))
+
+        K⁻¹(XU,XU):= [k(xᵢ,xⱼ)uᵢᵀBuⱼ]ᵢⱼ
+        k* := [k(xᵢ, x*)uᵀᵢB]ᵢ
+
+
+        F*(x*) ∼ 𝕄𝕍𝔾(M₀(x) + (Ẋ - MU)(UBU + σ²I)⁻¹ UB,
+                       A,
+                       B₀(x, x') - BU (UBU + σ²I)⁻¹ UB )
+        F*(x*)u ~ 𝕄𝕍𝔾( {[k*ᵀ K⁻¹] ⊗ Iₙ}(Y-μ(x)u), A,
+                        uᵀ[k(x*,x*)B - k*ᵀK⁻¹k*]u)
+    Algorithm (Rasmussen and Williams 2006)
+        1. L := cholesky(K)
+        2. α := Lᵀ \ ( L \ Y )
+        3. μ := kb*ᵀ α
+        4. v := L \ kb*
+        5. k* := k(x*,x*) - vᵀv
+        6. log p(y|X) := -0.5 yᵀ α - ∑ log Lᵢᵢ - 0.5 n log(2π)
+    """
+
+    pass
+

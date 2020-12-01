@@ -19,7 +19,8 @@ def plot_2D_f_func(f_func,
                    omega_range = slice(-np.pi, np.pi,np.pi/20),
                    axtitle="f(x)[{i}]",
                    figtitle="Learned vs True",
-                   xsample=torch.zeros(2,)):
+                   xsample=torch.zeros(2,),
+                   contour_levels=None):
     # Plot true f(x)
     theta_omega_grid = np.mgrid[theta_range, omega_range]
     _, N, M = theta_omega_grid.shape
@@ -30,11 +31,16 @@ def plot_2D_f_func(f_func,
         theta_omega_grid.transpose(1, 2, 0).reshape(-1, 2)).to(torch.float32)
     FX = f_func(Xgrid).reshape(N, M, D)
     axs = axes_gen(FX)
-    for i in range(len(axs)):
+    if contour_levels is None:
+        contour_levels = [None]*len(axs)
+    contour_sets = []
+    for i, lvl in zip(range(len(axs)), contour_levels):
         axs[i].clear()
         ctf0 = axs[i].contourf(theta_omega_grid[0, ...], theta_omega_grid[1, ...],
-                               FX[:, :, i].detach().cpu().numpy())
+                               FX[:, :, i].detach().cpu().numpy(),
+                               levels=lvl)
         plt.colorbar(ctf0, ax=axs[i])
+        contour_sets.append(ctf0)
         axs[i].set_title(axtitle.format(i=i))
         axs[i].set_ylabel(r"$\omega$")
         axs[i].set_xlabel(r"$\theta$")
@@ -44,7 +50,7 @@ def plot_2D_f_func(f_func,
     if hasattr(fig, "canvas") and hasattr(fig.canvas, "set_window_title"):
         fig.canvas.set_window_title(figtitle)
     fig.subplots_adjust(wspace=0.31)
-    return axs
+    return contour_sets
 
 
 def plot_results(time_vec, omega_vec, theta_vec, u_vec,
@@ -94,14 +100,15 @@ def plot_learned_2D_func(Xtrain, learned_f_func, true_f_func,
                         (Xtrain[:, 0].max() - Xtrain[:, 0].min()) / 20)
     omega_range = slice(Xtrain[:, 1].min(), Xtrain[:, 1].max(),
                         (Xtrain[:, 1].max() - Xtrain[:, 1].min()) / 20)
-    plot_2D_f_func(true_f_func, axes_gen=lambda _: axs[0, :],
-                   theta_range=theta_range, omega_range=omega_range,
-                   axtitle="True " + axtitle,
-                   xsample=Xtrain[-1, :])
-    plot_2D_f_func(learned_f_func, axes_gen=lambda _: axs[1, :],
-                   theta_range=theta_range, omega_range=omega_range,
-                   axtitle="Learned " + axtitle,
-                   xsample=Xtrain[-1, :])
+    csets = plot_2D_f_func(learned_f_func, axes_gen=lambda _: axs[1, :],
+                           theta_range=theta_range, omega_range=omega_range,
+                           axtitle="Learned " + axtitle,
+                           xsample=Xtrain[-1, :])
+    csets = plot_2D_f_func(true_f_func, axes_gen=lambda _: axs[0, :],
+                           theta_range=theta_range, omega_range=omega_range,
+                           axtitle="True " + axtitle,
+                           xsample=Xtrain[-1, :],
+                           contour_levels=[c.levels for c in csets])
     ax = axs[2,0]
     ax.plot(Xtrain[:, 0], Xtrain[:, 1], marker='*', linestyle='')
     ax.set_ylabel(r"$\omega$")

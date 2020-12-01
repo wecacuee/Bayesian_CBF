@@ -43,7 +43,7 @@ class ControlTrivial(Controller):
                  true_model=None):
         pass
 
-    def control(self, xi, i=None):
+    def control(self, xi, t=None):
         mass, gravity, length = self.mass, self.gravity, self.length
         theta, w = xi
         u = mass * gravity * torch.sin(theta)
@@ -56,10 +56,10 @@ class ControlRandom(Controller):
     def __init__(self, **kwargs):
         self.control_trivial = ControlTrivial(**kwargs)
 
-    def control(self, xi, i=None):
+    def control(self, xi, t=None):
         return self.control_trivial.control(
-            xi, i=i
-        ) * torch.abs(torch.rand(1)) + torch.rand(1)
+            xi, t=t
+        ) * (torch.rand(1)*0.8+0.60)
 
 
 
@@ -121,7 +121,7 @@ def sampling_pendulum(dynamics_model, numSteps,
                       plot_every_n_steps=20,
                       axs=None,
                       visualizer=VisualizerZ(),
-                      plotfile='plots/pendulum_data_{t}.pdf'):
+                      plotfile='data/plots/pendulum_data_{t}.pdf'):
     assert controller is not None, 'Surprise !! Changed interface to make controller a required argument'
     m, g, l = (dynamics_model.mass, dynamics_model.gravity,
                dynamics_model.length)
@@ -219,7 +219,7 @@ def deg2rad(deg):
 
 class PendulumVisualizer(Visualizer):
     @store_args
-    def __init__(self, length, unsafe_c, unsafe_delta, plotfile='plots/visualizer/{t:04d}.png'):
+    def __init__(self, length, unsafe_c, unsafe_delta, plotfile='data/plots/visualizer/{t:04d}.png'):
         self.fig, self.axes = plt.subplots(1,1)
         self.fig.suptitle('Pendulum')
         self.count = 0
@@ -263,7 +263,7 @@ def run_pendulum_experiment(#parameters
         numSteps=10000,
         controller_class=ControlTrivial,
         pendulum_dynamics_class=PendulumDynamicsModel,
-        plotfile='plots/run_pendulum_experiment{suffix}.pdf',
+        plotfile='data/plots/run_pendulum_experiment{suffix}.pdf',
         dtype=torch.float32):
     torch.set_default_dtype(dtype)
     pendulum_model = pendulum_dynamics_class(m=1, n=2, mass=mass, gravity=gravity,
@@ -351,28 +351,28 @@ def learn_dynamics(
                                pend_env.f_func,
                                axtitle="f(x)[{i}]")
     plt_savefig_with_data(axs.flatten()[0].figure,
-                          'plots/f_orig_learned_vs_f_true.pdf')
+                          'data/plots/f_orig_learned_vs_f_true.pdf')
     axs = plot_learned_2D_func(Xtrain_numpy, dgp.f_func_mean,
                                pend_env.f_func,
                                axtitle="f(x)[{i}]")
     plt_savefig_with_data(axs.flatten()[0].figure,
-                          'plots/f_custom_learned_vs_f_true.pdf')
+                          'data/plots/f_custom_learned_vs_f_true.pdf')
     axs = plot_learned_2D_func(Xtrain_numpy,
                                dgp.g_func,
                                pend_env.g_func,
                                axtitle="g(x)[{i}]")
     plt_savefig_with_data(axs.flatten()[0].figure,
-                          'plots/g_learned_vs_g_true.pdf')
+                          'data/plots/g_learned_vs_g_true.pdf')
 
     # within train set
-    dX_98, _ = dgp.predict_flatten(X[98:99,:], U[98:99, :])
+    dX_98 = dgp.fu_func_mean(U[98:99, :], X[98:99,:])
     #dX_98 = FX_98[0, ...].T @ UH[98, :]
     #dXcov_98 = UH[98, :] @ FXcov_98 @ UH[98, :]
     if not torch.allclose(dX[98], dX_98, rtol=0.4, atol=0.1):
         print("Test failed: Train sample: expected:{}, got:{}, cov".format(dX[98], dX_98))
 
     # out of train set
-    dX_Np1, _ = dgp.predict_flatten(X[N+1:N+2,:], U[N+1:N+2,:])
+    dX_Np1 = dgp.fu_func_mean(U[N+1:N+2,:], X[N+1:N+2,:])
     #dX_Np1 = FXNp1[0, ...].T @ UH[N+1, :]
     if not torch.allclose(dX[N+1], dX_Np1, rtol=0.4, atol=0.1):
         print("Test failed: Test sample: expected:{}, got:{}, cov".format( dX[N+1], dX_Np1))
@@ -382,7 +382,7 @@ def learn_dynamics(
     def learned_cbc2(X):
         l_cbc2 = torch.zeros(X.shape[0], 2)
         for i in range(X.shape[0]):
-            cbc2 = cbc2_gp( learned_h_func.cbf, dgp, U[N+1, :])
+            cbc2 = cbc2_gp( learned_h_func.cbf, learned_h_func.grad_cbf, dgp, U[N+1, :], torch.tensor([1.0, 1.0]))
             l_cbc2[i, 0] = cbc2.mean(X[i, :])
         return l_cbc2
     #true_cbc2 = - true_h_func.A(X[N+1, :]) @ U[N+1,:] + true_h_func.b(X[N+1, :])
@@ -397,7 +397,7 @@ def learn_dynamics(
                                axtitle="cbc2[{i}]"
     )
     plt_savefig_with_data(axs.flatten()[0].figure,
-                          'plots/cbc_learned_vs_cbc_true.pdf')
+                          'data/plots/cbc_learned_vs_cbc_true.pdf')
     return dgp, dX, U
 
 
@@ -704,7 +704,7 @@ class ControlPendulumCBFLearned(ControlCBFLearned):
                  gamma_length_scale_prior=[np.pi/100, np.pi/100],
                  constraint_plotter_class=ConstraintPlotter,
                  true_model=None,
-                 plotfile='plots/ctrl_cbf_learned_{suffix}.pdf',
+                 plotfile='data/plots/ctrl_cbf_learned_{suffix}.pdf',
                  dtype=torch.get_default_dtype(),
                  use_ground_truth_model=False,
                  numSteps=1000,
@@ -740,7 +740,7 @@ class ControlPendulumCBFLearned(ControlCBFLearned):
         self.axes = [None, None]
 
     def debug_train(self, Xtrain, Utrain, XdotError):
-        XdotErrorGot_train_mean, _ = self.model.predict_flatten(Xtrain[:-1], Utrain[:-1])
+        XdotErrorGot_train_mean = self.model.fu_func_mean(Utrain[:-1], Xtrain[:-1])
         assert torch.allclose(XdotErrorGot_train_mean, XdotError, rtol=0.4, atol=0.1), """
             Train data check using original flatten predict """
         print("hat f(x; u)[0] ∈ [{}, {}]".format(XdotErrorGot_train_mean[:, 0].min(),
@@ -787,7 +787,7 @@ class ControlPendulumCBFLearned(ControlCBFLearned):
 
 run_pendulum_control_trival = partial(
     run_pendulum_experiment, controller_class=ControlTrivial,
-    plotfile='plots/run_pendulum_control_trival{suffix}.pdf')
+    plotfile='data/plots/run_pendulum_control_trival{suffix}.pdf')
 """
 Run pendulum with a trivial controller.
 """
@@ -795,7 +795,7 @@ Run pendulum with a trivial controller.
 
 run_pendulum_control_cbf_clf = partial(
     run_pendulum_experiment, controller_class=PendulumCBFCLFDirect,
-    plotfile='plots/run_pendulum_control_cbf_clf{suffix}.pdf',
+    plotfile='data/plots/run_pendulum_control_cbf_clf{suffix}.pdf',
     theta0=5*math.pi/12,
     tau=0.002,
     numSteps=15000)
@@ -817,7 +817,7 @@ class ControlCBFCLFGroundTruth(ControlPendulumCBFLearned):
 
 run_pendulum_control_online_learning = partial(
     run_pendulum_experiment,
-    plotfile='plots/run_pendulum_control_online_learning{suffix}.pdf',
+    plotfile='data/plots/run_pendulum_control_online_learning{suffix}.pdf',
     controller_class=ControlPendulumCBFLearned,
     numSteps=250,
     theta0=7*math.pi/12,
@@ -830,5 +830,5 @@ Run save pendulum control while learning the parameters online
 if __name__ == '__main__':
     #run_pendulum_control_trival()
     #run_pendulum_control_cbf_clf()
-    #learn_dynamics()
-    run_pendulum_control_online_learning()
+    learn_dynamics()
+    #run_pendulum_control_online_learning()

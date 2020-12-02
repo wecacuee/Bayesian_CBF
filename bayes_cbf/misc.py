@@ -5,16 +5,22 @@ from datetime import datetime
 import math
 from functools import wraps, partial
 from itertools import zip_longest
-from abc import ABC, abstractmethod
+from abc import ABC, abstractmethod, abstractproperty
 from contextlib import contextmanager
 import inspect
 import io
+import subprocess
+
 from PIL import Image
 import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
+from tensorboard.compat.proto.summary_pb2 import Summary
+from tensorboard.compat.proto.tensor_pb2 import TensorProto
+from tensorboard.compat.proto.tensor_shape_pb2 import TensorShapeProto
 
 import numpy as np
 import torch
+
 
 t_hstack = partial(torch.cat, dim=-1)
 """
@@ -294,3 +300,68 @@ def random_psd(m):
 def normalize_radians(theta):
     return (theta + math.pi) % (2*math.pi) - math.pi
 
+def make_tensor_summary(name, nparray):
+    tensor_pb = TensorProto(dtype='DT_FLOAT',
+                         float_val=nparray.reshape(-1).tolist(),
+                         tensor_shape=TensorShapeProto(
+                             dim=[TensorShapeProto.Dim(size=s)
+                                  for s in nparray.shape]))
+    return Summary(value=[Summary.Value(tag=name, tensor=tensor_pb)])
+
+
+def add_tensors(summary_writer, tag, var_dict, t):
+    for k, v in var_dict.items():
+        summary_writer._get_file_writer().add_summary(
+            make_tensor_summary("/".join((tag, k)),
+                                v),
+            t
+        )
+
+
+def gitdescribe(f):
+    return subprocess.run("git describe".split(),
+                          cwd=os.path.dirname(f) or '.',
+                          capture_output=True).stdout.decode('utf-8')
+
+def stream_tensorboard_scalars(event_file):
+    loader = event_file_loader.EventFileLoader(event_file)
+    for event in loader.Load():
+        t = event.step
+        if event.summary is not None and len(event.summary.value):
+            val = event.summary.value[0]
+            tag = val.tag
+            value = val.simple_value or np.array(val.tensor.float_val).reshape(
+                                                 [d.size for d in val.tensor.tensor_shape.dim])
+            yield t, tag, value
+
+
+def load_tensorboard_scalars(event_file):
+    groupby_tag = dict()
+    for t, tag, value in stream_tensorboard_scalars(event_file):
+        groupby_tag.setdefault(tag, []).append( (t, value))
+    return groupby_tag
+
+
+class Logger(ABC):
+    @abstractproperty
+    def experiment_logs_dir(self):
+        return "/tmp"
+
+    @abstractmethod
+    def add_scalars(self, tag, var_dict, t):
+        pass
+
+    @abstractmethod
+    def add_tensors(self, tag, var_dict, t):
+        pass
+
+class NoLogger(Logger):
+    @property
+    def experiment_logs_dir(self):
+        return "/tmp"
+
+    def add_scalars(self, tag, var_dict, t):
+        pass
+
+    def add_tensors(self, tag, var_dict, t):
+        pass

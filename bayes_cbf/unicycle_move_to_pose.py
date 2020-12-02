@@ -48,14 +48,13 @@ else:
 
 
 from torch.utils.tensorboard import SummaryWriter
-from tensorboard.compat.proto.summary_pb2 import Summary
-from tensorboard.compat.proto.tensor_pb2 import TensorProto
-from tensorboard.compat.proto.tensor_shape_pb2 import TensorShapeProto
 from tensorboard.backend.event_processing import event_file_loader
 
 from bayes_cbf.gp_algebra import DeterministicGP, GaussianProcess
 from bayes_cbf.control_affine_model import ControlAffineRegressor
-from bayes_cbf.misc import to_numpy, normalize_radians, ZeroDynamicsModel
+from bayes_cbf.misc import (to_numpy, normalize_radians, ZeroDynamicsModel,
+                            make_tensor_summary, add_tensors, gitdescribe,
+                            stream_tensorboard_scalars, load_tensorboard_scalars)
 from bayes_cbf.sampling import sample_generator_trajectory
 from bayes_cbf.planner import PiecewiseLinearPlanner, SplinePlanner
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, cbc2_safety_factor
@@ -67,14 +66,6 @@ PolarState = namedtuple('PolarState', 'rho alpha beta'.split())
 CartesianState = namedtuple('CartesianState', 'x y theta'.split())
 CartesianStateWithGoal = namedtuple('CartesianStateWithGoal',
                                     'state state_goal'.split())
-
-def make_tensor_summary(name, nparray):
-    tensor_pb = TensorProto(dtype='DT_FLOAT',
-                         float_val=nparray.reshape(-1).tolist(),
-                         tensor_shape=TensorShapeProto(
-                             dim=[TensorShapeProto.Dim(size=s)
-                                  for s in nparray.shape]))
-    return Summary(value=[Summary.Value(tag=name, tensor=tensor_pb)])
 
 def polar2cartesian(x: PolarState, state_goal : CartesianState) -> CartesianState:
     """
@@ -969,14 +960,6 @@ def add_scalars(tag, var_dict, t):
         TBLOG.add_scalar("/".join((tag, k)), v, t)
 
 
-def add_tensors(tag, var_dict, t):
-    for k, v in var_dict.items():
-        TBLOG._get_file_writer().add_summary(
-            make_tensor_summary("/".join((tag, k)),
-                                v),
-            t
-        )
-
 class VisualizerScalarPlotCtrl:
     def __init__(self):
         self.u_traj = []
@@ -1176,7 +1159,7 @@ class Logger:
         if t % self.compute_contour_every_n_steps == 0:
             cbc_value_grid = Visualizer._compute_contour_grid(
                 grid, rho, cbcs, state, uopt, t, npts)
-            add_tensors("vis", dict(grid=grid,
+            add_tensors(TBLOG, "vis", dict(grid=grid,
                                     cbc_value_grid=cbc_value_grid),
                         t)
 
@@ -1188,7 +1171,7 @@ class Logger:
             self.state_start = state.clone()
         plan_x = self.planner.plan(t)
 
-        add_tensors("vis", dict(state=to_numpy(state), uopt=to_numpy(uopt),
+        add_tensors(TBLOG, "vis", dict(state=to_numpy(state), uopt=to_numpy(uopt),
                                 plan_x=to_numpy(plan_x)),
                     t)
         if 'cbcs' in self.info.get(t, {}):
@@ -1196,7 +1179,7 @@ class Logger:
             rho = self.info[t]['rho']
             uopt_np = to_numpy(uopt)
             self._log_cbf_contour(rho, cbcs, state, uopt_np, t)
-            add_tensors("vis",
+            add_tensors(TBLOG, "vis",
                         dict(cbc_value=min(
                             [c @ uopt_np + d - rho * np.linalg.norm(A @ uopt_np  + b)
                              for A, b, c, d in cbcs(state, t)])),
@@ -1206,7 +1189,7 @@ class Logger:
             if isinstance(v, torch.Tensor):
                 v = to_numpy(v)
             if isinstance(v, np.ndarray):
-                add_tensors("vis", dict(k=v), t)
+                add_tensors(TBLOG, "vis", dict(k=v), t)
 
     @classmethod
     def _reconstruct_cbcs(cls, state, uopt, cache):
@@ -1245,25 +1228,6 @@ class Logger:
                 yield running_t, state, uopt, info
             cache.setdefault(t, dict())[tag] = value
             running_t = t
-
-
-def stream_tensorboard_scalars(event_file):
-    loader = event_file_loader.EventFileLoader(event_file)
-    for event in loader.Load():
-        t = event.step
-        if event.summary is not None and len(event.summary.value):
-            val = event.summary.value[0]
-            tag = val.tag
-            value = val.simple_value or np.array(val.tensor.float_val).reshape(
-                                                 [d.size for d in val.tensor.tensor_shape.dim])
-            yield t, tag, value
-
-
-def load_tensorboard_scalars(event_file):
-    groupby_tag = dict()
-    for t, tag, value in stream_tensorboard_scalars(event_file):
-        groupby_tag.setdefault(tag, []).append( (t, value))
-    return groupby_tag
 
 
 def visualize_tensorboard_logs(events_dir, ax = None, traj_marker='b--', label=None):
@@ -1632,12 +1596,6 @@ def track_trajectory_ackerman_clf_bayesian(x, x_g, dt = None,
         x0=x,
         dt=dt,
         **kw)
-
-
-def gitdescribe(f):
-    return subprocess.run("git describe".split(),
-                          cwd=os.path.dirname(f) or '.',
-                          capture_output=True).stdout.decode('utf-8')
 
 ####################################################################
 # entry points: Possible main methods

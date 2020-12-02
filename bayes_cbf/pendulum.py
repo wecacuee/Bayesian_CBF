@@ -15,12 +15,16 @@ import pickle
 import hashlib
 import math
 from abc import ABC, abstractmethod
+import os.path as osp
 
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from matplotlib import rc as mplibrc
 mplibrc('text', usetex=True)
+
+from torch.utils.tensorboard import SummaryWriter
+from tensorboard.backend.event_processing import event_file_loader
 
 from bayes_cbf.control_affine_model import ControlAffineRegressor, LOG as CALOG
 CALOG.setLevel(logging.WARNING)
@@ -32,7 +36,7 @@ from bayes_cbf.controllers import (Controller, ControlCBFLearned,
                                    NamedAffineFunc, NamedFunc, ConstraintPlotter)
 from bayes_cbf.misc import (t_vstack, t_hstack, to_numpy, store_args,
                             DynamicsModel, ZeroDynamicsModel, variable_required_grad,
-                            epsilon)
+                            epsilon, add_tensors, gitdescribe)
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, RelDeg2Safety
 
 
@@ -299,6 +303,28 @@ def run_pendulum_experiment(#parameters
         plt_savefig_with_data(plt.figure(i), plotfile.format(suffix=suffix))
     return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
 
+class Logger:
+    def __init__(self, exp_tags, runs_dir='data/runs'):
+        self.exp_tags = exp_tags
+        self.runs_dir = runs_dir
+        self.exp_dir = osp.join(runs_dir,
+                                '_'.join(exp_tags + [gitdescribe(__file__)]))
+        self.summary_writer = SummaryWriter(self.exp_dir)
+
+    @property
+    def experiment_logs_dir(self):
+        return self.exp_dir
+
+    def add_scalars(self, tag, var_dict, t):
+        if not osp.exists(self.exp_dir): osp.makedirs(self.exp_dir)
+        for k, v in var_dict.items():
+            self.summary_writer.add_scalar("/".join((tag, k)), v, t)
+
+    def add_tensors(self, tag, var_dict, t):
+        if not osp.exists(self.exp_dir): osp.makedirs(self.exp_dir)
+        for k, v in var_dict.items():
+            add_tensors(self.summary_writer, "/".join((tag, k)), v, t)
+
 
 def learn_dynamics(
         theta0=5*math.pi/6,
@@ -309,6 +335,7 @@ def learn_dynamics(
         length=1,
         max_train=200,
         numSteps=1000,
+        logger=Logger(exp_tags=['learn_dynamics'], runs_dir='data/runs'),
         pendulum_dynamics_class=PendulumDynamicsModel):
     #from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
     #from bayes_cbf.affine_kernel import AffineScaleKernel
@@ -328,6 +355,8 @@ def learn_dynamics(
         pend_env, D=numSteps, x0=torch.tensor([theta0,omega0]),
         dt=tau,
         controller=ControlRandom(mass=mass, gravity=gravity, length=length).control)
+    for t,  (dx, x, u) in enumerate(zip(dX, X, U)):
+        logger.add_scalars("traj", dict(dx=dx, x=x, u=u), t)
 
     UH = t_hstack((torch.ones((U.shape[0], 1), dtype=U.dtype), U))
 
@@ -351,20 +380,23 @@ def learn_dynamics(
     #                           pend_env.f_func,
     #                           axtitle="f(x)[{i}]")
     #plt_savefig_with_data(axs.flatten()[0].figure,
-    #                      'data/plots/f_orig_learned_vs_f_true.pdf')
+    #                      osp.join(logger.experiment_logs_dir,
+    #                      'f_orig_learned_vs_f_true.pdf')
     axs = plot_learned_2D_func(Xtrain_numpy, dgp.f_func_mean,
                                pend_env.f_func,
-                               axtitle="f(x)[{i}]")
+                               axtitle="f(x)[{i}]",
+                               logger=logger)
     plt_savefig_with_data(axs.flatten()[0].figure,
-                          'data/plots/f_learned_vs_f_true.pdf')
-    plt.show()
+                          osp.join(logger.experiment_logs_dir,
+                                   'f_learned_vs_f_true.pdf'))
     axs = plot_learned_2D_func(Xtrain_numpy,
                                dgp.g_func_mean,
                                pend_env.g_func,
-                               axtitle="g(x)[{i}]")
+                               axtitle="g(x)[{i}]",
+                               logger=logger)
     plt_savefig_with_data(axs.flatten()[0].figure,
-                          'data/plots/g_learned_vs_g_true.pdf')
-    plt.show()
+                          osp.join(logger.experiment_logs_dir,
+                                   'g_learned_vs_g_true.pdf'))
 
     # within train set
     dX_98 = dgp.fu_func_mean(U[98:99, :], X[98:99,:])

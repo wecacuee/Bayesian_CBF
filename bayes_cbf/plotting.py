@@ -9,9 +9,10 @@ from matplotlib.patches import Ellipse
 import matplotlib.transforms as transforms
 mplibrc('text', usetex=True)
 
+from bayes_cbf.misc import NoLogger
+
 def rad2deg(rad):
     return rad / np.pi * 180
-
 
 def plot_2D_f_func(f_func,
                    axes_gen = lambda FX: plt.subplots(1, FX.shape[-1])[1],
@@ -22,7 +23,8 @@ def plot_2D_f_func(f_func,
                    xsample=torch.zeros(2,),
                    contour_levels=None,
                    ylabel=r"$\omega$",
-                   xlabel=r"$\theta$"):
+                   xlabel=r"$\theta$",
+                   logger=NoLogger()):
     # Plot true f(x)
     theta_omega_grid = np.mgrid[theta_range, omega_range]
     _, N, M = theta_omega_grid.shape
@@ -32,6 +34,8 @@ def plot_2D_f_func(f_func,
     Xgrid[:, :2] = torch.from_numpy(
         theta_omega_grid.transpose(1, 2, 0).reshape(-1, 2)).to(torch.float32)
     FX = f_func(Xgrid).reshape(N, M, D)
+    logger.add_tensors("plot_2D_f_func", dict(theta_omega_grid=theta_omega_grid,
+                                              FX=FX), 0)
     axs = axes_gen(FX)
     if contour_levels is None:
         contour_levels = [None]*len(axs)
@@ -91,7 +95,8 @@ def plot_results(time_vec, omega_vec, theta_vec, u_vec,
 
 def plot_learned_2D_func(Xtrain, learned_f_func, true_f_func,
                          axtitle="f(x)[{i}]", figtitle="learned vs true",
-                         axs=None):
+                         axs=None,
+                         logger=NoLogger()):
     if axs is None:
         fig, axs = plt.subplots(3,2)
     else:
@@ -104,21 +109,23 @@ def plot_learned_2D_func(Xtrain, learned_f_func, true_f_func,
                         (Xtrain[:, 1].max() - Xtrain[:, 1].min()) / 20)
     csets = plot_2D_f_func(learned_f_func, axes_gen=lambda _: axs[1, :],
                            theta_range=theta_range, omega_range=omega_range,
-                           axtitle=None, #"Learned " + axtitle,
-                           xsample=Xtrain[-1, :])
+                           axtitle="Learned " + axtitle,
+                           xsample=Xtrain[-1, :],
+                           logger=logger)
     csets = plot_2D_f_func(true_f_func, axes_gen=lambda _: axs[0, :],
                            theta_range=theta_range, omega_range=omega_range,
                            axtitle="True " + axtitle,
                            xsample=Xtrain[-1, :],
                            contour_levels=[c.levels for c in csets],
-                           xlabel=None)
+                           xlabel=None,
+                           logger=logger)
     ax = axs[2,0]
     ax.plot(Xtrain[:, 0], Xtrain[:, 1], marker='*', linestyle='')
     ax.set_ylabel(r"$\omega$")
     ax.set_xlabel(r"$\theta$")
     ax.set_xlim(theta_range.start, theta_range.stop)
     ax.set_ylim(omega_range.start, omega_range.stop)
-    ax.set_title("Training data")
+    #ax.set_title("Training data")
     fig.suptitle(figtitle)
     if hasattr(fig, "canvas") and hasattr(fig.canvas, "set_window_title"):
         fig.canvas.set_window_title(figtitle)

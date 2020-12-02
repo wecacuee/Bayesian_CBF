@@ -1,4 +1,21 @@
 # Dec 02
 
+## 13:57
 Ran bayes_cbf.pendulum:learn_dynamics()
-Logs data/runs/learn_dynamics_v1.0.0-7-g718f8a5
+Logs data/runs/learn_dynamics_v1.0.0-7-g718f8a5/events.out.tfevents.1606945888.dwarf.25367.0
+
+Plots are okay, but need to plot from the logs.
+Also need to compare with other learning methods.
+
+## 14:07
+Saved logs were bad because fx and gx data were saved as same name; overridden.
+
+Re-ran bayes_cbf.pendulum:learn_dynamics()
+Too much spread
+Logs: data/runs/learn_dynamics_v1.0.1-1-g97c87d8/events.out.tfevents.1606946860.dwarf.27863.0
+
+Did not save Xtrain. Working around that.
+
+## 15:12
+
+Moved from plotting online to logging and then plotting.

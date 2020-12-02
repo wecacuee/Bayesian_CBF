@@ -22,7 +22,7 @@ from bayes_cbf.misc import (store_args, ZeroDynamicsModel, epsilon, t_jac,
 from bayes_cbf.optimizers import (optimizer_socp_cvxopt,
                                   InfeasibleProblemError, optimizer_socp_cvxpy,
                                   optimizer_qp_cvxpy)
-from bayes_cbf.plotting import (plot_results, plot_learned_2D_func,
+from bayes_cbf.plotting import (plot_results, plot_learned_2D_func_from_data,
                                 plt_savefig_with_data)
 from bayes_cbf.planner import Planner
 
@@ -356,24 +356,6 @@ class MeanAdjustedModel(SumDynamicModels):
 
         self.model.fit(*train_data, training_iter=100)
         self._has_been_trained_once = True
-
-        if False:
-            self.axes[0] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
-                                    self.model.f_func,
-                                    self.true_model.f_func,
-                                    axtitle="f(x)[{i}]",
-                                    axs=self.axes[0])
-            plt_savefig_with_data(
-                self.axes[0].flatten()[0].figure,
-                'plots/online_f_learned_vs_f_true_%d.pdf' % Xtrain.shape[0])
-            self.axes[1] = plot_learned_2D_func(Xtrain.detach().cpu().numpy(),
-                                    lambda x: self.model.g_func(x)[..., 0],
-                                    lambda x: self.true_model.g_func(x)[..., 0],
-                                    axtitle="g(x)[{i}]",
-                                    axs=self.axes[1])
-            plt_savefig_with_data(
-                self.axes[1].flatten()[0].figure,
-                'plots/online_g_learned_vs_g_true_%d.pdf' % Xtrain.shape[0])
 
 
     def train(self, xi, uopt):

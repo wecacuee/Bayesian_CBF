@@ -14,31 +14,14 @@ from bayes_cbf.misc import NoLogger
 def rad2deg(rad):
     return rad / np.pi * 180
 
-def plot_2D_f_func(f_func,
+def plot_2D_f_func(theta_omega_grid, FX,
                    axes_gen = lambda FX: plt.subplots(1, FX.shape[-1])[1],
-                   theta_range = slice(-np.pi, np.pi, np.pi/20),
-                   omega_range = slice(-np.pi, np.pi,np.pi/20),
                    axtitle="f(x)[{i}]",
                    figtitle="Learned vs True",
                    xsample=torch.zeros(2,),
                    contour_levels=None,
                    ylabel=r"$\omega$",
-                   xlabel=r"$\theta$",
-                   logger=NoLogger()):
-    # Plot true f(x)
-    theta_omega_grid = np.mgrid[theta_range, omega_range]
-    _, N, M = theta_omega_grid.shape
-    D = xsample.shape[-1]
-    Xgrid = torch.empty((N * M, D), dtype=torch.float32)
-    Xgrid[:, :] = torch.from_numpy(xsample)
-    Xgrid[:, :2] = torch.from_numpy(
-        theta_omega_grid.transpose(1, 2, 0).reshape(-1, 2)).to(torch.float32)
-    FX = f_func(Xgrid).reshape(N, M, D)
-    logger.add_tensors("/".join(["plot_2D_f_func",
-                                 figtitle,
-                                 axtitle.format(i=0)]),
-                       dict(theta_omega_grid=theta_omega_grid,
-                            FX=FX), 0)
+                   xlabel=r"$\theta$"):
     axs = axes_gen(FX)
     if contour_levels is None:
         contour_levels = [None]*len(axs)
@@ -46,7 +29,7 @@ def plot_2D_f_func(f_func,
     for i, lvl in zip(range(len(axs)), contour_levels):
         axs[i].clear()
         ctf0 = axs[i].contourf(theta_omega_grid[0, ...], theta_omega_grid[1, ...],
-                               FX[:, :, i].detach().cpu().numpy(),
+                               FX[:, :, i],
                                levels=lvl)
         plt.colorbar(ctf0, ax=axs[i])
         contour_sets.append(ctf0)
@@ -96,44 +79,30 @@ def plot_results(time_vec, omega_vec, theta_vec, u_vec,
     return axs
 
 
-def plot_learned_2D_func(Xtrain, learned_f_func, true_f_func,
-                         axtitle="f(x)[{i}]", figtitle="learned vs true",
-                         axs=None,
-                         logger=NoLogger()):
+def plot_learned_2D_func_from_data(theta_omega_grid, FX_learned, FX_true, Xtrain,
+                                   axtitle, figtitle, axs):
     if axs is None:
-        fig, axs = plt.subplots(3,2)
+        fig, axs = plt.subplots(2,2)
     else:
         fig = axs.flatten()[0].figure
-        fig.clf()
-        axs = fig.subplots(3,2)
-    theta_range = slice(Xtrain[:, 0].min(), Xtrain[:, 0].max(),
-                        (Xtrain[:, 0].max() - Xtrain[:, 0].min()) / 20)
-    omega_range = slice(Xtrain[:, 1].min(), Xtrain[:, 1].max(),
-                        (Xtrain[:, 1].max() - Xtrain[:, 1].min()) / 20)
-    csets = plot_2D_f_func(learned_f_func, axes_gen=lambda _: axs[1, :],
-                           theta_range=theta_range, omega_range=omega_range,
+    csets = plot_2D_f_func(theta_omega_grid, FX_learned,
+                           axes_gen=lambda _: axs[1, :],
                            axtitle="Learned " + axtitle,
-                           xsample=Xtrain[-1, :],
-                           logger=logger)
-    csets = plot_2D_f_func(true_f_func, axes_gen=lambda _: axs[0, :],
-                           theta_range=theta_range, omega_range=omega_range,
+                           xsample=Xtrain[-1, :])
+    csets = plot_2D_f_func(theta_omega_grid, FX_true,
+                           axes_gen=lambda _: axs[0, :],
                            axtitle="True " + axtitle,
                            xsample=Xtrain[-1, :],
                            contour_levels=[c.levels for c in csets],
-                           xlabel=None,
-                           logger=logger)
-    ax = axs[2,0]
-    ax.plot(Xtrain[:, 0], Xtrain[:, 1], marker='*', linestyle='')
-    ax.set_ylabel(r"$\omega$")
-    ax.set_xlabel(r"$\theta$")
-    ax.set_xlim(theta_range.start, theta_range.stop)
-    ax.set_ylim(omega_range.start, omega_range.stop)
-    #ax.set_title("Training data")
+                           xlabel=None)
+    for ax in axs[1, :]:
+        ax.plot(Xtrain[:, 0], Xtrain[:, 1], marker='+', linestyle='', color='r')
     fig.suptitle(figtitle)
     if hasattr(fig, "canvas") and hasattr(fig.canvas, "set_window_title"):
         fig.canvas.set_window_title(figtitle)
-    fig.subplots_adjust(wspace=0.4,hspace=0.4)
+    fig.subplots_adjust(wspace=0.2,hspace=0.2)
     return axs
+
 
 class LinePlotSerialization:
     @staticmethod

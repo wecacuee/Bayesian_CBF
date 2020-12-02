@@ -16,6 +16,7 @@ import os.path as osp
 from PIL import Image
 import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
+from tensorboard.backend.event_processing import event_file_loader
 from tensorboard.compat.proto.summary_pb2 import Summary
 from tensorboard.compat.proto.tensor_pb2 import TensorProto
 from tensorboard.compat.proto.tensor_shape_pb2 import TensorShapeProto

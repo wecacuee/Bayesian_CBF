@@ -16,6 +16,8 @@ import hashlib
 import math
 from abc import ABC, abstractmethod
 import os.path as osp
+import glob
+import os
 
 import numpy as np
 import torch
@@ -29,14 +31,15 @@ from tensorboard.backend.event_processing import event_file_loader
 from bayes_cbf.control_affine_model import ControlAffineRegressor, LOG as CALOG
 CALOG.setLevel(logging.WARNING)
 
-from bayes_cbf.plotting import plot_results, plot_learned_2D_func, plt_savefig_with_data
+from bayes_cbf.plotting import plot_results, plot_learned_2D_func_from_data, plt_savefig_with_data
 from bayes_cbf.sampling import (sample_generator_trajectory, controller_sine,
                                 Visualizer, VisualizerZ, uncertainity_vis_kwargs)
 from bayes_cbf.controllers import (Controller, ControlCBFLearned,
                                    NamedAffineFunc, NamedFunc, ConstraintPlotter)
 from bayes_cbf.misc import (t_vstack, t_hstack, to_numpy, store_args,
                             DynamicsModel, ZeroDynamicsModel, variable_required_grad,
-                            epsilon, add_tensors, gitdescribe, TBLogger)
+                            epsilon, add_tensors, gitdescribe, TBLogger,
+                            load_tensorboard_scalars)
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, RelDeg2Safety
 
 
@@ -303,7 +306,7 @@ def run_pendulum_experiment(#parameters
         plt_savefig_with_data(plt.figure(i), plotfile.format(suffix=suffix))
     return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
 
-def learn_dynamics(
+def learn_dynamics_exp(
         theta0=5*math.pi/6,
         omega0=-0.01,
         tau=0.01,
@@ -350,30 +353,18 @@ def learn_dynamics(
     #dgp.save()
 
     # Plot the pendulum trajectory
+    logger.add_tensors("train", dict(Xtrain=Xtrain, Utrain=Utrain), t)
     Xtrain_numpy = Xtrain.detach().cpu().numpy()
     plot_results(torch.arange(U.shape[0]), omega_vec=X[:, 0],
                  theta_vec=X[:, 1], u_vec=U[:, 0])
-    #axs = plot_learned_2D_func(Xtrain_numpy, dgp.f_func,
-    #                           pend_env.f_func,
-    #                           axtitle="f(x)[{i}]")
-    #plt_savefig_with_data(axs.flatten()[0].figure,
-    #                      osp.join(logger.experiment_logs_dir,
-    #                      'f_orig_learned_vs_f_true.pdf')
-    axs = plot_learned_2D_func(Xtrain_numpy, dgp.f_func_mean,
-                               pend_env.f_func,
-                               axtitle="f(x)[{i}]",
-                               logger=logger)
-    plt_savefig_with_data(axs.flatten()[0].figure,
-                          osp.join(logger.experiment_logs_dir,
-                                   'f_learned_vs_f_true.pdf'))
-    axs = plot_learned_2D_func(Xtrain_numpy,
-                               dgp.g_func_mean,
-                               pend_env.g_func,
-                               axtitle="g(x)[{i}]",
-                               logger=logger)
-    plt_savefig_with_data(axs.flatten()[0].figure,
-                          osp.join(logger.experiment_logs_dir,
-                                   'g_learned_vs_g_true.pdf'))
+    log_learned_2D_func(Xtrain_numpy, dgp.f_func_mean,
+                        pend_env.f_func,
+                        key="fx",
+                        logger=logger)
+    log_learned_2D_func(Xtrain_numpy, dgp.g_func_mean,
+                        pend_env.g_func,
+                        key="gx",
+                        logger=logger)
 
     # within train set
     dX_98 = dgp.fu_func_mean(U[98:99, :], X[98:99,:])
@@ -402,15 +393,86 @@ def learn_dynamics(
         for i in range(X.shape[0]):
             t_cbc2[i, 0] = - true_h_func.A(X[i, :]) @ U[N+1,:] + true_h_func.b(X[i, :])
         return t_cbc2
-    axs = plot_learned_2D_func(Xtrain_numpy,
-                               learned_cbc2,
-                               true_cbc2,
-                               axtitle="cbc2[{i}]"
-    )
-    plt_savefig_with_data(axs.flatten()[0].figure,
-                          'data/plots/cbc_learned_vs_cbc_true.pdf')
-    return dgp, dX, U
+    log_learned_2D_func(Xtrain_numpy,
+                        learned_cbc2,
+                        true_cbc2,
+                        key="cbc2",
+                        logger=logger)
+    return dgp, dX, U, logger
 
+def learn_dynamics(**kw):
+    dgp, dX, U, logger = learn_dynamics_exp(**kw)
+    events_file = max(
+        glob.glob(osp.join(logger.experiment_logs_dir, "*.tfevents*")),
+        key=lambda f: os.stat(f).st_mtime)
+    learn_dynamics_plot_from_log(events_file)
+
+def get_grid_from_Xtrain(Xtrain):
+    theta_range = slice(Xtrain[:, 0].min(), Xtrain[:, 0].max(),
+                        (Xtrain[:, 0].max() - Xtrain[:, 0].min()) / 20)
+    omega_range = slice(Xtrain[:, 1].min(), Xtrain[:, 1].max(),
+                        (Xtrain[:, 1].max() - Xtrain[:, 1].min()) / 20)
+
+    theta_omega_grid = np.mgrid[theta_range, omega_range]
+    return theta_omega_grid
+
+
+def evaluate_func_on_grid(theta_omega_grid, f_func, xsample):
+    # Plot true f(x)
+    _, N, M = theta_omega_grid.shape
+    D = xsample.shape[-1]
+    Xgrid = torch.empty((N * M, D), dtype=torch.float32)
+    Xgrid[:, :] = torch.from_numpy(xsample)
+    Xgrid[:, :2] = torch.from_numpy(
+        theta_omega_grid.transpose(1, 2, 0).reshape(-1, 2)).to(torch.float32)
+    FX = f_func(Xgrid).reshape(N, M, D)
+    return to_numpy(FX)
+
+
+def log_learned_2D_func(Xtrain, learned_f_func, true_f_func,
+                        key="fx",
+                        logger=None):
+    theta_omega_grid = get_grid_from_Xtrain(Xtrain)
+    FX_learned = evaluate_func_on_grid(theta_omega_grid, learned_f_func, Xtrain[-1, :])
+    FX_true = evaluate_func_on_grid(theta_omega_grid, true_f_func, Xtrain[-1, :])
+    logger.add_tensors("/".join(("plot_learned_2D_func", key)),
+                       dict(Xtrain=Xtrain), 0)
+    logger.add_tensors("/".join(("plot_learned_2D_func", key, "learned")),
+                       dict(theta_omega_grid=theta_omega_grid,
+                            FX=FX_learned), 0)
+    logger.add_tensors("/".join(("plot_learned_2D_func", key, "true")),
+                       dict(theta_omega_grid=theta_omega_grid,
+                            FX=FX_true), 0)
+
+
+def learn_dynamics_plot_from_log(
+        events_file='data/runs/learn_dynamics_v1.0.1-1-g97c87d8/events.out.tfevents.1606950847.dwarf.8901.0'):
+    """
+    """
+    logdata = load_tensorboard_scalars(events_file)
+    events_dir = osp.dirname(events_file)
+    fig, axs = plt.subplots(2, 4, sharex=True, sharey=True, squeeze=False, figsize=(16,  6))
+    theta_omega_grid = logdata['plot_learned_2D_func/fx/true/theta_omega_grid'][0][1]
+    FX_learned = logdata['plot_learned_2D_func/fx/learned/FX'][0][1]
+    FX_true = logdata['plot_learned_2D_func/fx/true/FX'][0][1]
+    Xtrain = logdata['plot_learned_2D_func/fx/Xtrain'][0][1]
+    plot_learned_2D_func_from_data(theta_omega_grid, FX_learned, FX_true, Xtrain,
+                                   axtitle='f(x)[{i}]', figtitle='Learned vs True',
+                                   axs=axs[:, :2])
+
+    GX_learned = logdata['plot_learned_2D_func/gx/learned/FX'][0][1]
+    GX_true = logdata['plot_learned_2D_func/gx/true/FX'][0][1]
+    plot_learned_2D_func_from_data(theta_omega_grid, GX_learned, GX_true, Xtrain,
+                                   axtitle='g(x)[{i}]', figtitle='Learned vs True',
+                                   axs=axs[:, 2:])
+    xmin = np.min(theta_omega_grid[0, ...])
+    xmax = np.max(theta_omega_grid[0, ...])
+    ymin = np.min(theta_omega_grid[1, ...])
+    ymax = np.max(theta_omega_grid[1, ...])
+    for ax in axs.flatten():
+        ax.set_xlim(xmin, xmax)
+        ax.set_ylim(ymin, ymax)
+    fig.savefig(osp.join(events_dir, 'learned_f_g_vs_true_f_g.pdf'))
 
 class EnergyCLF(NamedAffineFunc):
     @store_args

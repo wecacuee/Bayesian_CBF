@@ -36,7 +36,7 @@ from bayes_cbf.controllers import (Controller, ControlCBFLearned,
                                    NamedAffineFunc, NamedFunc, ConstraintPlotter)
 from bayes_cbf.misc import (t_vstack, t_hstack, to_numpy, store_args,
                             DynamicsModel, ZeroDynamicsModel, variable_required_grad,
-                            epsilon, add_tensors, gitdescribe)
+                            epsilon, add_tensors, gitdescribe, TBLogger)
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, RelDeg2Safety
 
 
@@ -303,29 +303,6 @@ def run_pendulum_experiment(#parameters
         plt_savefig_with_data(plt.figure(i), plotfile.format(suffix=suffix))
     return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
 
-class Logger:
-    def __init__(self, exp_tags, runs_dir='data/runs'):
-        self.exp_tags = exp_tags
-        self.runs_dir = runs_dir
-        self.exp_dir = osp.join(runs_dir,
-                                '_'.join(exp_tags + [gitdescribe(__file__)]))
-        self.summary_writer = SummaryWriter(self.exp_dir)
-
-    @property
-    def experiment_logs_dir(self):
-        return self.exp_dir
-
-    def add_scalars(self, tag, var_dict, t):
-        if not osp.exists(self.exp_dir): osp.makedirs(self.exp_dir)
-        for k, v in var_dict.items():
-            self.summary_writer.add_scalar("/".join((tag, k)), v, t)
-
-    def add_tensors(self, tag, var_dict, t):
-        if not osp.exists(self.exp_dir): osp.makedirs(self.exp_dir)
-        for k, v in var_dict.items():
-            add_tensors(self.summary_writer, "/".join((tag, k)), v, t)
-
-
 def learn_dynamics(
         theta0=5*math.pi/6,
         omega0=-0.01,
@@ -335,7 +312,7 @@ def learn_dynamics(
         length=1,
         max_train=200,
         numSteps=1000,
-        logger=Logger(exp_tags=['learn_dynamics'], runs_dir='data/runs'),
+        logger=TBLogger(exp_tags=['learn_dynamics'], runs_dir='data/runs'),
         pendulum_dynamics_class=PendulumDynamicsModel):
     #from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
     #from bayes_cbf.affine_kernel import AffineScaleKernel
@@ -356,7 +333,7 @@ def learn_dynamics(
         dt=tau,
         controller=ControlRandom(mass=mass, gravity=gravity, length=length).control)
     for t,  (dx, x, u) in enumerate(zip(dX, X, U)):
-        logger.add_scalars("traj", dict(dx=dx, x=x, u=u), t)
+        logger.add_tensors("traj", dict(dx=dx, x=x, u=u), t)
 
     UH = t_hstack((torch.ones((U.shape[0], 1), dtype=U.dtype), U))
 

@@ -10,6 +10,8 @@ from contextlib import contextmanager
 import inspect
 import io
 import subprocess
+import os
+import os.path as osp
 
 from PIL import Image
 import matplotlib.pyplot as plt
@@ -321,7 +323,7 @@ def add_tensors(summary_writer, tag, var_dict, t):
 def gitdescribe(f):
     return subprocess.run("git describe".split(),
                           cwd=os.path.dirname(f) or '.',
-                          capture_output=True).stdout.decode('utf-8')
+                          capture_output=True).stdout.decode('utf-8').strip()
 
 def stream_tensorboard_scalars(event_file):
     loader = event_file_loader.EventFileLoader(event_file)
@@ -365,3 +367,25 @@ class NoLogger(Logger):
 
     def add_tensors(self, tag, var_dict, t):
         pass
+
+class TBLogger(Logger):
+    def __init__(self, exp_tags, runs_dir='data/runs'):
+        self.exp_tags = exp_tags
+        self.runs_dir = runs_dir
+        self.exp_dir = osp.join(runs_dir,
+                                '_'.join(exp_tags + [gitdescribe(__file__)]))
+        self.summary_writer = SummaryWriter(self.exp_dir)
+
+    @property
+    def experiment_logs_dir(self):
+        return self.exp_dir
+
+    def add_scalars(self, tag, var_dict, t):
+        if not osp.exists(self.exp_dir): osp.makedirs(self.exp_dir)
+        for k, v in var_dict.items():
+            self.summary_writer.add_scalar("/".join((tag, k)), v, t)
+
+    def add_tensors(self, tag, var_dict, t):
+        if not osp.exists(self.exp_dir): osp.makedirs(self.exp_dir)
+        add_tensors(self.summary_writer, tag, var_dict, t)
+

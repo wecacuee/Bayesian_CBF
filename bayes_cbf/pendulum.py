@@ -446,7 +446,7 @@ def log_learned_2D_func(Xtrain, learned_f_func, true_f_func,
 
 
 def learn_dynamics_plot_from_log(
-        events_file='data/runs/learn_dynamics_v1.0.1-1-g97c87d8/events.out.tfevents.1606950847.dwarf.8901.0'):
+        events_file='data/runs/learn_dynamics_v1.0.2/events.out.tfevents.1606951767.dwarf.13002.0'):
     """
     """
     logdata = load_tensorboard_scalars(events_file)

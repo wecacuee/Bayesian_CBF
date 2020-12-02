@@ -19,3 +19,8 @@ Did not save Xtrain. Working around that.
 ## 15:12
 
 Moved from plotting online to logging and then plotting.
+
+Successful log
+data/runs/learn_dynamics_v1.0.2/events.out.tfevents.1606951767.dwarf.13002.0
+
+

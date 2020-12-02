@@ -85,6 +85,10 @@ def plot_learned_2D_func_from_data(theta_omega_grid, FX_learned, FX_true, Xtrain
                                    ylabel=r'$\omega$'):
     if axs is None:
         fig, axs = plt.subplots(2,2)
+        fig.suptitle(figtitle)
+        if hasattr(fig, "canvas") and hasattr(fig.canvas, "set_window_title"):
+            fig.canvas.set_window_title(figtitle)
+        fig.subplots_adjust(wspace=0.2,hspace=0.2, left=0.05, right=0.95)
     else:
         fig = axs.flatten()[0].figure
     csets = plot_2D_f_func(theta_omega_grid, FX_learned,
@@ -102,10 +106,6 @@ def plot_learned_2D_func_from_data(theta_omega_grid, FX_learned, FX_true, Xtrain
                            ylabel=ylabel)
     for ax in axs[1, :]:
         ax.plot(Xtrain[:, 0], Xtrain[:, 1], marker='+', linestyle='', color='r')
-    fig.suptitle(figtitle)
-    if hasattr(fig, "canvas") and hasattr(fig.canvas, "set_window_title"):
-        fig.canvas.set_window_title(figtitle)
-    fig.subplots_adjust(wspace=0.2,hspace=0.2, left=0.05, right=0.95)
     return axs
 
 

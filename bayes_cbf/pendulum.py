@@ -18,6 +18,7 @@ from abc import ABC, abstractmethod
 import os.path as osp
 import glob
 import os
+import subprocess
 
 import numpy as np
 import torch
@@ -446,12 +447,13 @@ def log_learned_2D_func(Xtrain, learned_f_func, true_f_func,
 
 
 def learn_dynamics_plot_from_log(
-        events_file='data/runs/learn_dynamics_v1.0.2/events.out.tfevents.1606951767.dwarf.13002.0'):
+        events_file='saved-runs/learn_dynamics_v1.0.2/events.out.tfevents.1606951767.dwarf.13002.0'):
     """
     """
     logdata = load_tensorboard_scalars(events_file)
     events_dir = osp.dirname(events_file)
-    fig, axs = plt.subplots(2, 4, sharex=True, sharey=True, squeeze=False, figsize=(16,  6))
+    fig, axs = plt.subplots(2, 4, sharex=True, sharey=True, squeeze=False,
+                            figsize=(14, 4))
     theta_omega_grid = logdata['plot_learned_2D_func/fx/true/theta_omega_grid'][0][1]
     FX_learned = logdata['plot_learned_2D_func/fx/learned/FX'][0][1]
     FX_true = logdata['plot_learned_2D_func/fx/true/FX'][0][1]
@@ -464,7 +466,8 @@ def learn_dynamics_plot_from_log(
     GX_true = logdata['plot_learned_2D_func/gx/true/FX'][0][1]
     plot_learned_2D_func_from_data(theta_omega_grid, GX_learned, GX_true, Xtrain,
                                    axtitle='g(x)[{i}]', figtitle='Learned vs True',
-                                   axs=axs[:, 2:])
+                                   axs=axs[:, 2:],
+                                   ylabel=None)
     xmin = np.min(theta_omega_grid[0, ...])
     xmax = np.max(theta_omega_grid[0, ...])
     ymin = np.min(theta_omega_grid[1, ...])
@@ -472,7 +475,14 @@ def learn_dynamics_plot_from_log(
     for ax in axs.flatten():
         ax.set_xlim(xmin, xmax)
         ax.set_ylim(ymin, ymax)
-    fig.savefig(osp.join(events_dir, 'learned_f_g_vs_true_f_g.pdf'))
+    fig.suptitle(figtitle)
+    if hasattr(fig, "canvas") and hasattr(fig.canvas, "set_window_title"):
+        fig.canvas.set_window_title(figtitle)
+    fig.subplots_adjust(wspace=0.2,hspace=0.2, left=0.05, right=0.95)
+    plot_file = osp.join(events_dir, 'learned_f_g_vs_true_f_g.pdf')
+    fig.savefig(plot_file)
+    #subprocess.run(["xdg-open", plot_file])
+    return plot_file
 
 class EnergyCLF(NamedAffineFunc):
     @store_args

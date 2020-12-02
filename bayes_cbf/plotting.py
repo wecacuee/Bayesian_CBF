@@ -80,7 +80,9 @@ def plot_results(time_vec, omega_vec, theta_vec, u_vec,
 
 
 def plot_learned_2D_func_from_data(theta_omega_grid, FX_learned, FX_true, Xtrain,
-                                   axtitle, figtitle, axs):
+                                   axtitle, figtitle, axs,
+                                   xlabel=r'$\theta$',
+                                   ylabel=r'$\omega$'):
     if axs is None:
         fig, axs = plt.subplots(2,2)
     else:
@@ -88,19 +90,22 @@ def plot_learned_2D_func_from_data(theta_omega_grid, FX_learned, FX_true, Xtrain
     csets = plot_2D_f_func(theta_omega_grid, FX_learned,
                            axes_gen=lambda _: axs[1, :],
                            axtitle="Learned " + axtitle,
-                           xsample=Xtrain[-1, :])
+                           xsample=Xtrain[-1, :],
+                           xlabel=xlabel,
+                           ylabel=ylabel)
     csets = plot_2D_f_func(theta_omega_grid, FX_true,
                            axes_gen=lambda _: axs[0, :],
                            axtitle="True " + axtitle,
                            xsample=Xtrain[-1, :],
                            contour_levels=[c.levels for c in csets],
-                           xlabel=None)
+                           xlabel=None,
+                           ylabel=ylabel)
     for ax in axs[1, :]:
         ax.plot(Xtrain[:, 0], Xtrain[:, 1], marker='+', linestyle='', color='r')
     fig.suptitle(figtitle)
     if hasattr(fig, "canvas") and hasattr(fig.canvas, "set_window_title"):
         fig.canvas.set_window_title(figtitle)
-    fig.subplots_adjust(wspace=0.2,hspace=0.2)
+    fig.subplots_adjust(wspace=0.2,hspace=0.2, left=0.05, right=0.95)
     return axs
 
 

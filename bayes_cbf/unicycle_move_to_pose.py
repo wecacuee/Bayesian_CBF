@@ -48,7 +48,6 @@ else:
 
 
 from torch.utils.tensorboard import SummaryWriter
-from tensorboard.backend.event_processing import event_file_loader
 
 from bayes_cbf.gp_algebra import DeterministicGP, GaussianProcess
 from bayes_cbf.control_affine_model import ControlAffineRegressor

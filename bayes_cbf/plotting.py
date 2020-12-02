@@ -34,8 +34,11 @@ def plot_2D_f_func(f_func,
     Xgrid[:, :2] = torch.from_numpy(
         theta_omega_grid.transpose(1, 2, 0).reshape(-1, 2)).to(torch.float32)
     FX = f_func(Xgrid).reshape(N, M, D)
-    logger.add_tensors("plot_2D_f_func", dict(theta_omega_grid=theta_omega_grid,
-                                              FX=FX), 0)
+    logger.add_tensors("/".join(["plot_2D_f_func",
+                                 figtitle,
+                                 axtitle.format(i=0)]),
+                       dict(theta_omega_grid=theta_omega_grid,
+                            FX=FX), 0)
     axs = axes_gen(FX)
     if contour_levels is None:
         contour_levels = [None]*len(axs)

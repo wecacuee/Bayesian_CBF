@@ -324,7 +324,7 @@ def add_tensors(summary_writer, tag, var_dict, t):
 def gitdescribe(f):
     return subprocess.run("git describe".split(),
                           cwd=os.path.dirname(f) or '.',
-                          capture_output=True).stdout.decode('utf-8').strip()
+                          stdout=subprocess.PIPE).stdout.decode('utf-8').strip()
 
 def stream_tensorboard_scalars(event_file):
     loader = event_file_loader.EventFileLoader(event_file)

@@ -21,7 +21,7 @@ from bayes_cbf.gp_algebra import (DeterministicGP,)
 from bayes_cbf.cbc1 import RelDeg1Safety
 from bayes_cbf.car.vis import CarWithObstacles
 from bayes_cbf.sampling import sample_generator_trajectory, Visualizer
-from bayes_cbf.plotting import (plot_learned_2D_func, plot_results,
+from bayes_cbf.plotting import (plot_results,
                                 draw_ellipse, var_to_scale_theta)
 from bayes_cbf.control_affine_model import ControlAffineRegressor
 from bayes_cbf.controllers import (ControlCBFLearned, NamedAffineFunc,

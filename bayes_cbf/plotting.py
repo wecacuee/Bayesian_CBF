@@ -80,7 +80,7 @@ def plot_results(time_vec, omega_vec, theta_vec, u_vec,
 
 
 def plot_learned_2D_func_from_data(theta_omega_grid, FX_learned, FX_true, Xtrain,
-                                   axtitle, figtitle, axs,
+                                   axtitle='', figtitle='', axs=None,
                                    xlabel=r'$\theta$',
                                    ylabel=r'$\omega$'):
     if axs is None:
@@ -104,8 +104,15 @@ def plot_learned_2D_func_from_data(theta_omega_grid, FX_learned, FX_true, Xtrain
                            contour_levels=[c.levels for c in csets],
                            xlabel=None,
                            ylabel=ylabel)
+
+    xmin = np.min(theta_omega_grid[0, ...])
+    xmax = np.max(theta_omega_grid[0, ...])
+    ymin = np.min(theta_omega_grid[1, ...])
+    ymax = np.max(theta_omega_grid[1, ...])
     for ax in axs[1, :]:
         ax.plot(Xtrain[:, 0], Xtrain[:, 1], marker='+', linestyle='', color='r')
+        ax.set_xlim(xmin, xmax)
+        ax.set_ylim(ymin, ymax)
     return axs
 
 

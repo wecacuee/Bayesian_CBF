@@ -403,19 +403,6 @@ class ControlAffineRegressor(DynamicsModel):
         Let the training be handled by Gpytorch. After that i take things in my
         own hands and predict myself.
 
-        TODO: Write the function like this some day
-        Matrix variate GP: Separate A and B
-
-            f(x; u) ~ 𝕄𝕍ℙ(mean(x)u, A, B k(x, x'))
-            vec(f)(x; u) ~ ℕ(μ(x)u, uᵀBu ⊗ A k(x, x'))
-
-            K⁻¹(XU,XU):= [k(xᵢ,xⱼ)uᵢᵀBuⱼ]ᵢⱼ
-            k* := [k(xᵢ, x*)uᵀᵢB]ᵢ
-
-
-            F*(x*)u ~ 𝕄𝕍ℙ( {[k*ᵀ K⁻¹] ⊗ Iₙ}(Y-μ(x)u), A,
-                            uᵀ[k(x*,x*)B - k*ᵀK⁻¹k*]u)
-
         Vector variate GP (preffered):
             Kᶠ(u, u') = uᵀBu' ⊗ A = (uᵀBu)A = bᶠ(u, u') A
             ẋ = f(x;u)
@@ -886,16 +873,132 @@ class ControlAffineRegressor(DynamicsModel):
         self.load_state_dict(torch.load(path))
 
 
-class IndependentControlAffineGP:
-    def __init__(self, x_dim, u_dim):
-        self.x_dim = x_dim
-        self.u_dim = u_dim
+class ControlAffineRegressorExact(ControlAffineRegressor):
+    def custom_predict(self, Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None,
+                       Utestp_in=None, UHfillp=1,
+                       compute_cov=True):
+        Xtest = self._ensure_device_dtype(Xtest_in)
+        Xtestp = (self._ensure_device_dtype(Xtestp_in) if Xtestp_in is not None
+                  else Xtest)
+        meanFX, A, BkXX = self._custom_predict_matrix(Xtest_in, Xtestp_in,
+                                                     compute_cov=compute_cov)
+        if Utest_in is None:
+            UHtest = Xtest.new_zeros(Xtest.shape[0], self.model.matshape[0])
+            UHtest[:, 0] = 1
+        else:
+            Utest = self._ensure_device_dtype(Utest_in)
+            UHtest = torch.cat((Utest.new_full((Utest.shape[0], 1), UHfill),
+            Utest), dim=-1)
+        if Utestp_in is None:
+            UHtestp = UHtest
+        else:
+            Utestp = self._ensure_device_dtype(Utestp_in)
+            UHtestp = torch.cat((Utest.new_full((Utestp.shape[0], 1), UHfillp),
+                                 Utestp), dim=-1)
+        UHtest_BkXX = UHtest.unsqueeze(-1).unsqueeze(1) #  (k', 1, (1+m), 1)
+        UHtestp_BkXX = UHtestp.unsqueeze(-1).unsqueeze(0) #  (1, k', (1+m), 1)
+        meanFXU = meanFX.bmm(UHtest.unsqueeze(-1)).squeeze(-1)
+        if compute_cov:
+            varFXU = UHtest_BkXX.t().bmm(BkXX).bmm(UHtestp_BkXX) * A
+        else:
+            varFXU = Xtest.new_zeros(Xtest.shape[0], Xtestp.shape[0], *A.shape)
+        return (meanFXU, varFXU)
 
-    def fit(self, Xtrain, Utrain, XdotTrain, training_iter):
-        pass
+    def _custom_predict_matrix(self, Xtest_in, Xtestp_in=None, compute_cov=True):
+        """
 
-    def f_func_mean(self, Xtest_in):
-        pass
+        Matrix variate GP: Separate A and B
 
-    def g_func_mean(self, Xtest_in):
+            F(x) ~ 𝕄𝕍ℙ(𝐌(x), 𝐀, 𝐁 k(x, x'))
+
+            𝔅(XU, XU) = [𝐮ᵢᵀB𝐮ⱼ (k(xᵢ, xᵢ)+σ²)]ᵢⱼ
+            𝔅(XU, x*) = [𝐮ᵢᵀB (k(xᵢ, x*)+σ²)]ᵢ
+            𝐌(XU) = [𝐌(xᵢ)𝐮ᵢ]ᵢ
+
+            F*(x*) ~ 𝕄𝕍ℙ(
+                       𝐌(x*) + (Ẋ - 𝐌(XU))[𝔅(XU, XU)]⁻¹(𝔅(XU, x*)ᵀ),
+                        A,
+                       B k(x*, x*) - 𝔅(XU, x*)[𝔅(XU, XU)]⁻¹(𝔅(XU, x*)ᵀ)
+                     )
+
+        Algorithm (Rasmussen and Williams 2006)
+           1. L := cholesky(𝔅(XU, XU))
+           2. B† :=  ( (LLᵀ) \ 𝔅(XU, x*)ᵀ )
+           3. Y = (Ẋ - 𝐌(XU))
+           3. 𝐌ₖ(x*) := 𝐌(x*) +  Y @ B†
+           4. 𝐁ₖ(x*, x*) := B k(x*,x*) - 𝔅(XU, x*) @ B†
+           5. log p(y|X) := -0.5  Y @ ( (LLᵀ) \ Y )  - ∑ log Lᵢᵢ - 0.5 n log(2π)
+        """
+        Xtest = self._ensure_device_dtype(Xtest_in)
+        Xtestp = (self._ensure_device_dtype(Xtestp_in) if Xtestp_in is not None
+                  else Xtest)
+        k_xx = lambda x, xp: self.model.covar_module.data_covar_module(
+            x, xp).evaluate()
+        k_ss = k_xs = k_sx = k_xx
+        mean_s = self.model.mean_module
+        A = self.model.covar_module.task_covar_module.U.covar_matrix.evaluate()
+        B = self.model.covar_module.task_covar_module.V.covar_matrix.evaluate()
+        # Output of mean_s(Xtest) is (b, (1+m)n)
+        # Make it (b, (1+m), n, 1) then transpose
+        # (b, n, 1, (1+m)) and multiply with UHtest (b, (1+m)) to get
+        # (b, n, 1)
+        fX_mean_test = mean_s(Xtest).reshape(
+            Xtest.shape[0], *self.model.matshape).transpose(-2, -1) # (B, 1+m, n) -> (B, n, 1+m)
+        if self.model.train_inputs is None:
+            # 5. k* := k(x*,x*) B
+            return fX_mean_test, A, B * k_ss(Xtest, Xtestp).unsqueeze(-1).unsqueeze(-1)
+
+        MXUHtrain = self.model.train_inputs[0]
+        Mtrain, Xtrain, UHtrain = self.model.decoder.decode(MXUHtrain)
+        nsamples = Xtrain.size(0)
+
+        # Y₁ₖ = Ẋ₁ₖ - 𝐌₁ₖ𝔘₁ₖ
+        MXtrain = self.model.mean_module(Xtrain) # (k, (1+m)n)
+        Y = (
+            self.model.train_targets.reshape(nsamples, -1) # (k, n)
+            - (MXtrain.reshape(nsamples, *self.model.matshape) # (k, (1+m), n)
+               .transpose(-2,-1) # (k, n, (1+m))
+               .bmm(
+                   UHtrain.unsqueeze(-1) # (k, (1+m), 1)
+               ) # (k, n, 1)
+               .squeeze(-1)) # (k, n)
+        ) # (k, n)
+        # 1. L := cholesky(𝔅(XU, XU)) or LLᵀ = 𝔅(XU, XU)
+        # Kb_sqrt = L
+        Kb_sqrt = self._perturbed_cholesky(k_xx, B, Xtrain, UHtrain) # (k, k)
+
+        # kb_star = 𝔅(XU, x*)
+        # k_xs(Xtrain, Xtest) \in (k, b)
+        # UHtrain \in (k, (1+m))
+        # B \in (1+m, 1+m)
+        kb_star = k_sx(Xtest, Xtrain).unsqueeze(-1) *  (UHtrain @ B).unsqueeze(0) # (b, k, (1+m))
+        # 2. B†(x) := ( LLᵀ) \ (𝔅(XU, x))
+        Bdagger = torch.cholesky_solve(kb_star, Kb_sqrt) # (b, k, (1+m))
+        # 3. 𝐌ₖ := 𝐌₀(x) + Y₁ₖ B†(x)
+        mean_k = fX_mean_test + Y.t().bmm( Bdagger) # (b, n, (1+m))
+
+        if compute_cov:
+            # 4. v := 𝐁(x)𝔘 @ B†(x)
+            # Bₖ(x, x') = B₀(x, x') - 𝐁(x)𝔘 @ α
+            BkXX = (
+                k_ss(Xtest, Xtestp).unsqueeze(-1).unsqueeze(-1) * B # (b, b, (1+m), (1+m))
+                - kb_star.unsqueeze(1).t().bmm(Bdagger.unsqueeze(0)) # (b, b, (1+m), (1+m))
+                    )
+        else:
+            n = self.matshape[1]
+            BkXX = Xtest.new_zeros(Xtest.shape[0], Xtestp.shape[0], n, n)
+        # (b, n, (1+m)), (n, n), (b, b, (1+m), (1+m))
+        return mean_k, A, BkXX
+
+
+
+class IndependentControlAffineGP(ControlAffineRegressor):
+    def custom_predict(self, Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None,
+                       Utestp_in=None, UHfillp=1,
+                       compute_cov=True,
+                       grad_gp=False,
+                       grad_check=False,
+                       scalar_var_only=False):
+        """
+        """
         pass

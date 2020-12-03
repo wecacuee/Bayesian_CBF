@@ -9,9 +9,9 @@ import torch
 import pytest
 import gpytorch.settings as gpsettings
 
-from bayes_cbf.control_affine_model import ControlAffineRegressor
-from bayes_cbf.plotting import plot_2D_f_func, plot_results, plot_learned_2D_func
-from bayes_cbf.pendulum import PendulumDynamicsModel
+from bayes_cbf.control_affine_model import ControlAffineRegressor, ControlAffineRegressorExact
+from bayes_cbf.plotting import plot_2D_f_func, plot_results, plot_learned_2D_func_from_data
+from bayes_cbf.pendulum import PendulumDynamicsModel, plot_learned_2D_func
 from bayes_cbf.sampling import sample_generator_independent, sample_generator_trajectory
 from bayes_cbf.misc import torch_kron, variable_required_grad, to_numpy, DynamicsModel
 
@@ -121,8 +121,10 @@ def test_GP_train_predict(n=2, m=3,
 
     # Call the training routine
     dgp = ControlAffineRegressor(Xtrain.shape[-1], Utrain.shape[-1])
+    dgp_exact = ControlAffineRegressorExact(Xtrain.shape[-1], Utrain.shape[-1])
     # Test prior
     _ = dgp.predict(Xtest, return_cov=False)
+    _, _ = dgp_exact.custom_predict(Xtest, compute_cov=False)
     dgp._fit_with_warnings(Xtrain, Utrain, XdotTrain, training_iter=training_iter, lr=0.01)
     if X.shape[-1] == 2 and U.shape[-1] == 1:
         plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func,
@@ -157,6 +159,7 @@ def test_GP_train_predict(n=2, m=3,
 
     # check predicting train values
     XdotTrain_mean = dgp.fu_func_mean(Utrain[:-1], Xtrain[:-1])
+    XdotTrain_mean_exact = dgp_exact.fu_func_mean(Utrain[:-1], Xtrain[:-1])
     assert XdotTrain_mean.detach().cpu().numpy() == pytest.approx(
         XdotTrain[:-1].detach().cpu().numpy(), rel=rel_tol, abs=abs_tol), """
         Train data check using custom flatten predict """
@@ -255,6 +258,8 @@ test_gp_posterior_derivative = partial(test_GP_train_predict, grad_predict=True,
 Test gradient prediction
 """
 
+def test_exact_matrix_variate_gp():
+    pass
 
 if __name__ == '__main__':
     #test_GP_train_predict_detrministic()

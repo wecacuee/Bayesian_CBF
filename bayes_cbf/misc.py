@@ -322,7 +322,7 @@ def add_tensors(summary_writer, tag, var_dict, t):
 
 
 def gitdescribe(f):
-    return subprocess.run("git describe".split(),
+    return subprocess.run("git describe --always".split(),
                           cwd=os.path.dirname(f) or '.',
                           stdout=subprocess.PIPE).stdout.decode('utf-8').strip()
 

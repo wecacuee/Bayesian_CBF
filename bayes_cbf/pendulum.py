@@ -316,7 +316,8 @@ def learn_dynamics_exp(
         length=1,
         max_train=200,
         numSteps=1000,
-        logger=TBLogger(exp_tags=['learn_dynamics'], runs_dir='data/runs'),
+        logger_gen=partial(TBLogger,
+                           exp_tags=['learn_dynamics'], runs_dir='data/runs'),
         pendulum_dynamics_class=PendulumDynamicsModel):
     #from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
     #from bayes_cbf.affine_kernel import AffineScaleKernel
@@ -330,6 +331,7 @@ def learn_dynamics_exp(
     # xₜ₊₁ = F(xₜ)[1 u]
     # where F(xₜ) = [f(xₜ), g(xₜ)]
 
+    logger = logger_gen()
     pend_env = pendulum_dynamics_class(m=1, n=2, mass=mass, gravity=gravity,
                                        length=length)
     dX, X, U = sampling_pendulum_data(

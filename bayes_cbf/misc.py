@@ -374,7 +374,7 @@ class TBLogger(Logger):
         self.exp_tags = exp_tags
         self.runs_dir = runs_dir
         self.exp_dir = osp.join(runs_dir,
-                                '_'.join(exp_tags + [gitdescribe(__file__)]))
+                                '_'.join(exp_tags + [bayes_cbf.__version__]))
         self.summary_writer = SummaryWriter(self.exp_dir)
 
     @property

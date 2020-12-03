@@ -16,7 +16,10 @@ def rel2abs(relpath, basedir=osp.dirname(__file__) or '.'):
     return osp.join(basedir, relpath)
 
 
+from bayes_cbf import __version__
+
 setup(name="bayes_cbf",
+      version=__version__,
       packages=find_packages(),
       tests_require=['pytest', 'scipy'],
       cmdclass = {'test': Pytest},

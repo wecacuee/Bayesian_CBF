@@ -23,6 +23,7 @@ setup(name="bayes_cbf",
       packages=find_packages(),
       tests_require=['pytest', 'scipy'],
       cmdclass = {'test': Pytest},
+      description=open(rel2abs('README.md')).readlines(),
       install_requires=open(rel2abs('requirements.txt')).readlines(),
       python_requires=">=3.6",
       entry_points={

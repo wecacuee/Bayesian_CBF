@@ -987,7 +987,7 @@ def learn_dynamics_matrix_vector_independent_vis(
             independent=dict(axtitle='Independent GP'),
             vector=dict(axtitle='Coregionalization GP'),
             matrix=dict(axtitle='Matrix GP')),
-        events_file='data/runs/learn_matrix_vector_independent_v1.1.0/events.out.tfevents.1607379741.dwarf.5274.4'):
+        events_file='saved-runs/learn_matrix_vector_independent_v1.1.0/events.out.tfevents.1607382261.dwarf.5274.7'):
     logdata = load_tensorboard_scalars(events_file)
     events_dir = osp.dirname(events_file)
     fig, axs = plt.subplots(4, 4, sharex=True, sharey=True, squeeze=False,

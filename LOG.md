@@ -31,6 +31,11 @@ Copied to overleaf with script.
 
 1. Compute ControlAffineRegressor with a different kernel.
 
+# Dec 07
+
+## 11:45
+
+1. Decided not to further simplify Independent GPs
 
 
 

@@ -29,10 +29,14 @@ mplibrc('text', usetex=True)
 from torch.utils.tensorboard import SummaryWriter
 from tensorboard.backend.event_processing import event_file_loader
 
-from bayes_cbf.control_affine_model import ControlAffineRegressor, LOG as CALOG
+from bayes_cbf.control_affine_model import (ControlAffineRegressor, LOG as CALOG,
+                                            ControlAffineRegressorExact,
+                                            ControlAffineRegressorVector,
+                                            ControlAffineRegressorIndependent)
 CALOG.setLevel(logging.WARNING)
 
-from bayes_cbf.plotting import plot_results, plot_learned_2D_func_from_data, plt_savefig_with_data
+from bayes_cbf.plotting import (plot_results, plot_learned_2D_func_from_data,
+                                plt_savefig_with_data, plot_2D_f_func)
 from bayes_cbf.sampling import (sample_generator_trajectory, controller_sine,
                                 Visualizer, VisualizerZ, uncertainity_vis_kwargs)
 from bayes_cbf.controllers import (Controller, ControlCBFLearned,
@@ -307,40 +311,8 @@ def run_pendulum_experiment(#parameters
         plt_savefig_with_data(plt.figure(i), plotfile.format(suffix=suffix))
     return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
 
-def learn_dynamics_exp(
-        theta0=5*math.pi/6,
-        omega0=-0.01,
-        tau=0.01,
-        mass=1,
-        gravity=10,
-        length=1,
-        max_train=200,
-        numSteps=1000,
-        logger_gen=partial(TBLogger,
-                           exp_tags=['learn_dynamics'], runs_dir='data/runs'),
-        pendulum_dynamics_class=PendulumDynamicsModel):
-    #from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
-    #from bayes_cbf.affine_kernel import AffineScaleKernel
-    #from sklearn.gaussian_process import GaussiatorchrocessRegressor
-
-    # kernel_x = 1.0 * RBF(length_scale=torch.tensor([100.0, 100.0]),
-    #                      length_scale_bounds=(1e-2, 1e3)) \
-    #     + WhiteKernel(noise_level=1, noise_level_bounds=(1e-10, 1e+1))
-    # kernel_xu = AffineScaleKernel(kernel_x, 2)
-
-    # xₜ₊₁ = F(xₜ)[1 u]
-    # where F(xₜ) = [f(xₜ), g(xₜ)]
-
-    logger = logger_gen()
-    pend_env = pendulum_dynamics_class(m=1, n=2, mass=mass, gravity=gravity,
-                                       length=length)
-    dX, X, U = sampling_pendulum_data(
-        pend_env, D=numSteps, x0=torch.tensor([theta0,omega0]),
-        dt=tau,
-        controller=ControlRandom(mass=mass, gravity=gravity, length=length).control)
-    for t,  (dx, x, u) in enumerate(zip(dX, X, U)):
-        logger.add_tensors("traj", dict(dx=dx, x=x, u=u), t)
-
+def learn_dynamics_from_data(dX, X, U, pend_env, regressor_class, logger, max_train, tags=[]):
+    numSteps = X.shape[0]
     UH = t_hstack((torch.ones((U.shape[0], 1), dtype=U.dtype), U))
 
     # Do not need the full dataset . Take a small subset
@@ -351,22 +323,22 @@ def learn_dynamics_exp(
     Utrain = U[shuffled_range, :]
     #gp = GaussiatorchrocessRegressor(kernel=kernel_xu,
     #                              alpha=1e6).fit(Z_shuffled, Y_shuffled)
-    dgp = ControlAffineRegressor(Xtrain.shape[-1], Utrain.shape[-1])
+    dgp = regressor_class(Xtrain.shape[-1], Utrain.shape[-1])
     dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50)
     #dgp.save()
 
     # Plot the pendulum trajectory
-    logger.add_tensors("train", dict(Xtrain=Xtrain, Utrain=Utrain), t)
+    logger.add_tensors("train", dict(Xtrain=Xtrain, Utrain=Utrain), 0)
     Xtrain_numpy = Xtrain.detach().cpu().numpy()
     plot_results(torch.arange(U.shape[0]), omega_vec=X[:, 0],
                  theta_vec=X[:, 1], u_vec=U[:, 0])
     log_learned_2D_func(Xtrain_numpy, dgp.f_func_mean,
                         pend_env.f_func,
-                        key="fx",
+                        key="/".join(tags + ["fx"]),
                         logger=logger)
     log_learned_2D_func(Xtrain_numpy, dgp.g_func_mean,
                         pend_env.g_func,
-                        key="gx",
+                        key="/".join(tags + ["gx"]),
                         logger=logger)
 
     # within train set
@@ -381,6 +353,46 @@ def learn_dynamics_exp(
     #dX_Np1 = FXNp1[0, ...].T @ UH[N+1, :]
     if not torch.allclose(dX[N+1], dX_Np1, rtol=0.4, atol=0.1):
         print("Test failed: Test sample: expected:{}, got:{}, cov".format( dX[N+1], dX_Np1))
+
+    return dgp
+
+def learn_dynamics_exp(
+        theta0=5*math.pi/6,
+        omega0=-0.01,
+        tau=0.01,
+        mass=1,
+        gravity=10,
+        length=1,
+        max_train=200,
+        numSteps=1000,
+        regressor_class=ControlAffineRegressor,
+        logger_class=partial(TBLogger,
+                           exp_tags=['learn_dynamics'], runs_dir='data/runs'),
+        pendulum_dynamics_class=PendulumDynamicsModel):
+    #from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
+    #from bayes_cbf.affine_kernel import AffineScaleKernel
+    #from sklearn.gaussian_process import GaussiatorchrocessRegressor
+
+    # kernel_x = 1.0 * RBF(length_scale=torch.tensor([100.0, 100.0]),
+    #                      length_scale_bounds=(1e-2, 1e3)) \
+    #     + WhiteKernel(noise_level=1, noise_level_bounds=(1e-10, 1e+1))
+    # kernel_xu = AffineScaleKernel(kernel_x, 2)
+
+    # xₜ₊₁ = F(xₜ)[1 u]
+    # where F(xₜ) = [f(xₜ), g(xₜ)]
+
+    logger = logger_class()
+    pend_env = pendulum_dynamics_class(m=1, n=2, mass=mass, gravity=gravity,
+                                       length=length)
+    dX, X, U = sampling_pendulum_data(
+        pend_env, D=numSteps, x0=torch.tensor([theta0,omega0]),
+        dt=tau,
+        controller=ControlRandom(mass=mass, gravity=gravity, length=length).control)
+    for t,  (dx, x, u) in enumerate(zip(dX, X, U)):
+        logger.add_tensors("traj", dict(dx=dx, x=x, u=u), t)
+
+    dgp = learn_dynamics_from_data(dX, X, U, pend_env, regressor_class, logger,
+                                   max_train=max_train, tags=[])
 
     true_h_func = RadialCBFRelDegree2(pend_env)
     learned_h_func = RadialCBFRelDegree2(dgp)
@@ -926,8 +938,136 @@ run_pendulum_control_online_learning = partial(
 Run save pendulum control while learning the parameters online
 """
 
+def learn_dynamics_matrix_vector_independent_exp(
+        exps=dict(matrix=dict(regressor_class=ControlAffineRegressorExact),
+                  vector=dict(regressor_class=ControlAffineRegressorVector),
+                  independent=dict(regressor_class=ControlAffineRegressorIndependent)
+        ),
+        theta0=5*math.pi/6,
+        omega0=-0.01,
+        tau=0.01,
+        mass=1,
+        gravity=10,
+        length=1,
+        max_train=200,
+        numSteps=1000,
+        regressor_class=ControlAffineRegressor,
+        logger_class=partial(TBLogger,
+                             exp_tags=['learn_matrix_vector_independent'],
+                             runs_dir='data/runs'),
+        pendulum_dynamics_class=PendulumDynamicsModel
+):
+    logger = logger_class()
+    pend_env = pendulum_dynamics_class(m=1, n=2, mass=mass, gravity=gravity,
+                                       length=length)
+    dX, X, U = sampling_pendulum_data(
+        pend_env, D=numSteps, x0=torch.tensor([theta0,omega0]),
+        dt=tau,
+        controller=ControlRandom(mass=mass, gravity=gravity, length=length).control,
+        plot_every_n_steps=numSteps)
+    for t,  (dx, x, u) in enumerate(zip(dX, X, U)):
+        logger.add_tensors("traj", dict(dx=dx, x=x, u=u), t)
+
+    for name, kw in exps.items():
+        dgp = learn_dynamics_from_data(dX, X, U, pend_env,
+                                       regressor_class, logger,
+                                       max_train=max_train,
+                                       tags=[name])
+    events_file = max(
+        glob.glob(osp.join(logger.experiment_logs_dir, "*.tfevents*")),
+        key=lambda f: os.stat(f).st_mtime)
+    return events_file
+
+
+def learn_dynamics_matrix_vector_independent_vis(
+        xlabel=r'$\theta$',
+        ylabel=r'$\omega$',
+        figtitle='Comparing GP Learning methods',
+        exp_conf=dict(
+            independent=dict(axtitle='Independent GP'),
+            vector=dict(axtitle='Coregionalization GP'),
+            matrix=dict(axtitle='Matrix GP')),
+        events_file='data/runs/learn_matrix_vector_independent_v1.1.0/events.out.tfevents.1607379741.dwarf.5274.4'):
+    logdata = load_tensorboard_scalars(events_file)
+    events_dir = osp.dirname(events_file)
+    fig, axs = plt.subplots(4, 4, sharex=True, sharey=True, squeeze=False,
+                            figsize=(10, 7.0))
+    fig.subplots_adjust(wspace=0.2, hspace=0.4, left=0.07, right=0.95, bottom=0.07)
+    theta_omega_grid = logdata['plot_learned_2D_func/matrix/fx/true/theta_omega_grid'][0][1]
+    FX_true = logdata['plot_learned_2D_func/matrix/fx/true/FX'][0][1]
+    Xtrain = logdata['plot_learned_2D_func/matrix/fx/Xtrain'][0][1]
+
+    csets_fx = None
+    csets_gx = None
+    for e, exp in enumerate(exp_conf.keys()):
+        axtitle = exp_conf[exp]['axtitle']
+        FX_learned = logdata['plot_learned_2D_func/' + exp + '/fx/learned/FX'][0][1]
+        csets_fx = plot_2D_f_func(theta_omega_grid, FX_learned,
+                                  axes_gen=lambda _: axs[e+1, :2],
+                                  axtitle=axtitle + r" $f(x)_{i}$",
+                                  xsample=Xtrain[-1, :],
+                                  xlabel=xlabel,
+                                  ylabel=ylabel,
+                                  contour_levels=(None
+                                                  if csets_fx is None else
+                                                  [c.levels for c in csets_fx])
+        )
+        GX_learned = logdata['plot_learned_2D_func/' + exp + '/gx/learned/FX'][0][1]
+        csets_gx = plot_2D_f_func(theta_omega_grid, GX_learned,
+                                  axes_gen=lambda _: axs[e+1, 2:],
+                                  axtitle=axtitle + r" $g(x)_{{{i},0}}$",
+                                  xsample=Xtrain[-1, :],
+                                  xlabel=xlabel,
+                                  ylabel=ylabel,
+                                  contour_levels=(None
+                                                  if csets_gx is None else
+                                                  [c.levels for c in csets_gx])
+        )
+
+
+    FX_true = logdata['plot_learned_2D_func/' + exp + '/fx/true/FX'][0][1]
+    csets_fx = plot_2D_f_func(theta_omega_grid, FX_true,
+                                      axes_gen=lambda _: axs[0, :2],
+                                      axtitle="True $f(x)_{i}$",
+                                      xsample=Xtrain[-1, :],
+                                      xlabel=xlabel,
+                                      ylabel=ylabel,
+                                      contour_levels=[c.levels for c in csets_fx])
+    GX_true = logdata['plot_learned_2D_func/' + exp + '/gx/true/FX'][0][1]
+    csets_gx = plot_2D_f_func(theta_omega_grid, GX_true,
+                                      axes_gen=lambda _: axs[0, 2:],
+                                      axtitle="True $g(x)_{{{i},0}}$",
+                                      xsample=Xtrain[-1, :],
+                                      xlabel=xlabel,
+                                      ylabel=ylabel,
+                                      contour_levels=[c.levels for c in csets_gx])
+
+    xmin = np.min(theta_omega_grid[0, ...])
+    xmax = np.max(theta_omega_grid[0, ...])
+    ymin = np.min(theta_omega_grid[1, ...])
+    ymax = np.max(theta_omega_grid[1, ...])
+    for ax in axs[1:, :].flatten():
+        ax.plot(Xtrain[:, 0], Xtrain[:, 1], marker='+', linestyle='', color='r')
+        ax.set_xlim(xmin, xmax)
+        ax.set_ylim(ymin, ymax)
+    fig.suptitle(figtitle)
+    if hasattr(fig, "canvas") and hasattr(fig.canvas, "set_window_title"):
+        fig.canvas.set_window_title(figtitle)
+
+    plot_file = osp.join(events_dir, 'learned_f_g_vs_true_f_g_mat_vec_ind.pdf')
+    fig.savefig(plot_file)
+    subprocess.run(["xdg-open", plot_file])
+    return plot_file
+
+def learn_dynamics_matrix_vector_independent(**kw):
+    events_file = learn_dynamics_matrix_vector_independent_exp(**kw)
+    learn_dynamics_matrix_vector_independent_vis(events_file=events_file)
+
+
+
 if __name__ == '__main__':
     #run_pendulum_control_trival()
     #run_pendulum_control_cbf_clf()
     learn_dynamics()
     #run_pendulum_control_online_learning()
+    learn_dynamics_matrix_vector_independent()

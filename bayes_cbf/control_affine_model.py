@@ -223,7 +223,8 @@ class ControlAffineRegressor(DynamicsModel):
     """
     ground_truth = False
     def __init__(self, x_dim, u_dim, device=None, default_device=default_device,
-                 gamma_length_scale_prior=None):
+                 gamma_length_scale_prior=None,
+                 model_class=ControlAffineExactGP):
         super().__init__()
         self.device = device or default_device()
         self.x_dim = x_dim
@@ -232,7 +233,8 @@ class ControlAffineRegressor(DynamicsModel):
         # Noise model for GPs
         self.likelihood = IdentityLikelihood()
         # Actual model
-        self.model = ControlAffineExactGP(
+        self.model_class = model_class
+        self.model = model_class(
             x_dim, u_dim, self.likelihood,
             gamma_length_scale_prior=gamma_length_scale_prior
         ).to(device=self.device)
@@ -982,7 +984,7 @@ class ControlAffineRegressorExact(ControlAffineRegressor):
             # Bₖ(x, x') = B₀(x, x') - 𝐁(x)𝔘 @ α
             BkXX = (
                 k_ss(Xtest, Xtestp).unsqueeze(-1).unsqueeze(-1) * B # (b, b, (1+m), (1+m))
-                - kb_star.unsqueeze(1).t().bmm(Bdagger.unsqueeze(0)) # (b, b, (1+m), (1+m))
+                - kb_star.unsqueeze(1).transpose(-2, -1).bmm(Bdagger.unsqueeze(0)) # (b, b, (1+m), (1+m))
                     )
         else:
             n = self.model.matshape[1]
@@ -1185,3 +1187,16 @@ class ControlAffineRegressorVector(ControlAffineRegressor):
             KkXX = Xtest.new_zeros(Xtest.shape[0], Xtestp.shape[0], (1+m)*n, (1+m)*n)
         # (b, n, (1+m)), (b, b, (1+m)n, (1+m)n)
         return mean_k, KkXX
+
+
+ControlAffineIndependentGP = partial(ControlAffineExactGP, rank=0)
+"""
+IndexKernel models are BBᵀ + diag(𝐯) where B is a low rank matrix whose rank is
+controlled by the rank parameters.
+"""
+
+ControlAffineRegressorIndependent = partial(ControlAffineRegressorExact,
+                                            model_class=ControlAffineIndependentGP)
+"""
+Regressor with Independendent REgresssor
+"""

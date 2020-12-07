@@ -975,7 +975,7 @@ class ControlAffineRegressorExact(ControlAffineRegressor):
         # 2. B†(x) := ( LLᵀ) \ (𝔅(XU, x))
         Bdagger = torch.cholesky_solve(kb_star, Kb_sqrt) # (b, k, (1+m))
         # 3. 𝐌ₖ := 𝐌₀(x) + Y₁ₖ B†(x)
-        mean_k = fX_mean_test + Y.t().bmm( Bdagger) # (b, n, (1+m))
+        mean_k = fX_mean_test + torch.matmul(Y.t().unsqueeze(0), Bdagger) # (b, n, (1+m))
 
         if compute_cov:
             # 4. v := 𝐁(x)𝔘 @ B†(x)
@@ -985,20 +985,203 @@ class ControlAffineRegressorExact(ControlAffineRegressor):
                 - kb_star.unsqueeze(1).t().bmm(Bdagger.unsqueeze(0)) # (b, b, (1+m), (1+m))
                     )
         else:
-            n = self.matshape[1]
+            n = self.model.matshape[1]
             BkXX = Xtest.new_zeros(Xtest.shape[0], Xtestp.shape[0], n, n)
         # (b, n, (1+m)), (n, n), (b, b, (1+m), (1+m))
         return mean_k, A, BkXX
 
 
 
-class IndependentControlAffineGP(ControlAffineRegressor):
+class ControlAffineRegressorIndependent(ControlAffineRegressor):
     def custom_predict(self, Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None,
                        Utestp_in=None, UHfillp=1,
-                       compute_cov=True,
-                       grad_gp=False,
-                       grad_check=False,
-                       scalar_var_only=False):
+                       compute_cov=True):
         """
         """
         pass
+
+class ControlAffineRegressorVector(ControlAffineRegressor):
+    def custom_predict(self, Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None,
+                       Utestp_in=None, UHfillp=1,
+                       compute_cov=True):
+        Xtest = self._ensure_device_dtype(Xtest_in)
+        Xtestp = (self._ensure_device_dtype(Xtestp_in) if Xtestp_in is not None
+                  else Xtest)
+        meanFX, KkXX = self._custom_predict_matrix(Xtest_in, Xtestp_in,
+                                                     compute_cov=compute_cov)
+        if Utest_in is None:
+            UHtest = Xtest.new_zeros(Xtest.shape[0], self.model.matshape[0])
+            UHtest[:, 0] = 1
+        else:
+            Utest = self._ensure_device_dtype(Utest_in)
+            UHtest = torch.cat((Utest.new_full((Utest.shape[0], 1), UHfill),
+            Utest), dim=-1)
+        if Utestp_in is None:
+            UHtestp = UHtest
+        else:
+            Utestp = self._ensure_device_dtype(Utestp_in)
+            UHtestp = torch.cat((Utest.new_full((Utestp.shape[0], 1), UHfillp),
+                                 Utestp), dim=-1)
+        meanFXU = meanFX.bmm(UHtest.unsqueeze(-1)).squeeze(-1)
+        if compute_cov:
+            k, n = Xtest.shape
+            In = torch.eye(n,
+                        dtype=Xtest.dtype,
+                        device=Xtest.device) # (n, n)
+            UHtest_block = torch_kron(UHtest, In, batch_dims=0).reshape(k, 1, n, -1) # (k, 1, n, (1+m)n)
+            UHtest_block_T = UHtest_block.reshape(1, k, n, -1).transpose(-2, -1) # (1, k, (1+m)n), n)
+            varFXU = UHtest_block.bmm(KkXX).bmm(UHtest_block_T)
+        else:
+            k, n = Xtest.shape
+            varFXU = Xtest.new_zeros(Xtest.shape[0], Xtestp.shape[0], n, n)
+        return (meanFXU, varFXU)
+
+
+    def _perturbed_cholesky_compute(self,
+                                    k_xx, # function
+                                    Σ, # ((1+m)n, (1+m)n)
+                                    Xtrain, # (k, n)
+                                    UHtrain, # (k, (1+m))
+                                    cholesky_tries=10,
+                                    cholesky_perturb_init=1e-5,
+                                    cholesky_perturb_scale=10):
+        k, n = Xtrain.shape
+        In = torch.eye(n,
+                       dtype=Xtrain.dtype,
+                       device=Xtrain.device) # (n, n)
+        KXX = k_xx(Xtrain, Xtrain) # (k, k)
+        UHtrain_block = torch_kron(UHtrain, In, batch_dims=0).reshape(k, 1, n, -1) # (k, 1, n, (1+m)n)
+        UHtrain_block_T = UHtrain_block.reshape(1, k, n, -1).transpose(-2, -1) # (1, k, (1+m)n), n)
+        uΣu = torch.matmul(
+            torch.matmul(UHtrain_block, Σ.unsqueeze(-3).unsqueeze(-4)),
+            UHtrain_block_T) # (k, k, n, n)
+        Kb = ((
+            KXX.reshape(k, k, 1, 1) * uΣu # (k, k, n, n)
+        ).transpose(1, 2) # (k, n, k, n)
+              .reshape(k*n, k*n)
+        )
+
+        # Kb can be singular because of repeated datasamples
+        # Add diagonal jitter
+        Kb_sqrt = None
+        cholesky_perturb_factor = cholesky_perturb_init
+        for _ in range(cholesky_tries):
+            try:
+                Kbp = Kb + cholesky_perturb_factor * (
+                    torch.eye(Kb.shape[0], dtype=Kb.dtype, device=Kb.device) *
+                    torch.rand(Kb.shape[0], dtype=Kb.dtype, device=Kb.device)
+                    )
+                Kb_sqrt = torch.cholesky(Kbp)
+            except RuntimeError as e:
+                LOG.warning("Cholesky failed with perturb={} on error {}".format(cholesky_perturb_factor, str(e)))
+                cholesky_perturb_factor = cholesky_perturb_factor * cholesky_perturb_scale
+                continue
+
+        if Kb_sqrt is None:
+            raise
+        return Kb_sqrt
+
+    def _custom_predict_matrix(self, Xtest_in, Xtestp_in=None, compute_cov=True):
+        """
+
+        Vector variate GP: Σ                                      ∈ ((1+m)n, (1+m)n)
+
+            vec(F(x)) ~ 𝔾ℙ(vec(𝐌(x)), Σ k(x, x'))                ∈ ((1+m)n, 1)
+
+            𝔎(XU, XU) = [(𝐮ᵢᵀ ⊗ Iₙ) Σ (𝐮ⱼ ⊗ Iₙ) (k(xᵢ, xᵢ)+σ²)]ᵢⱼ ∈ (kn, kn)
+            𝔎(XU, x*) = [(𝐮ᵢᵀ ⊗ Iₙ) Σ (k(xᵢ, x*)+σ²)]ᵢ            ∈ (kn, (1+m)n)
+            𝐌(XU) = [𝐌(xᵢ)𝐮ᵢ]ᵢ                                   ∈ (k, n)
+
+            vec(F*(x*)) ~ 𝔾ℙ(
+                       vec[𝐌(x*) + (Ẋ - 𝐌(XU))[𝔎(XU, XU)]⁻¹(𝔎(XU, x*)ᵀ)],
+                       Σ k(x*, x*) - 𝔎(XU, x*)[𝔎(XU, XU)]⁻¹(𝔎(XU, x*)ᵀ)
+                     )
+
+        Algorithm (Rasmussen and Williams 2006)
+           1. L := cholesky(𝔎(XU, XU))
+           2. Y = vec(Ẋ - 𝐌(XU))
+           2. α :=  ( (LLᵀ) \ Y )
+           3. 𝐌ₖ(x*) := 𝐌(x*) +  𝔎(XU, x*)ᵀ α
+           4. v(x*) = L \ 𝔎(XU, x*)
+           5. Σₖ(x, x') = Σ₀(x, x') - v(x*)ᵀ v(x*)
+           6. log p(y|X) := -0.5  Y @ ( (LLᵀ) \ Y )  - ∑ log Lᵢᵢ - 0.5 n log(2π)
+        """
+        Xtest = self._ensure_device_dtype(Xtest_in)
+        Xtestp = (self._ensure_device_dtype(Xtestp_in) if Xtestp_in is not None
+                  else Xtest)
+        k_xx = lambda x, xp: self.model.covar_module.data_covar_module(
+            x, xp).evaluate()
+        mean_s = self.model.mean_module
+        _A = self.model.covar_module.task_covar_module.U.covar_matrix.evaluate()
+        _B = self.model.covar_module.task_covar_module.V.covar_matrix.evaluate()
+        Σ = torch_kron(_B, _A, batch_dims=0) # ((1+m)n, (1+m)n)
+
+        # Output of mean_s(Xtest) is (b, (1+m)n)
+        # Make it (b, (1+m), n, 1) then transpose
+        # (b, n, 1, (1+m)) and multiply with UHtest (b, (1+m)) to get
+        # (b, n, 1)
+        fX_mean_test = mean_s(Xtest).reshape(
+            Xtest.shape[0], *self.model.matshape).transpose(-2, -1) # (b, 1+m, n) -> (B, n, 1+m)
+        if self.model.train_inputs is None:
+            # 5. k* := k(x*,x*) B
+            return fX_mean_test, Σ * k_xx(Xtest, Xtestp).unsqueeze(-1).unsqueeze(-1)
+
+        MXUHtrain = self.model.train_inputs[0]
+        Mtrain, Xtrain, UHtrain = self.model.decoder.decode(MXUHtrain)
+        nsamples = Xtrain.size(0)
+
+        # Y₁ₖ = Ẋ₁ₖ - 𝐌₁ₖ𝔘₁ₖ
+        MXtrain = self.model.mean_module(Xtrain) # (k, (1+m)n)
+        Y = (
+            self.model.train_targets.reshape(nsamples, -1) # (k, n)
+            - (MXtrain.reshape(nsamples, *self.model.matshape) # (k, (1+m), n)
+               .transpose(-2,-1) # (k, n, (1+m))
+               .bmm(
+                   UHtrain.unsqueeze(-1) # (k, (1+m), 1)
+               ) # (k, n, 1)
+               .squeeze(-1)) # (k, n)
+        ) # (k, n)
+        # 1. L := cholesky(𝔎(XU, XU)) or LLᵀ = 𝔎(XU, XU)
+        # Kb_sqrt = L
+        Kb_sqrt = self._perturbed_cholesky(k_xx, Σ, Xtrain, UHtrain) # (kn, kn)
+
+        # kb_star = 𝔎(XU, x*)
+        # k_xs(Xtrain, Xtest) \in (k, b)
+        # UHtrain \in (k, (1+m))
+        # B \in (1+m, 1+m)
+        k, n = Xtrain.shape
+        b = Xtest.shape[0]
+        In = torch.eye(n, dtype=Xtrain.dtype, device=Xtrain.device) # (n, n)
+        UHtrain_block = torch_kron(UHtrain, In, batch_dims=0) # (kn, (1+m)n)
+        kb_star = (
+            k_xx(Xtest, Xtrain).reshape(b, k, 1, 1) # (b, k, 1, 1)
+            *
+            (UHtrain_block @ Σ # (kn, (1+m)n)
+            ).reshape(1, k, n, -1) # (1, k, n, (1+m)n)
+        ).reshape(b, k*n, -1) # (b, kn, (1+m)n)
+        # 2. α := ( LLᵀ) \ Y
+        α = torch.cholesky_solve(Y.reshape(-1, 1), Kb_sqrt) # (kn, 1)
+        # 3. 𝐌ₖ := 𝐌₀(x) + 𝔎(XU, x*)ᵀ α
+        mean_k = fX_mean_test + (
+            torch.matmul(kb_star.transpose(-2, -1), # (b, (1+m)n, kn)
+                         α.unsqueeze(0)) # (1, kn, 1)
+            .reshape(b, -1, n) # (b, (1+m)n, 1)
+            .transpose(-2, -1) # (b, n, (1+m))
+            )
+
+        if compute_cov:
+            # 4. v = L \ 𝔎(XU, x*)
+            # 5. Bₖ(x, x') = B₀(x, x') - vᵀ v
+            v = torch.solve(kb_star, # (b, kn, (1+m)n)
+                            Kb_sqrt # (kn, kn)
+                            ) # (b, kn, (1+m)n)
+            KkXX = (
+                k_xx(Xtest, Xtestp).unsqueeze(-1).unsqueeze(-1) * Σ # (b, b, (1+m)n, (1+m)n)
+                - v.unsqueeze(1).transpose(-2, -1) @ v.unsqueeze(0) # (b, b, (1+m)n, (1+m)n)
+            )
+        else:
+            n = self.model.matshape[1]
+            m = self.model.matshape[0]-1
+            KkXX = Xtest.new_zeros(Xtest.shape[0], Xtestp.shape[0], (1+m)*n, (1+m)*n)
+        # (b, n, (1+m)), (b, b, (1+m)n, (1+m)n)
+        return mean_k, KkXX

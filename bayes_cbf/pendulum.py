@@ -992,7 +992,8 @@ def learn_dynamics_matrix_vector_independent_vis(
     events_dir = osp.dirname(events_file)
     fig, axs = plt.subplots(4, 4, sharex=True, sharey=True, squeeze=False,
                             figsize=(10, 7.0))
-    fig.subplots_adjust(wspace=0.2, hspace=0.4, left=0.07, right=0.95, bottom=0.07)
+    fig.subplots_adjust(wspace=0.2, hspace=0.3, left=0.07, right=0.95,
+                        bottom=0.07, top=0.92)
     theta_omega_grid = logdata['plot_learned_2D_func/matrix/fx/true/theta_omega_grid'][0][1]
     FX_true = logdata['plot_learned_2D_func/matrix/fx/true/FX'][0][1]
     Xtrain = logdata['plot_learned_2D_func/matrix/fx/Xtrain'][0][1]
@@ -1006,7 +1007,7 @@ def learn_dynamics_matrix_vector_independent_vis(
                                   axes_gen=lambda _: axs[e+1, :2],
                                   axtitle=axtitle + r" $f(x)_{i}$",
                                   xsample=Xtrain[-1, :],
-                                  xlabel=xlabel,
+                                  xlabel=(xlabel if (e+1 == len(exp_conf)) else None),
                                   ylabel=ylabel,
                                   contour_levels=(None
                                                   if csets_fx is None else
@@ -1017,8 +1018,8 @@ def learn_dynamics_matrix_vector_independent_vis(
                                   axes_gen=lambda _: axs[e+1, 2:],
                                   axtitle=axtitle + r" $g(x)_{{{i},0}}$",
                                   xsample=Xtrain[-1, :],
-                                  xlabel=xlabel,
-                                  ylabel=ylabel,
+                                  xlabel=(xlabel if (e+1 == len(exp_conf)) else None),
+                                  ylabel=None,
                                   contour_levels=(None
                                                   if csets_gx is None else
                                                   [c.levels for c in csets_gx])
@@ -1030,7 +1031,7 @@ def learn_dynamics_matrix_vector_independent_vis(
                                       axes_gen=lambda _: axs[0, :2],
                                       axtitle="True $f(x)_{i}$",
                                       xsample=Xtrain[-1, :],
-                                      xlabel=xlabel,
+                                      xlabel=None,
                                       ylabel=ylabel,
                                       contour_levels=[c.levels for c in csets_fx])
     GX_true = logdata['plot_learned_2D_func/' + exp + '/gx/true/FX'][0][1]
@@ -1038,8 +1039,8 @@ def learn_dynamics_matrix_vector_independent_vis(
                                       axes_gen=lambda _: axs[0, 2:],
                                       axtitle="True $g(x)_{{{i},0}}$",
                                       xsample=Xtrain[-1, :],
-                                      xlabel=xlabel,
-                                      ylabel=ylabel,
+                                      xlabel=None,
+                                      ylabel=None,
                                       contour_levels=[c.levels for c in csets_gx])
 
     xmin = np.min(theta_omega_grid[0, ...])

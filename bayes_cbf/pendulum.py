@@ -1128,8 +1128,8 @@ def speed_test_matrix_vector_independent_vis(
             vector=dict(label='Coregionalization GP'),
             matrix=dict(label='Matrix GP')),
         marker_rotation=['b*-', 'g+-', 'r.-'],
-        xlabel='Inference time',
-        ylabel='Training samples'
+        ylabel='Inference time',
+        xlabel='Training samples'
 ):
     logdata = load_tensorboard_scalars(events_file)
     events_dir = osp.dirname(events_file)
@@ -1140,7 +1140,7 @@ def speed_test_matrix_vector_independent_vis(
         ys = np.hstack(ys)
         ax.plot(xs, ys, mrkr, label=gp_conf['label'])
     ax.set_xlabel(xlabel)
-    ax.set_ylabel(xlabel)
+    ax.set_ylabel(ylabel)
     ax.legend()
     plot_file = osp.join(events_dir, 'speed_test_mat_vec_ind.pdf')
     fig.savefig(plot_file)

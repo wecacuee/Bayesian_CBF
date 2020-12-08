@@ -677,7 +677,7 @@ class ControllerCLF:
         TBLOG.add_scalar("x_0", x[0], t)
         bfa = to_numpy(gclf @ gx)
         b = to_numpy(gclf @ fx
-                     - gclf_goal @ self.planner.dot_plan(t)
+                     + gclf_goal @ self.planner.dot_plan(t)
                      + self.clf_gamma * self.clf.clf_terms(polar, state_goal).sum())
         return bfa, b
 
@@ -820,11 +820,11 @@ class ControllerCLFBayesian:
         n = state.shape[-1]
         clfgp = DeterministicGP(lambda x: self.clf_gamma * self.clf.clf_terms(x, state_goal).sum(), shape=(1,))
         gclfgp = DeterministicGP(lambda x: self.clf.grad_clf(x, state_goal), shape=(n,))
-        neggclf_goal = DeterministicGP(lambda x: - self.clf.grad_clf_wrt_goal(x, state_goal),
+        gclf_goal = DeterministicGP(lambda x: self.clf.grad_clf_wrt_goal(x, state_goal),
                                     shape=(n,))
         fu_func_gp = self.dynamics.fu_func_gp(u)
         dot_plan = DeterministicGP(lambda x: self.planner.dot_plan(t), shape=(n,))
-        return gclfgp.t() @ fu_func_gp + neggclf_goal.t() @ dot_plan + clfgp
+        return gclfgp.t() @ fu_func_gp + gclf_goal.t() @ dot_plan + clfgp
 
     def _clc_terms(self, state, state_goal, t):
         m = self.u_dim
@@ -907,7 +907,7 @@ class ControllerCLFBayesian:
             fu_gp = self.dynamics.fu_func_gp(uopt)
             self.visualizer.add_info(t, 'xtp1',
                                      x_torch + fu_gp.mean(x_torch) * self.planner.dt)
-            self.visualizer.add_info(t, 'xtp1_var', fu_gp.knl(x_torch, x_torch))
+            self.visualizer.add_info(t, 'Fxu_var', fu_gp.knl(x_torch, x_torch))
             cbc_sigma = cbc_A @ uvar.value + cbc_bfb
             cbc_var = torch_to(torch.from_numpy(
                 cbc_sigma.reshape(-1, 1) @ cbc_sigma.reshape(1, -1)),
@@ -971,7 +971,6 @@ class VisualizerScalarPlotCtrl:
         #ax.set_yscale('log')
         ax.plot(u_traj)
         ax.set_ylabel(r'$|v|$')
-        ax.set_xlabel(r'timesteps')
 
 class VisualizerScalarPlotCBC:
     def __init__(self):
@@ -996,14 +995,14 @@ class VisualizerScalarPlotDetKnl:
         self.det_knl_traj = []
 
     def setStateCtrl(self, ax, info, state, uopt, t=None, **kw):
-        xtp1_var = info[t]['xtp1_var']
-        self.det_knl_traj.append(to_numpy(torch.det(xtp1_var)))
+        Fxu_var = info[t]['Fxu_var']
+        self.det_knl_traj.append(to_numpy(torch.det(Fxu_var)))
         self._plot_det_knl(ax, self.det_knl_traj)
 
     def _plot_det_knl(self, ax, det_knl_traj):
         ax.plot(det_knl_traj)
-        ax.set_ylabel(r'$|uB(x,x)u \otimes A*dt|$')
-        ax.set_xlabel(r'timesteps')
+        ax.set_ylabel(r'$|\underline{\mathbf{u}}^\top\mathbf{B}_0(x,x)\underline{\mathbf{u}} \otimes \mathbf{A}|$')
+        #ax.set_xlabel(r'timesteps')
         ax.set_yscale('log')
 
 class Visualizer:
@@ -1011,13 +1010,17 @@ class Visualizer:
                           DetKnl=VisualizerScalarPlotDetKnl,
                           CBC=VisualizerScalarPlotCBC)
     def __init__(self, planner, dt, cbfs=[], compute_contour_every_n_steps=20,
-                 scalar_plots = ['Ctrl', 'CBC']):
+                 scalar_plots = ['Ctrl', 'CBC'],
+                 suptitle=None,
+                 subplots_adjust_kw=dict(top=0.95)):
         self.planner = planner
         self.dt = dt
         self.state_start = None
         self.cbfs = cbfs
         self.x_traj, self.y_traj = [], []
-        self.fig = plt.figure(figsize=(6, 10))
+        self.fig = plt.figure(figsize=(4, 8))
+        self.suptitle = suptitle
+        self.subplots_adjust_kw = subplots_adjust_kw
         self.info = dict()
         self.compute_contour_every_n_steps = compute_contour_every_n_steps
         self.scalar_plots = [self.SCALAR_PLOTS_GEN[s]() for s in scalar_plots]
@@ -1025,8 +1028,12 @@ class Visualizer:
 
     def _subplots(self):
         h = 0.4 / len(self.scalar_plots)
-        return self.fig.subplots(1+len(self.scalar_plots),1, gridspec_kw=dict(
+        axs = self.fig.subplots(1+len(self.scalar_plots),1, gridspec_kw=dict(
             height_ratios=[0.6] + [h]*len(self.scalar_plots)))
+        if self.suptitle:
+            self.fig.suptitle(self.suptitle)
+        self.fig.subplots_adjust(**self.subplots_adjust_kw)
+        return axs
 
     def add_info(self, t, key, value):
         self.info.setdefault(t, dict())[key] = value
@@ -1073,7 +1080,7 @@ class Visualizer:
         xstep = (xmax - xmin) / (npts-1)
         ymin, ymax = ax.get_ylim()
         ystep = (ymax - ymin) / (npts-1)
-        grid = np.mgrid[ymin:ymax+xstep:ystep, xmin:xmax+xstep:xstep]
+        grid = np.mgrid[ymin:(ymax+ystep):ystep, xmin:(xmax+xstep):xstep]
         ccens = self.compute_contour_every_n_steps
         t_cache = t - (t % ccens)
         if t % ccens == 0 and 'cbc_value_grid' not in self.info.get(t_cache, {}):
@@ -1150,11 +1157,11 @@ class Logger:
         self.info = dict()
         self.compute_contour_every_n_steps = compute_contour_every_n_steps
 
-    def _log_cbf_contour(self, rho, cbcs, state, uopt, t, npts=15):
-        xmin, xmax, ymin, ymax = Visualizer._get_bbox()
+    def _log_cbf_contour(self, rho, cbcs, state, state_goal, uopt, t, npts=15):
+        xmin, xmax, ymin, ymax = map(float, Visualizer._get_bbox(state, state_goal))
         xstep = (xmax - xmin) / (npts-1)
         ystep = (ymax - ymin) / (npts-1)
-        grid = np.mgrid[ymin:ymax+xstep:ystep, xmin:xmax+xstep:xstep]
+        grid = np.mgrid[ymin:(ymax+ystep):ystep, xmin:(xmax+xstep):xstep]
         if t % self.compute_contour_every_n_steps == 0:
             cbc_value_grid = Visualizer._compute_contour_grid(
                 grid, rho, cbcs, state, uopt, t, npts)
@@ -1177,7 +1184,7 @@ class Logger:
             cbcs = self.info[t]['cbcs']
             rho = self.info[t]['rho']
             uopt_np = to_numpy(uopt)
-            self._log_cbf_contour(rho, cbcs, state, uopt_np, t)
+            self._log_cbf_contour(rho, cbcs, state, self.planner.x_goal, uopt_np, t)
             add_tensors(TBLOG, "vis",
                         dict(cbc_value=min(
                             [c @ uopt_np + d - rho * np.linalg.norm(A @ uopt_np  + b)
@@ -1730,7 +1737,7 @@ unicycle_force_around_obstacle = partial(
                           term_weights=[0.5, 0.5]),
                       cbf_gammas = [5., 5.],
                       controller_class=ControllerCLFBayesian, # or ControllerCLF
-                      visualizer_class=Logger, # or Visualizer
+                      visualizer_class=Visualizer, # or Logger
                       true_dynamics_gen=partial(AckermanDrive, L = 1.0),
                       mean_dynamics_gen=partial(AckermanDrive, L = 1.0,
                                                 kernel_diag_A=[1e-2, 1e-2, 1e-2]),
@@ -1747,9 +1754,11 @@ unicycle_force_around_obstacle_mult = partial(
              kwvariations([[1e-2, 1e-2, 1e-2],
                            [5e-2, 5e-2, 5e-2]])})))
 
-# Nov 20th
+# Dec 8th: Visualize to put in paper
 # Make it collide without BayesCBF
-# Change max_risk in [0.01, 0.50]
+# 1. Run unicycle_mean_cbf_collides_obstacle(). Make sure
+#        visualizer_class = Visualizer
+# 2. Check the images in data/animation/
 unicycle_mean_cbf_collides_obstacle = partial(
     unicycle_demo,
     simulator=partial(track_trajectory_ackerman_clf_bayesian,
@@ -1760,17 +1769,31 @@ unicycle_mean_cbf_collides_obstacle = partial(
                           term_weights=[0.7, 0.3]),
                       cbf_gammas = [5., 5.],
                       controller_class=partial(ControllerCLFBayesian,
-                                               max_risk=0.01), # or ControllerCLFBayesian
-                      visualizer_class=Visualizer, # or Logger
+                                               max_risk=0.5), # or ControllerCLFBayesian
+                      visualizer_class=partial(Visualizer, suptitle='Mean CBF'), # or Logger
                       true_dynamics_gen=partial(AckermanDrive, L = 8.0),
                       mean_dynamics_gen=partial(AckermanDrive, L = 1.0,
                                                 kernel_diag_A=[1e-2, 1e-2, 1e-2]),
                       enable_learning = False),
     exp_tags = ['mean_cbf_collides'])
 
-# Nov 21th
+
+# Dec 8th
+# Recipe for Bayes CBF visualization
+# 1. Run unicycle_bayes_cbf_safe_obstacle(). Make sure
+#        visualizer_class = Visualizer
+# 2. Check the images in data/animation/
+unicycle_bayes_cbf_safe_obstacle = recpartial(
+    unicycle_mean_cbf_collides_obstacle,
+    {'simulator.visualizer_class.suptitle' : 'Bayes CBF',
+     'simulator.controller_class.max_risk' : 0.01 })
+
+# Dec 8th
 # Learning makes it pass, otherwise it gets stuck
-# Change enable_learning in [True, False]
+# 1. Run unicycle_learning_helps_avoid_getting_stuck(). Make sure
+#        visualizer_class = Visualizer
+# 2. Check the images in data/animation/
+# 3. Make a video or take the put the image to a paper
 unicycle_learning_helps_avoid_getting_stuck = partial(
     unicycle_demo,
     simulator=partial(track_trajectory_ackerman_clf_bayesian,
@@ -1783,13 +1806,28 @@ unicycle_learning_helps_avoid_getting_stuck = partial(
                       controller_class=partial(ControllerCLFBayesian,
                                                max_risk=0.01), # or ControllerCLFBayesian
                       visualizer_class=partial(Visualizer, # or Logger
+                                               suptitle='With Learning',
+                                               subplots_adjust_kw=dict(left=0.25,
+                                                                       top=0.95),
                                                scalar_plots=['DetKnl', 'CBC']),
                       true_dynamics_gen=partial(AckermanDrive, L = 1.0),
                       mean_dynamics_gen=partial(AckermanDrive, L = 8.0,
-                                                kernel_diag_A=[1e-6, 1e-6, 1e-6]),
-                      train_every_n_steps = 200,
-                      enable_learning = True),
+                                                kernel_diag_A=[0.01, 0.01, 0.01]),
+                      train_every_n_steps = 40, # Change this
+                      enable_learning = True), # Do not change this
     exp_tags = ['learning_helps_avoid_getting_stuck'])
+
+# Dec 8th
+# Without learning unicycle gets stuck due to high covariance
+# 1. Run unicycle_no_learning_gets_stuck(). Make sure
+#        visualizer_class = Visualizer
+# 2. Check the images in data/animation/
+# 3. Make a video or take the put the image to a paper
+unicycle_no_learning_gets_stuck = recpartial(
+    unicycle_learning_helps_avoid_getting_stuck,
+    {'simulator.train_every_n_steps': 200,
+     'simulator.visualizer_class.suptitle' : 'No Learning'})
+
 
 if __name__ == '__main__':
     import doctest
@@ -1803,6 +1841,10 @@ if __name__ == '__main__':
     # unicycle_demo_track_trajectory_clf_bayesian()
     # unicycle_demo_track_trajectory_ackerman_clf_bayesian()
     # unicycle_demo_track_trajectory_ackerman_clf_bayesian_mult()
-    # unicycle_force_around_obstacle()
+    # unicycle_force_around_obstacle_mult()
+    # unicycle_mean_cbf_collides_obstacle()
+    # unicycle_bayes_cbf_safe_obstacle()
+    # unicycle_learning_helps_avoid_getting_stuck()
+    # unicycle_no_learning_gets_stuck()
     unicycle_learning_helps_avoid_getting_stuck()
 

@@ -1075,7 +1075,7 @@ def speed_test_matrix_vector_independent_exp(
         mass=1,
         gravity=10,
         length=1,
-        max_train_variations=[10, 25, 80, 125, 200], # GPU
+        max_train_variations=[100, 200, 400, 625], # GPU
         # max_train_variations=[10, 25, 50, 80, 125], # CPU
         numSteps=1000,
         logger_class=partial(TBLogger,
@@ -1123,9 +1123,8 @@ def speed_test_matrix_vector_independent_exp(
     return events_file
 
 def speed_test_matrix_vector_independent_vis(
-        events_file='data/runs/speed_test_matrix_vector_independent_v1.2.0/events.out.tfevents.1607389484.dwarf.23955.0',
+        events_file='data/runs/speed_test_matrix_vector_independent_v1.2.1-2-g8db94f1/events.out.tfevents.1607401134.dwarf.26431.0',
         exp_conf=dict(
-            independent=dict(label='Independent GP'),
             vector=dict(label='Coregionalization GP'),
             matrix=dict(label='Matrix GP')),
         marker_rotation=['b*-', 'g+-', 'r.-'],
@@ -1135,6 +1134,7 @@ def speed_test_matrix_vector_independent_vis(
     logdata = load_tensorboard_scalars(events_file)
     events_dir = osp.dirname(events_file)
     fig, ax = plt.subplots(1,1, figsize=(5, 3.0))
+    fig.subplots_adjust(bottom=0.2)
     for mrkr, (gp, gp_conf) in zip(marker_rotation,exp_conf.items()):
         xs, ys = zip(*logdata[gp + '/elapsed'])
         ys = np.hstack(ys)

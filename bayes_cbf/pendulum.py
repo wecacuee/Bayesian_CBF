@@ -1068,9 +1068,7 @@ def learn_dynamics_matrix_vector_independent(**kw):
 
 def speed_test_matrix_vector_independent_exp(
         exps=dict(matrix=dict(regressor_class=ControlAffineRegressorExact),
-                  vector=dict(regressor_class=ControlAffineRegressorVector),
-                  independent=dict(regressor_class=ControlAffineRegressorIndependent)
-        ),
+                  vector=dict(regressor_class=ControlAffineRegressorVector)),
         theta0=5*math.pi/6,
         omega0=-0.01,
         tau=0.01,

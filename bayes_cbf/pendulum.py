@@ -1077,8 +1077,7 @@ def speed_test_matrix_vector_independent_exp(
         mass=1,
         gravity=10,
         length=1,
-        max_train=200,
-        max_test_variations=[10, 20, 50, 100, 200],
+        max_train_variations=[5, 25, 125, 300, 625],
         numSteps=1000,
         regressor_class=ControlAffineRegressor,
         logger_class=partial(TBLogger,
@@ -1097,40 +1096,69 @@ def speed_test_matrix_vector_independent_exp(
     for t,  (dx, x, u) in enumerate(zip(dX, X, U)):
         logger.add_tensors("traj", dict(dx=dx, x=x, u=u), t)
 
-    dgp = dict()
-    for name, kw in exps.items():
-        dgp[name] = learn_dynamics_from_data(dX, X, U, pend_env,
-                                             regressor_class, logger,
-                                             max_train=max_train,
-                                             tags=[])
-
     # Test train split
-    shuffled_order = np.arange(X.shape[0])
+    shuffled_order = np.arange(X.shape[0]-1)
     #shuffled_order = torch.randint(D, size=(D,))
     np.random.shuffle(shuffled_order)
     shuffled_order = torch.from_numpy(shuffled_order)
-    for max_test in max_test_variations:
-        test_indices = shuffled_order[:max_test]
-        Xtest = X[test_indices, :]
-        Utest = U[test_indices, :]
-        XdotTest = dX[test_indices, :]
+    test_indices = shuffled_order[:10]
+    Xtest = X[test_indices, :]
+    Utest = U[test_indices, :]
+    XdotTest = dX[test_indices, :]
+
+    dgp = dict()
+    for max_train in max_train_variations:
         for name, kw in exps.items():
+            dgp = learn_dynamics_from_data(dX, X, U, pend_env,
+                                                regressor_class, logger,
+                                                max_train=max_train,
+                                                tags=[])
             elapsed = timeit.timeit(
-                partial(dgp[name].fu_func_mean,
-                        Utest, Xtest),
-                number=5)
-            logger.add_scalars(name, dict(elapsed=elapsed), max_test)
+                lambda : (dgp.fu_func_mean(Utest, Xtest), dgp.clear_cache()),
+                number=10)
+            logger.add_scalars(name, dict(elapsed=elapsed), max_train)
+            print(name, max_train, elapsed)
 
     events_file = max(
         glob.glob(osp.join(logger.experiment_logs_dir, "*.tfevents*")),
         key=lambda f: os.stat(f).st_mtime)
     return events_file
 
+def speed_test_matrix_vector_independent_vis(
+        events_file='data/runs/speed_test_matrix_vector_independent_v1.2.0/events.out.tfevents.1607389484.dwarf.23955.0',
+        exp_conf=dict(
+            independent=dict(label='Independent GP'),
+            vector=dict(label='Coregionalization GP'),
+            matrix=dict(label='Matrix GP')),
+        marker_rotation=['b*-', 'g+-', 'r.-'],
+        xlabel='Inference time',
+        ylabel='Training samples'
+):
+    logdata = load_tensorboard_scalars(events_file)
+    events_dir = osp.dirname(events_file)
+    fig, ax = plt.subplots(1,1)
+    for mrkr, (gp, gp_conf) in zip(marker_rotation,exp_conf.items()):
+        xs, ys = zip(*logdata[gp + '/elapsed'])
+        ys = np.hstack(ys)
+        ax.plot(xs, ys, mrkr, label=gp_conf['label'])
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(xlabel)
+    ax.legend()
+    plot_file = osp.join(events_dir, 'speed_test_mat_vec_ind.pdf')
+    fig.savefig(plot_file)
+    subprocess.run(["xdg-open", plot_file])
+    return plot_file
+
+
+def speed_test_matrix_vector_independent(**kw):
+    events_file = speed_test_matrix_vector_independent_exp(**kw)
+    return speed_test_matrix_vector_independent_vis(events_file)
 
 
 if __name__ == '__main__':
     #run_pendulum_control_trival()
     #run_pendulum_control_cbf_clf()
-    learn_dynamics()
+    # learn_dynamics()
     #run_pendulum_control_online_learning()
-    learn_dynamics_matrix_vector_independent()
+    # learn_dynamics_matrix_vector_independent()
+    speed_test_matrix_vector_independent_exp()

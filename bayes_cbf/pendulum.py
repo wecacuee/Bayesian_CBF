@@ -1123,7 +1123,7 @@ def speed_test_matrix_vector_independent_exp(
     return events_file
 
 def speed_test_matrix_vector_independent_vis(
-        events_file='data/runs/speed_test_matrix_vector_independent_v1.2.1-2-g8db94f1/events.out.tfevents.1607401134.dwarf.26431.0',
+        events_file='saved-runs/speed_test_matrix_vector_independent_v1.2.2/events.out.tfevents.1607401666.dwarf.27869.0',
         exp_conf=dict(
             vector=dict(label='Coregionalization GP'),
             matrix=dict(label='Matrix GP')),

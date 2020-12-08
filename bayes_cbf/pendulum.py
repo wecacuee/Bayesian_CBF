@@ -1077,9 +1077,9 @@ def speed_test_matrix_vector_independent_exp(
         mass=1,
         gravity=10,
         length=1,
-        max_train_variations=[5, 25, 125, 300, 625],
+        max_train_variations=[10, 25, 80, 125, 200], # GPU
+        # max_train_variations=[10, 25, 50, 80, 125], # CPU
         numSteps=1000,
-        regressor_class=ControlAffineRegressor,
         logger_class=partial(TBLogger,
                              exp_tags=['speed_test_matrix_vector_independent'],
                              runs_dir='data/runs'),
@@ -1099,23 +1099,23 @@ def speed_test_matrix_vector_independent_exp(
     # Test train split
     shuffled_order = np.arange(X.shape[0]-1)
     #shuffled_order = torch.randint(D, size=(D,))
-    np.random.shuffle(shuffled_order)
-    shuffled_order = torch.from_numpy(shuffled_order)
-    test_indices = shuffled_order[:10]
-    Xtest = X[test_indices, :]
-    Utest = U[test_indices, :]
-    XdotTest = dX[test_indices, :]
 
     dgp = dict()
     for max_train in max_train_variations:
         for name, kw in exps.items():
+            np.random.shuffle(shuffled_order)
+            shuffled_order_t = torch.from_numpy(shuffled_order)
+            test_indices = shuffled_order_t[:10]
+            Xtest = X[test_indices, :]
+            Utest = U[test_indices, :]
+            XdotTest = dX[test_indices, :]
             dgp = learn_dynamics_from_data(dX, X, U, pend_env,
-                                                regressor_class, logger,
-                                                max_train=max_train,
-                                                tags=[])
+                                           kw['regressor_class'], logger,
+                                           max_train=max_train,
+                                           tags=[])
             elapsed = timeit.timeit(
-                lambda : (dgp.fu_func_mean(Utest, Xtest), dgp.clear_cache()),
-                number=10)
+                lambda : (dgp.custom_predict(Xtest, Utest), dgp.clear_cache()),
+                number=100)
             logger.add_scalars(name, dict(elapsed=elapsed), max_train)
             print(name, max_train, elapsed)
 
@@ -1136,7 +1136,7 @@ def speed_test_matrix_vector_independent_vis(
 ):
     logdata = load_tensorboard_scalars(events_file)
     events_dir = osp.dirname(events_file)
-    fig, ax = plt.subplots(1,1)
+    fig, ax = plt.subplots(1,1, figsize=(5, 3.0))
     for mrkr, (gp, gp_conf) in zip(marker_rotation,exp_conf.items()):
         xs, ys = zip(*logdata[gp + '/elapsed'])
         ys = np.hstack(ys)
@@ -1161,4 +1161,4 @@ if __name__ == '__main__':
     # learn_dynamics()
     #run_pendulum_control_online_learning()
     # learn_dynamics_matrix_vector_independent()
-    speed_test_matrix_vector_independent_exp()
+    speed_test_matrix_vector_independent()

@@ -901,7 +901,9 @@ class ControlAffineRegressorExact(ControlAffineRegressor):
         UHtestp_BkXX = UHtestp.unsqueeze(-1).unsqueeze(0) #  (1, k', (1+m), 1)
         meanFXU = meanFX.bmm(UHtest.unsqueeze(-1)).squeeze(-1)
         if compute_cov:
-            varFXU = UHtest_BkXX.t().bmm(BkXX).bmm(UHtestp_BkXX) * A
+            varFXU = torch.matmul(
+                torch.matmul(UHtest_BkXX.transpose(-2, -1), BkXX),
+                UHtestp_BkXX) * A
         else:
             varFXU = Xtest.new_zeros(Xtest.shape[0], Xtestp.shape[0], *A.shape)
         return (meanFXU, varFXU)
@@ -911,11 +913,11 @@ class ControlAffineRegressorExact(ControlAffineRegressor):
 
         Matrix variate GP: Separate A and B
 
-            F(x) ~ 𝕄𝕍ℙ(𝐌(x), 𝐀, 𝐁 k(x, x'))
+            F(x) ~ 𝕄𝕍ℙ(𝐌(x), 𝐀, 𝐁 k(x, x'))                ∈ (n, 1+m)
 
-            𝔅(XU, XU) = [𝐮ᵢᵀB𝐮ⱼ (k(xᵢ, xᵢ)+σ²)]ᵢⱼ
-            𝔅(XU, x*) = [𝐮ᵢᵀB (k(xᵢ, x*)+σ²)]ᵢ
-            𝐌(XU) = [𝐌(xᵢ)𝐮ᵢ]ᵢ
+            𝔅(XU, XU) = [𝐮ᵢᵀB𝐮ⱼ (k(xᵢ, xᵢ)+σ²)]ᵢⱼ            ∈ (k, k)
+            𝔅(XU, x*) = [𝐮ᵢᵀB (k(xᵢ, x*)+σ²)]ᵢ               ∈ (k(1+m), k)
+            𝐌(XU) = [𝐌(xᵢ)𝐮ᵢ]ᵢ                              ∈ (n, k)
 
             F*(x*) ~ 𝕄𝕍ℙ(
                        𝐌(x*) + (Ẋ - 𝐌(XU))[𝔅(XU, XU)]⁻¹(𝔅(XU, x*)ᵀ),
@@ -924,11 +926,11 @@ class ControlAffineRegressorExact(ControlAffineRegressor):
                      )
 
         Algorithm (Rasmussen and Williams 2006)
-           1. L := cholesky(𝔅(XU, XU))
-           2. B† :=  ( (LLᵀ) \ 𝔅(XU, x*)ᵀ )
-           3. Y = (Ẋ - 𝐌(XU))
-           3. 𝐌ₖ(x*) := 𝐌(x*) +  Y @ B†
-           4. 𝐁ₖ(x*, x*) := B k(x*,x*) - 𝔅(XU, x*) @ B†
+           1. L := cholesky(𝔅(XU, XU))                                 O(k³)
+           2. B† :=  ( (LLᵀ) \ 𝔅(XU, x*)ᵀ )             ∈ (k, k(1+m)))  O(k²(1+m))
+           3. Y = (Ẋ - 𝐌(XU))                          ∈ (n, k)        O(kn(1+m))
+           3. 𝐌ₖ(x*) := 𝐌(x*) +  Y @ B†               ∈ (n, (1+m))    O(nk²(1+m))
+           4. 𝐁ₖ(x*, x*) := B k(x*,x*) - 𝔅(XU, x*) @ B† ∈ (1+m, 1+m)  O(k²(1+m)²)
            5. log p(y|X) := -0.5  Y @ ( (LLᵀ) \ Y )  - ∑ log Lᵢᵢ - 0.5 n log(2π)
         """
         Xtest = self._ensure_device_dtype(Xtest_in)
@@ -984,8 +986,11 @@ class ControlAffineRegressorExact(ControlAffineRegressor):
             # Bₖ(x, x') = B₀(x, x') - 𝐁(x)𝔘 @ α
             BkXX = (
                 k_ss(Xtest, Xtestp).unsqueeze(-1).unsqueeze(-1) * B # (b, b, (1+m), (1+m))
-                - kb_star.unsqueeze(1).transpose(-2, -1).bmm(Bdagger.unsqueeze(0)) # (b, b, (1+m), (1+m))
-                    )
+                - torch.matmul(
+                    kb_star.unsqueeze(1).transpose(-2, -1), # (b, 1, (1+m), k)
+                    Bdagger.unsqueeze(0) # (1, b, k, (1+m))
+                ) # (b, b, (1+m), (1+m))
+            )
         else:
             n = self.model.matshape[1]
             BkXX = Xtest.new_zeros(Xtest.shape[0], Xtestp.shape[0], n, n)
@@ -1032,7 +1037,10 @@ class ControlAffineRegressorVector(ControlAffineRegressor):
                         device=Xtest.device) # (n, n)
             UHtest_block = torch_kron(UHtest, In, batch_dims=0).reshape(k, 1, n, -1) # (k, 1, n, (1+m)n)
             UHtest_block_T = UHtest_block.reshape(1, k, n, -1).transpose(-2, -1) # (1, k, (1+m)n), n)
-            varFXU = UHtest_block.bmm(KkXX).bmm(UHtest_block_T)
+
+            varFXU = torch.matmul(
+                torch.matmul(UHtest_block, KkXX),
+                UHtest_block_T)
         else:
             k, n = Xtest.shape
             varFXU = Xtest.new_zeros(Xtest.shape[0], Xtestp.shape[0], n, n)
@@ -1100,12 +1108,12 @@ class ControlAffineRegressorVector(ControlAffineRegressor):
                      )
 
         Algorithm (Rasmussen and Williams 2006)
-           1. L := cholesky(𝔎(XU, XU))
-           2. Y = vec(Ẋ - 𝐌(XU))
-           2. α :=  ( (LLᵀ) \ Y )
-           3. 𝐌ₖ(x*) := 𝐌(x*) +  𝔎(XU, x*)ᵀ α
-           4. v(x*) = L \ 𝔎(XU, x*)
-           5. Σₖ(x, x') = Σ₀(x, x') - v(x*)ᵀ v(x*)
+           1. L := cholesky(𝔎(XU, XU))                          O(k³n³)
+           2. Y = vec(Ẋ - 𝐌(XU))               ∈ (kn, 1)        O(kn)
+           2. α :=  ( (LLᵀ) \ Y )               ∈ (kn, 1)       O(k³n)
+           3. 𝐌ₖ(x*) := 𝐌(x*) +  𝔎(XU, x*)ᵀ α ∈  ((1+m)n, 1)   O(k²n³(1+m))
+           4. v(x*) = L \ 𝔎(XU, x*)            ∈ (kn, (1+m)n)   O(k²n³(1+m))
+           5. Σₖ(x, x') = Σ₀(x, x') - v(x*)ᵀ v(x*)  ∈ ((1+m)n, (1+m)n))   O(k²n⁴(1+m)²))
            6. log p(y|X) := -0.5  Y @ ( (LLᵀ) \ Y )  - ∑ log Lᵢᵢ - 0.5 n log(2π)
         """
         Xtest = self._ensure_device_dtype(Xtest_in)
@@ -1176,7 +1184,7 @@ class ControlAffineRegressorVector(ControlAffineRegressor):
             # 5. Bₖ(x, x') = B₀(x, x') - vᵀ v
             v = torch.solve(kb_star, # (b, kn, (1+m)n)
                             Kb_sqrt # (kn, kn)
-                            ) # (b, kn, (1+m)n)
+                            ).solution # (b, kn, (1+m)n)
             KkXX = (
                 k_xx(Xtest, Xtestp).unsqueeze(-1).unsqueeze(-1) * Σ # (b, b, (1+m)n, (1+m)n)
                 - v.unsqueeze(1).transpose(-2, -1) @ v.unsqueeze(0) # (b, b, (1+m)n, (1+m)n)

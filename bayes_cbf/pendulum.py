@@ -3,6 +3,7 @@ import logging
 LOG = logging.getLogger(__name__)
 LOG.setLevel(logging.INFO)
 
+import timeit
 import random
 import warnings
 import sys
@@ -1063,6 +1064,67 @@ def learn_dynamics_matrix_vector_independent_vis(
 def learn_dynamics_matrix_vector_independent(**kw):
     events_file = learn_dynamics_matrix_vector_independent_exp(**kw)
     learn_dynamics_matrix_vector_independent_vis(events_file=events_file)
+
+
+def speed_test_matrix_vector_independent_exp(
+        exps=dict(matrix=dict(regressor_class=ControlAffineRegressorExact),
+                  vector=dict(regressor_class=ControlAffineRegressorVector),
+                  independent=dict(regressor_class=ControlAffineRegressorIndependent)
+        ),
+        theta0=5*math.pi/6,
+        omega0=-0.01,
+        tau=0.01,
+        mass=1,
+        gravity=10,
+        length=1,
+        max_train=200,
+        max_test_variations=[10, 20, 50, 100, 200],
+        numSteps=1000,
+        regressor_class=ControlAffineRegressor,
+        logger_class=partial(TBLogger,
+                             exp_tags=['speed_test_matrix_vector_independent'],
+                             runs_dir='data/runs'),
+        pendulum_dynamics_class=PendulumDynamicsModel
+):
+    logger = logger_class()
+    pend_env = pendulum_dynamics_class(m=1, n=2, mass=mass, gravity=gravity,
+                                       length=length)
+    dX, X, U = sampling_pendulum_data(
+        pend_env, D=numSteps, x0=torch.tensor([theta0,omega0]),
+        dt=tau,
+        controller=ControlRandom(mass=mass, gravity=gravity, length=length).control,
+        plot_every_n_steps=numSteps)
+    for t,  (dx, x, u) in enumerate(zip(dX, X, U)):
+        logger.add_tensors("traj", dict(dx=dx, x=x, u=u), t)
+
+    dgp = dict()
+    for name, kw in exps.items():
+        dgp[name] = learn_dynamics_from_data(dX, X, U, pend_env,
+                                             regressor_class, logger,
+                                             max_train=max_train,
+                                             tags=[])
+
+    # Test train split
+    shuffled_order = np.arange(X.shape[0])
+    #shuffled_order = torch.randint(D, size=(D,))
+    np.random.shuffle(shuffled_order)
+    shuffled_order = torch.from_numpy(shuffled_order)
+    for max_test in max_test_variations:
+        test_indices = shuffled_order[:max_test]
+        Xtest = X[test_indices, :]
+        Utest = U[test_indices, :]
+        XdotTest = dX[test_indices, :]
+        for name, kw in exps.items():
+            elapsed = timeit.timeit(
+                partial(dgp[name].fu_func_mean,
+                        Utest, Xtest),
+                number=5)
+            logger.add_scalars(name, dict(elapsed=elapsed), max_test)
+
+    events_file = max(
+        glob.glob(osp.join(logger.experiment_logs_dir, "*.tfevents*")),
+        key=lambda f: os.stat(f).st_mtime)
+    return events_file
 
 
 

@@ -1215,11 +1215,11 @@ class Logger:
                              for A, b, c, d in cbcs(state, t)])),
                         t)
             add_scalars("vis", dict(rho=rho), t)
-        for k, v in self.info[t].items():
+        for key, v in self.info[t].items():
             if isinstance(v, torch.Tensor):
                 v = to_numpy(v)
             if isinstance(v, np.ndarray):
-                add_tensors(TBLOG, "vis", dict(k=v), t)
+                add_tensors(TBLOG, "vis", {key : v}, t)
 
     @classmethod
     def _reconstruct_cbcs(cls, state, uopt, cache):
@@ -1243,6 +1243,9 @@ class Logger:
         if 'vis/cbc_value_grid' in cache:
             info['cbc_value_grid'] = cache['vis/cbc_value_grid']
         info['cbcs'] = cls._reconstruct_cbcs(state, uopt, cache)
+        for k, v in cache.items():
+            if k.startswith("vis/"):
+                info[k] = v
         return info
 
 
@@ -1341,7 +1344,7 @@ def playback_logfile(events_dir, visualizer_kw=dict()):
     _ = config['visualizer_class'].pop('__callable_name__')
     visualizer_kw_from_log = { k: v
                               for k, v in config['visualizer_class'].items()
-                              if k in ("suptitle", "subplots_adjust_kw")}
+                              if k in ("suptitle", "subplots_adjust_kw", "scalar_plots")}
     visualizer_kw_from_log.update(visualizer_kw)
     visualizer = Visualizer(planner, dt, cbfs,
                             **visualizer_kw_from_log)

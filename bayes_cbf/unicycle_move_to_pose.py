@@ -999,7 +999,10 @@ class VisualizerScalarPlotDetKnl:
 
     def setStateCtrl(self, ax, info, state, uopt, t=None, **kw):
         Fxu_var = info[t]['Fxu_var']
-        self.det_knl_traj.append(to_numpy(torch.det(Fxu_var)))
+        Fxu_var_np = (to_numpy(Fxu_var)
+                      if isinstance(Fxu_var, torch.Tensor)
+                      else Fxu_var)
+        self.det_knl_traj.append(np.linalg.det(Fxu_var_np))
         self._plot_det_knl(ax, self.det_knl_traj)
 
     def _plot_det_knl(self, ax, det_knl_traj):
@@ -1215,11 +1218,9 @@ class Logger:
                              for A, b, c, d in cbcs(state, t)])),
                         t)
             add_scalars("vis", dict(rho=rho), t)
-        for key, v in self.info[t].items():
-            if isinstance(v, torch.Tensor):
-                v = to_numpy(v)
-            if isinstance(v, np.ndarray):
-                add_tensors(TBLOG, "vis", {key : v}, t)
+        info_np = { k : (to_numpy(v) if isinstance(v, torch.Tensor) else v)
+                    for k, v in self.info[t].items()}
+        add_tensors(TBLOG, "vis", info_np, t)
 
     @classmethod
     def _reconstruct_cbcs(cls, state, uopt, cache):
@@ -1245,7 +1246,7 @@ class Logger:
         info['cbcs'] = cls._reconstruct_cbcs(state, uopt, cache)
         for k, v in cache.items():
             if k.startswith("vis/"):
-                info[k] = v
+                info[k[len("vis/"):]] = v
         return info
 
 

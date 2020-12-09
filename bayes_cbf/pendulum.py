@@ -1111,10 +1111,11 @@ def speed_test_matrix_vector_independent_exp(
                                            kw['regressor_class'], logger,
                                            max_train=max_train,
                                            tags=[])
+            ntimes = 100
             elapsed = timeit.timeit(
                 lambda : (dgp.custom_predict(Xtest, Utest), dgp.clear_cache()),
-                number=100)
-            logger.add_scalars(name, dict(elapsed=elapsed), max_train)
+                number=ntimes)
+            logger.add_scalars(name, dict(elapsed=elapsed / ntimes), max_train)
             print(name, max_train, elapsed)
 
     events_file = max(
@@ -1128,7 +1129,7 @@ def speed_test_matrix_vector_independent_vis(
             vector=dict(label='Coregionalization GP'),
             matrix=dict(label='Matrix GP')),
         marker_rotation=['b*-', 'g+-', 'r.-'],
-        ylabel='Inference time',
+        ylabel='Inference time (secs)',
         xlabel='Training samples'
 ):
     logdata = load_tensorboard_scalars(events_file)

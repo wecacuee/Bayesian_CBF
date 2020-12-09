@@ -55,7 +55,8 @@ from bayes_cbf.gp_algebra import DeterministicGP, GaussianProcess
 from bayes_cbf.control_affine_model import ControlAffineRegressor
 from bayes_cbf.misc import (to_numpy, normalize_radians, ZeroDynamicsModel,
                             make_tensor_summary, add_tensors, gitdescribe,
-                            stream_tensorboard_scalars, load_tensorboard_scalars)
+                            stream_tensorboard_scalars, load_tensorboard_scalars,
+                            mkdir_savefig)
 from bayes_cbf.sampling import sample_generator_trajectory
 from bayes_cbf.planner import PiecewiseLinearPlanner, SplinePlanner
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, cbc2_safety_factor
@@ -1160,7 +1161,7 @@ class Visualizer:
 
         for ax, sp in zip(self.axes[1:], self.scalar_plots):
             sp.setStateCtrl(ax, self.info, state, uopt, t=t, **kw)
-        ax.figure.savefig(self.animationframepathpatt % t)
+        mkdir_savefig(self.fig, self.animationframepathpatt % t)
         plt.pause(self.dt)
 
 class Logger:
@@ -1321,7 +1322,7 @@ def visualize_last_n_files(runs_dir="data/runs",
         ax.set_title('true L = %.02f' % config['true_dynamics_gen']['L']
                     + '; prior L = %.02f' % config['mean_dynamics_gen']['L'])
         ax.legend()
-        ax.figure.savefig(osp.join(run_dir, 'vis.pdf'))
+        mkdir_savefig(ax.figure, osp.join(run_dir, 'vis.pdf'))
     plt.close(ax.figure.number)
 
 
@@ -1350,7 +1351,7 @@ def playback_logfile(events_dir, visualizer_kw=dict()):
         for k, v in info.items():
             visualizer.add_info(t, k, v)
         visualizer.setStateCtrl(state, uopt, t)
-    visualizer.fig.savefig(osp.join(events_dir, 'final_visualization.pdf'))
+    mkdir_savefig(visualizer.fig, osp.join(events_dir, 'final_visualization.pdf'))
     cmd = "ffmpeg -y -i {pngframes} -frames {frames} -pix_fmt yuv420p -c:v libx264 {outvideopath}".format(
         frames=numSteps-1,
         pngframes=visualizer.animationframepathpatt,

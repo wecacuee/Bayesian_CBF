@@ -1219,7 +1219,8 @@ class Logger:
                         t)
             add_scalars("vis", dict(rho=rho), t)
         info_np = { k : (to_numpy(v) if isinstance(v, torch.Tensor) else v)
-                    for k, v in self.info[t].items()}
+                    for k, v in self.info[t].items()
+                    if isinstance(v, (torch.Tensor, float, int, np.ndarray))}
         add_tensors(TBLOG, "vis", info_np, t)
 
     @classmethod

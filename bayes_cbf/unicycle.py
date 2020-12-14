@@ -292,6 +292,7 @@ class ControllerUnicycle(ControlCBFLearned):
             model = ShiftInvariantModel(
                 x_dim, u_dim,
                 gamma_length_scale_prior=gamma_length_scale_prior)
+        dtype = model.dtype
         cbfs = []
         ground_truth_cbfs = []
         for obs in obstacles:

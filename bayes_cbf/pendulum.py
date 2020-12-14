@@ -1115,7 +1115,7 @@ def learn_dynamics_matrix_vector_independent_vis(
         GX_learned = logdata['plot_learned_2D_func/' + exp + '/gx/learned/FX'][0][1]
         csets_gx = plot_2D_f_func(theta_omega_grid, GX_learned,
                                   axes_gen=lambda _: axs[e+1, 2:],
-                                  axtitle=axtitle + r" $g(x)_{{{i},0}}$",
+                                  axtitle=axtitle + r" $g(x)_{{{i},1}}$",
                                   xsample=Xtrain[-1, :],
                                   xlabel=(xlabel if (e+1 == len(exp_conf)) else None),
                                   ylabel=None,
@@ -1166,7 +1166,8 @@ def learn_dynamics_matrix_vector_independent(**kw):
 
 def speed_test_matrix_vector_independent_exp(
         exps=dict(matrix=dict(regressor_class=ControlAffineRegressorExact),
-                  vector=dict(regressor_class=ControlAffineRegressorVector)),
+                  vector=dict(regressor_class=ControlAffineRegressorVector),
+                  independent=dict(regressor_class=ControlAffineRegressorIndependent)),
         theta0=5*math.pi/6,
         omega0=-0.01,
         tau=0.01,
@@ -1224,6 +1225,7 @@ def speed_test_matrix_vector_independent_exp(
 def speed_test_matrix_vector_independent_vis(
         events_file='saved-runs/speed_test_matrix_vector_independent_v1.2.2/events.out.tfevents.1607401666.dwarf.27869.0',
         exp_conf=dict(
+            independent=dict(label='Independent GP'),
             vector=dict(label='Coregionalization GP'),
             matrix=dict(label='Matrix Variate GP')),
         marker_rotation=['b*-', 'g+-', 'r.-'],

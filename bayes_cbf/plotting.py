@@ -33,7 +33,7 @@ def plot_2D_f_func(theta_omega_grid, FX,
                                levels=lvl)
         plt.colorbar(ctf0, ax=axs[i])
         contour_sets.append(ctf0)
-        if axtitle: axs[i].set_title(axtitle.format(i=i))
+        if axtitle: axs[i].set_title(axtitle.format(i=i+1))
         if ylabel and i == 0: axs[i].set_ylabel(ylabel)
         if xlabel: axs[i].set_xlabel(xlabel)
 

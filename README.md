@@ -35,7 +35,41 @@
 pytest
 ```
 
-## Run scripts
+## Unicycle demos
+
+1. To run experiment where unicycle with mean CBF collides with the obstacle run
+
+   ```shellsession
+   python -c 'from bayes_cbf.unicycle_move_to_pose import unicycle_mean_cbf_collides_obstacle; unicycle_mean_cbf_collides_obstacle()'
+   ```
+
+   ![](./saved-runs/unicycle_move_to_pose_fixed_mean_cbf_collides_v1.2.3/animation.gif)
+   
+2. To run experiment where unicycle with Bayes CBF drives safely between the obstacles
+
+   ```shellsession
+   python -c 'from bayes_cbf.unicycle_move_to_pose import unicycle_bayes_cbf_safe_obstacle; unicycle_bayes_cbf_safe_obstacle()'
+   ```
+
+   ![](./saved-runs/unicycle_move_to_pose_fixed_mean_cbf_collides_1209-1257/animation.gif)
+   
+3. To run experiment where unicycle gets stuck without learning run
+
+   ```shellsession
+   python -c 'from bayes_cbf.unicycle_move_to_pose import unicycle_no_learning_gets_stuck; unicycle_no_learning_gets_stuck()'
+   ```
+
+   ![](./saved-runs/unicycle_move_to_pose_fixed_no_learning_gets_stuck_v1.2.3/animation.gif)
+   
+4. To run experiment where unicycle passes safely through obstacles due to learning run
+
+   ```shellsession
+   python -c 'from bayes_cbf.unicycle_move_to_pose import unicycle_learning_helps_avoid_getting_stuck; unicycle_learning_helps_avoid_getting_stuck()'
+   ```
+
+   ![](./saved-runs/unicycle_move_to_pose_fixed_learning_helps_avoid_getting_stuck_v1.2.3/animation.gif)
+
+## Pendulum demos
 
 1. A script to run pendulum example with random controller (No learning)
   ``` shellsession
@@ -57,4 +91,3 @@ pytest
   ``` shellsession
   pendulum_control_online_learning
   ```
-

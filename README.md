@@ -3,7 +3,7 @@
 
 ## Demo
 
-![](./saved-runs/unicycle_move_to_pose_fixed_mean_cbf_collides_1209-1257/animation.mp4)
+![](./saved-runs/unicycle_move_to_pose_fixed_mean_cbf_collides_1209-1257/animation.gif)
 
 ## Installation
 

@@ -1,6 +1,10 @@
 # BayesCBF
 ![Python package](https://github.com/wecacuee/BayesCBF/workflows/Python%20package/badge.svg)
 
+## Demo
+
+![](./saved-runs/unicycle_move_to_pose_fixed_mean_cbf_collides_1209-1257/animation.mp4)
+
 ## Installation
 
 1. If you are using a Python virtual environment, edit setup.bash to point to the

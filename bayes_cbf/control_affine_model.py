@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from gpytorch.distributions import MultivariateNormal, base_distributions
-from gpytorch.kernels import ScaleKernel, RBFKernel, IndexKernel
+from gpytorch.kernels import ScaleKernel, RBFKernel, IndexKernel, LinearKernel
 from gpytorch.likelihoods import _GaussianLikelihoodBase, GaussianLikelihood
 from gpytorch.likelihoods.noise_models import FixedGaussianNoise
 from gpytorch.means import ConstantMean
@@ -159,7 +159,7 @@ class ControlAffineExactGP(ExactGP):
         prior_args = dict() if gamma_length_scale_prior is None else dict(
             lengthscale_prior=GammaPrior(*gamma_length_scale_prior))
         self.input_covar = ScaleKernel(
-            RBFKernel(**prior_args))
+            RBFKernel(**prior_args) + LinearKernel())
         self.covar_module = HetergeneousMatrixVariateKernel(
             self.task_covar,
             self.input_covar,

@@ -1085,7 +1085,7 @@ def learn_dynamics_matrix_vector_independent_vis(
         exp_conf=dict(
             independent=dict(axtitle='Independent GP'),
             vector=dict(axtitle='Coregionalization GP'),
-            matrix=dict(axtitle='Matrix GP')),
+            matrix=dict(axtitle='Matrix Variate GP')),
         events_file='saved-runs/learn_matrix_vector_independent_v1.1.0/events.out.tfevents.1607382261.dwarf.5274.7'):
     logdata = load_tensorboard_scalars(events_file)
     events_dir = osp.dirname(events_file)
@@ -1224,7 +1224,7 @@ def speed_test_matrix_vector_independent_vis(
         events_file='saved-runs/speed_test_matrix_vector_independent_v1.2.2/events.out.tfevents.1607401666.dwarf.27869.0',
         exp_conf=dict(
             vector=dict(label='Coregionalization GP'),
-            matrix=dict(label='Matrix GP')),
+            matrix=dict(label='Matrix Variate GP')),
         marker_rotation=['b*-', 'g+-', 'r.-'],
         ylabel='Inference time',
         xlabel='Training samples'

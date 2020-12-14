@@ -25,7 +25,7 @@ class ConstantIndexKernel(Kernel):
         return self.A
 
     def forward(self, i, j):
-        return A[i, j]
+        return self.A[i, j]
 
 
 class DataKernel(Kernel):

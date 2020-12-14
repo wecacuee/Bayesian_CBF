@@ -1,3 +1,4 @@
+from functools import partial
 from abc import ABC, abstractmethod, abstractproperty
 from importlib import import_module
 

@@ -133,7 +133,7 @@ class LinePlotSerialization:
     def example_plot(ax_lines_xydata):
         for i, ax in ax_lines_xydata.items():
             for j, xydata in ax_lines_xydata.items():
-                axes[i].plot(xydata["x"], xydata["y"])
+                ax.plot(xydata["x"], xydata["y"])
 
     @staticmethod
     def deserialize(filename, axes):

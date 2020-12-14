@@ -1,6 +1,6 @@
 from pathlib import Path
 import warnings
-from typing import Any
+from typing import Any, Callable
 from itertools import zip_longest
 from collections import namedtuple
 from functools import partial
@@ -846,7 +846,7 @@ class ControlAffineRegressor(DynamicsModel):
         if Xtest_in.ndim == 1 and Utest_in.ndim == 1:
             mean_gu = mean_gu.squeeze(0)
             var_gu = var_gu.squeeze(0)
-        return (mean_gu, var_gu * A) if return_cov else mean_gu
+        return (mean_gu, var_gu) if return_cov else mean_gu
 
     def g_func_mean(self, Xtest_in):
         return self._gu_func(Xtest_in, return_cov=False)
@@ -854,7 +854,7 @@ class ControlAffineRegressor(DynamicsModel):
     def _cbf_func(self, Xtest, grad_htest, return_cov=False):
         if return_cov:
             mean_Fx, cov_Fx = self.predict(Xtest, return_cov=True)
-            cov_hFT = grad_htest.T @ cov_hFT @ grad_htest
+            cov_hFT = grad_htest.T @ cov_Fx @ grad_htest
         else:
             mean_Fx, cov_Fx = self.predict(Xtest, return_cov=False)
         mean_hFT = grad_htest @ mean_Fx

@@ -5,9 +5,10 @@ import torch
 
 from bayes_cbf.car.HyundaiGenesis import (HyundaiGenesisDynamicsModel,
                                           StateAsArray, rotmat_to_z, rotz)
-from bayes_cbf.misc import t_hstack, store_args, DynamicsModel, ZeroDynamicsModel
+from bayes_cbf.misc import (t_hstack, store_args, DynamicsModel, ZeroDynamicsModel,
+                            variable_required_grad)
 from bayes_cbf.sampling import sample_generator_trajectory, Visualizer
-from bayes_cbf.plotting import plot_learned_2D_func, plot_results
+from bayes_cbf.plotting import plot_learned_2D_func, plot_results, plt_savefig_with_data
 from bayes_cbf.control_affine_model import ControlAffineRegressor
 from bayes_cbf.controllers import ControlCBFLearned, NamedAffineFunc
 from bayes_cbf.car.vis import CarWithObstacles
@@ -56,7 +57,7 @@ class UnicycleDynamicsModel(DynamicsModel):
         fX[:, 4] = ω
         return fX.squeeze(0) if X_in.dim() <= 1 else fX
 
-    def g_func(self, X):
+    def g_func(self, X_in):
         """
                 [ cos(θ), 0 ]
                 [ sin(θ), 0 ]
@@ -69,8 +70,6 @@ class UnicycleDynamicsModel(DynamicsModel):
         gX = torch.zeros((*X.shape, self.m))
         gX[..., :, :] = torch.eye(2)
         return gX.squeeze(0) if X_in.dim() <= 1 else gX
-
-
 
 
 class UnicycleVisualizer(Visualizer):
@@ -140,13 +139,13 @@ class CircularObstacleCBC(NamedAffineFunc):
             return torch.autograd.grad(self.lie_f_h_col(X), X)[0]
 
     def lie2_f_h_col(self, X):
-        return self.grad_lie_f_h_col(x).bmm( self.model.f_func(x) )
+        return self.grad_lie_f_h_col(X).bmm( self.model.f_func(X) )
 
     def lie_g_lie_f_h_col(self, X):
         return self.grad_lie_f_h_col(X).bmm( self.model.g_func(X) )
 
     def lie2_fu_h_col(self, X, U):
-        grad_L1h = self.grad_lie_f_h_col(x)
+        grad_L1h = self.grad_lie_f_h_col(X)
         return grad_L1h.bmm(self.f_func(X) + self.g_func(X).bmm(U))
 
     def A(self, X):
@@ -156,7 +155,7 @@ class CircularObstacleCBC(NamedAffineFunc):
         K_α = torch.tensor(self.cbf_col_K_alpha, dtype=self.dtype)
         η_b_x = torch.cat([self.value(X).unsqueeze(0),
                            self.lie_f_h_col(X).unsqueeze(0)])
-        return (self.lie2_f_h_col(x) + K_α @ η_b_x)
+        return (self.lie2_f_h_col(X) + K_α @ η_b_x)
 
 
 
@@ -172,9 +171,9 @@ class ControlCarCBFLearned(ControlCBFLearned):
     @store_args
     def __init__(self,
                  dtype=torch.get_default_dtype(),
-                 true_model=MeanPendulumDynamicsModel,
+                 true_model=UnicycleDynamicsModel,
                  use_ground_truth_model=False,
-                 mean_dynamics_model=CarMeanDynamicsModel,
+                 mean_dynamics_model=UnicycleDynamicsModel,
                  centers=[(1, 1), (1, -1), (-1, -1), (-1, 1)],
                  radii=[0.8]*4,
                  x_goal=[(0,0)],
@@ -185,8 +184,10 @@ class ControlCarCBFLearned(ControlCBFLearned):
             self.model = self.true_model
         else:
             self.model = ControlAffineRegressor(x_dim, u_dim)
-        self.cbf2 = FourCircularObstacles(self.model, centers, radii, dtype=dtype)
-        self.ground_truth_cbf2 = FourCircularObstacles(self.true_model, centers, radii, dtype=dtype)
+        self.cbf2 = [CircularObstacleCBC(self.model, c, r, dtype=dtype)
+                     for (c, r) in zip(centers, radii)]
+        self.ground_truth_cbf2 = [CircularObstacleCBC(self.true_model, c, r, dtype=dtype)
+                                  for (c, r) in zip(centers, radii)]
 
     def unsafe_control(self, x):
         with torch.no_grad():
@@ -288,7 +289,7 @@ def run_car_control_ground_truth():
     """
     Run save car control with ground_truth model
     """
-    controller = ControlCarCBFLearned(mean_dynamics_model=CarMeanDynamicsModel)
+    controller = ControlCarCBFLearned(mean_dynamics_model=UnicycleDynamicsModel)
     start, inp = StateAsArray().deserialize(torch.zeros(1, controller.x_dim))
     start.pose.position[:, :2] = torch.tensor([[0,2]])
     start.pose.orientation = rotz(torch.tensor([-math.pi/2]))
@@ -296,7 +297,7 @@ def run_car_control_ground_truth():
         dynamics_model=HyundaiGenesisDynamicsModel(),
         D=1000,
         controller=controller.control,
-        visualizer=CarVisualizer(controller.centers, controller.radii),
+        visualizer=UnicycleVisualizer(controller.centers, controller.radii),
         x0=StateAsArray().serialize(start, inp))
 
 

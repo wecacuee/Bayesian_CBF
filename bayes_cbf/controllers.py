@@ -273,9 +273,6 @@ class EpsilonGreedyController(ABC):
         self.egreedy_scheme = egreedy_scheme
         self.ctrl_range = ctrl_range
 
-    def random_unsafe_control(self, i, x, min_=None, max_=None):
-        return randomact
-
     def control(self, x, t=None):
         min_, max_ = self.ctrl_range
         eps = epsilon(t, interpolate={0: self.egreedy_scheme[0],
@@ -548,7 +545,7 @@ class SOCPController(Controller):
              list(map(to_numpy, self._socp_objective(t, x, u_ref, yidx=0,
                                                      extravars=extravars))))
         ] + [
-            ("Safety_%d gt 0" % d,
+            ("Safety_%d gt 0" % i,
              list(map(to_numpy, self._socp_safety(
                  cbf.cbc,
                  x, u_ref,

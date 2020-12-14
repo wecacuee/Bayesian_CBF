@@ -16,7 +16,8 @@ from bayes_cbf.misc import (t_hstack, store_args, DynamicsModel,
                             ZeroDynamicsModel, epsilon, to_numpy,
                             get_affine_terms, get_quadratic_terms, t_jac,
                             variable_required_grad,
-                            create_summary_writer, plot_to_image)
+                            create_summary_writer, plot_to_image,
+                            normalize_radians)
 from bayes_cbf.gp_algebra import (DeterministicGP,)
 from bayes_cbf.cbc1 import RelDeg1Safety
 from bayes_cbf.car.vis import CarWithObstacles
@@ -291,6 +292,7 @@ class ControllerUnicycle(ControlCBFLearned):
             model = ShiftInvariantModel(
                 x_dim, u_dim,
                 gamma_length_scale_prior=gamma_length_scale_prior)
+        dtype = model.dtype
         cbfs = []
         ground_truth_cbfs = []
         for obs in obstacles:
@@ -559,54 +561,6 @@ def run_unicycle_ilqr(
         visualizer=visualizer_class(robotsize, obstacles, x_goal),
         x0=x0,
         dt=dt)
-
-
-class RRTPlanner:
-    def __init__(self, cbfs, x_goal, rng=np.random.default_rng, max_iter=1000,
-                 dx=0.1):
-        self.cbfs = cbfs
-        self.x_goal = x_goal
-        self._rng = rng
-        self.max_iter= max_iter
-        self.dx = dx
-        self._space = None
-        self._ss = None
-        self._make_rrt()
-
-    @staticmethod
-    def isStateValid(state):
-        # "state" is of type SE2StateInternal, so we don't need to use the "()"
-        # operator.
-        #
-        # Some arbitrary condition on the state (note that thanks to
-        # dynamic type checking we can just call getX() and do not need
-        # to convert state to an SE2State.)
-        x = torch.tensor([state.getX(), state.getY(), state.getTheta()])
-        return all((cbf(x) > 0 for cbf in self.cbfs))
-
-    def _make_rrt(self):
-        # create an SE2 state space
-        self._space = ob.SE2StateSpace()
-
-        # create a simple setup object
-        self._ss = og.SimpleSetup(space)
-        self._ss.setStateValidityChecker(ob.StateValidityCheckerFn(self.isStateValid))
-
-
-    def plan(self, x):
-        start = ob.State(self._space)
-        start().setX(x[0])
-        start().setY(x[1])
-        start().setYaw(x[2])
-        goal = ob.State(self._space)
-        goal().setX(self.x_goal[0])
-        goal().setY(self.x_goal[1])
-        goal().setYaw(self.x_goal[2])
-        self._ss.setStartAndGoalStates(start, goal)
-        solved = self._ss.solve(1.0)
-        self._ss.simplifySolution()
-        print(ss.getSolutionPath())
-
 
 def plan_unicycle_path(x0=[-3.0, 0.1, np.pi/18],
                        cbc_class=ObstacleCBF,

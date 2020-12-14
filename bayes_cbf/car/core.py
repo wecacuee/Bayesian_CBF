@@ -296,7 +296,7 @@ def run_car_control_ground_truth():
         dynamics_model=HyundaiGenesisDynamicsModel(),
         D=1000,
         controller=controller.control,
-        visualizer=CarVisualizer(controller.centers, controller.radii),
+        visualizer=UnicycleVisualizer(controller.centers, controller.radii),
         x0=StateAsArray().serialize(start, inp))
 
 

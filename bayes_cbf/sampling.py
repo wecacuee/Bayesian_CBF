@@ -37,8 +37,6 @@ def sample_generator_trajectory(dynamics_model, D, dt=0.01, x0=None,
     if controller_class is not None:
         controller = controller_class(dt=dt,
                                       true_model=true_model,
-                                      plotfile=plotfile.format(suffix='_ctrl_{suffix}'),
-                                      dtype=dtype
         ).control
 
 

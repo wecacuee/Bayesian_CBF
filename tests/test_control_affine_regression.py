@@ -16,6 +16,9 @@ from bayes_cbf.sampling import sample_generator_independent, sample_generator_tr
 from bayes_cbf.misc import torch_kron, variable_required_grad, to_numpy, DynamicsModel
 
 
+PLOTTING = True
+
+
 class RandomDynamicsModel(DynamicsModel):
     def __init__(self, m, n, deterministic=False, diag_cov=1e-5):
         self.n = n
@@ -130,7 +133,7 @@ def test_GP_train_predict(n=2, m=3,
     dgp_exact._fit_with_warnings(Xtrain, Utrain, XdotTrain, training_iter=training_iter, lr=0.01)
     _, _ = dgp_vector.custom_predict(Xtest, compute_cov=False)
     dgp_vector._fit_with_warnings(Xtrain, Utrain, XdotTrain, training_iter=training_iter, lr=0.01)
-    if X.shape[-1] == 2 and U.shape[-1] == 1:
+    if X.shape[-1] == 2 and U.shape[-1] == 1 and PLOTTING:
         plot_learned_2D_func(Xtrain.detach().cpu().numpy(), dgp.f_func,
                                 dynamics_model.f_func)
         plt.savefig('/tmp/f_learned_vs_f_true.pdf')

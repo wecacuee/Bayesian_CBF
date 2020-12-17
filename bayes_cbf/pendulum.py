@@ -1083,7 +1083,7 @@ def learn_dynamics_matrix_vector_independent_vis(
         ylabel=r'$\omega$',
         figtitle='Comparing GP Learning methods',
         exp_conf=dict(
-            independent=dict(axtitle='Independent GP'),
+            independent=dict(axtitle='Decoupled GP'),
             vector=dict(axtitle='Coregionalization GP'),
             matrix=dict(axtitle='Matrix Variate GP')),
         events_file='saved-runs/learn_matrix_vector_independent_v1.1.0/events.out.tfevents.1607382261.dwarf.5274.7'):
@@ -1136,7 +1136,7 @@ def learn_dynamics_matrix_vector_independent_vis(
     GX_true = logdata['plot_learned_2D_func/' + exp + '/gx/true/FX'][0][1]
     csets_gx = plot_2D_f_func(theta_omega_grid, GX_true,
                                       axes_gen=lambda _: axs[0, 2:],
-                                      axtitle="True $g(x)_{{{i},0}}$",
+                                      axtitle="True $g(x)_{{{i},1}}$",
                                       xsample=Xtrain[-1, :],
                                       xlabel=None,
                                       ylabel=None,
@@ -1225,7 +1225,7 @@ def speed_test_matrix_vector_independent_exp(
 def speed_test_matrix_vector_independent_vis(
         events_file='saved-runs/speed_test_matrix_vector_independent_v1.2.2/events.out.tfevents.1607401666.dwarf.27869.0',
         exp_conf=dict(
-            independent=dict(label='Independent GP'),
+            independent=dict(label='Decoupled GP'),
             vector=dict(label='Coregionalization GP'),
             matrix=dict(label='Matrix Variate GP')),
         marker_rotation=['b*-', 'g+-', 'r.-'],

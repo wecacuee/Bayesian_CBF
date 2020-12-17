@@ -118,13 +118,13 @@ class PendulumDynamicsModel(DynamicsModel):
         mass = self.mass
         gravity = self.gravity
         length = self.length
-        size = x.shape[0] if x.ndim == 2 else 1
+        shape = x.shape[:-1] if x.ndim == 2 else 1
         noise = torch.random.normal(scale=self.model_noise, dtype=self.dtype) if self.model_noise else 0
-        if x.ndim == 2:
-            return noise + torch.repeat_interleave(
-                torch.tensor([[[0], [1/(mass*length)]]], dtype=self.dtype), size, axis=0)
+        gx = torch.tensor([[0], [1/(mass*length)]], dtype=self.dtype)
+        if x.ndim >= 2:
+            return noise + torch.ones(*x.shape[:-1], 1, 1) * gx
         else:
-            return noise + torch.tensor([[0], [1/(mass*length)]], dtype=self.dtype)
+            return noise + gx
 
 
 class PendulumVisualizer(Visualizer):
@@ -360,27 +360,10 @@ def learn_dynamics_from_data(dX, X, U, pend_env, regressor_class, logger, max_tr
     Xtrain_numpy = Xtrain.detach().cpu().numpy()
     plot_results(torch.arange(U.shape[0]), omega_vec=X[:, 0],
                  theta_vec=X[:, 1], u_vec=U[:, 0])
-    log_learned_2D_func(Xtrain_numpy, dgp.f_func_mean,
-                        pend_env.f_func,
-                        key="/".join(tags + ["fx"]),
-                        logger=logger)
-    log_learned_2D_func(Xtrain_numpy, dgp.g_func_mean,
-                        pend_env.g_func,
-                        key="/".join(tags + ["gx"]),
-                        logger=logger)
-
-    # within train set
-    dX_98 = dgp.fu_func_mean(U[98:99, :], X[98:99,:])
-    #dX_98 = FX_98[0, ...].T @ UH[98, :]
-    #dXcov_98 = UH[98, :] @ FXcov_98 @ UH[98, :]
-    if not torch.allclose(dX[98], dX_98, rtol=0.4, atol=0.1):
-        print("Test failed: Train sample: expected:{}, got:{}, cov".format(dX[98], dX_98))
-
-    # out of train set
-    dX_Np1 = dgp.fu_func_mean(U[N+1:N+2,:], X[N+1:N+2,:])
-    #dX_Np1 = FXNp1[0, ...].T @ UH[N+1, :]
-    if not torch.allclose(dX[N+1], dX_Np1, rtol=0.4, atol=0.1):
-        print("Test failed: Test sample: expected:{}, got:{}, cov".format( dX[N+1], dX_Np1))
+    log_learned_model(Xtrain_numpy, dgp,
+                      pend_env.F_func,
+                      key="/".join(tags + ["Fx"]),
+                      logger=logger)
 
     return dgp, Xtrain_numpy
 
@@ -421,27 +404,6 @@ def learn_dynamics_exp(
 
     dgp, Xtrain_numpy = learn_dynamics_from_data(dX, X, U, pend_env, regressor_class, logger,
                                                  max_train=max_train, tags=[])
-
-    true_h_func = RadialCBFRelDegree2(pend_env)
-    learned_h_func = RadialCBFRelDegree2(dgp)
-    N = min(numSteps-1, max_train)
-    def learned_cbc2(X):
-        l_cbc2 = torch.zeros(X.shape[0], 2)
-        for i in range(X.shape[0]):
-            cbc2 = cbc2_gp( learned_h_func.cbf, learned_h_func.grad_cbf, dgp, U[N+1, :], torch.tensor([1.0, 1.0]))
-            l_cbc2[i, 0] = cbc2.mean(X[i, :])
-        return l_cbc2
-    #true_cbc2 = - true_h_func.A(X[N+1, :]) @ U[N+1,:] + true_h_func.b(X[N+1, :])
-    def true_cbc2(X):
-        t_cbc2 = torch.zeros(X.shape[0], 2)
-        for i in range(X.shape[0]):
-            t_cbc2[i, 0] = - true_h_func.A(X[i, :]) @ U[N+1,:] + true_h_func.b(X[i, :])
-        return t_cbc2
-    log_learned_2D_func(Xtrain_numpy,
-                        learned_cbc2,
-                        true_cbc2,
-                        key="cbc2",
-                        logger=logger)
     return dgp, dX, U, logger
 
 def learn_dynamics(**kw):
@@ -461,7 +423,7 @@ def get_grid_from_Xtrain(Xtrain):
     return theta_omega_grid
 
 
-def evaluate_func_on_grid(theta_omega_grid, f_func, xsample):
+def Xtest_from_theta_omega_grid(theta_omega_grid, xsample):
     # Plot true f(x)
     _, N, M = theta_omega_grid.shape
     D = xsample.shape[-1]
@@ -469,24 +431,29 @@ def evaluate_func_on_grid(theta_omega_grid, f_func, xsample):
     Xgrid[:, :] = torch.from_numpy(xsample)
     Xgrid[:, :2] = torch.from_numpy(
         theta_omega_grid.transpose(1, 2, 0).reshape(-1, 2)).to(torch.float32)
-    FX = f_func(Xgrid).reshape(N, M, D)
+    return Xgrid.reshape(N, M, D)
+
+def evaluate_func_on_grid(theta_omega_grid, f_func, xsample):
+    Xgrid = Xtest_from_theta_omega_grid(theta_omega_grid, xsample)
+    FX = f_func(Xgrid.reshape(-1, D)).reshape(N, M, D)
     return to_numpy(FX)
 
 
-def log_learned_2D_func(Xtrain, learned_f_func, true_f_func,
-                        key="fx",
-                        logger=None):
+def log_learned_model(Xtrain, model, true_f_func,
+                      key="Fx",
+                      logger=None):
     theta_omega_grid = get_grid_from_Xtrain(Xtrain)
-    FX_learned = evaluate_func_on_grid(theta_omega_grid, learned_f_func, Xtrain[-1, :])
-    FX_true = evaluate_func_on_grid(theta_omega_grid, true_f_func, Xtrain[-1, :])
-    logger.add_tensors("/".join(("plot_learned_2D_func", key)),
-                       dict(Xtrain=Xtrain), 0)
-    logger.add_tensors("/".join(("plot_learned_2D_func", key, "learned")),
-                       dict(theta_omega_grid=theta_omega_grid,
-                            FX=FX_learned), 0)
-    logger.add_tensors("/".join(("plot_learned_2D_func", key, "true")),
-                       dict(theta_omega_grid=theta_omega_grid,
-                            FX=FX_true), 0)
+    D = Xtrain.shape[-1]
+    _, N, M = theta_omega_grid.shape
+    Xtest = Xtest_from_theta_omega_grid(theta_omega_grid, Xtrain[0, :])
+    FX_learned, var_FX = model.custom_predict_fullmat(Xtest.reshape(-1, D))
+    FX_true = to_numpy(true_f_func(Xtest).reshape(N, M, -1))
+    logger.add_tensors("/".join(("log_learned_model", key)),
+                       dict(Xtrain=Xtrain,
+                            theta_omega_grid=theta_omega_grid,
+                            FX_learned=to_numpy(FX_learned.reshape(N, M, -1)),
+                            var_FX=to_numpy(var_FX),
+                            FX_true=FX_true), 0)
 
 
 def plot_learned_2D_func(Xtrain, learned_f_func, true_f_func, axtitle='f(x)[{i}]',
@@ -1077,7 +1044,6 @@ def learn_dynamics_matrix_vector_independent_exp(
         length=1,
         max_train=200,
         numSteps=1000,
-        regressor_class=ControlAffineRegressor,
         logger_class=partial(TBLogger,
                              exp_tags=['learn_matrix_vector_independent'],
                              runs_dir='data/runs'),
@@ -1096,14 +1062,26 @@ def learn_dynamics_matrix_vector_independent_exp(
 
     for name, kw in exps.items():
         dgp, _ = learn_dynamics_from_data(dX, X, U, pend_env,
-                                       regressor_class, logger,
-                                       max_train=max_train,
-                                       tags=[name])
+                                          kw['regressor_class'], logger,
+                                          max_train=max_train,
+                                          tags=[name])
     events_file = max(
         glob.glob(osp.join(logger.experiment_logs_dir, "*.tfevents*")),
         key=lambda f: os.stat(f).st_mtime)
     return events_file
 
+def measure_error(FX_t_learned, var_FX_t, FX_t_true):
+    N, M, D = FX_t_true.shape
+    FX_t_learned, var_FX_t, FX_t_true = map(
+        torch.from_numpy, (FX_t_learned, var_FX_t, FX_t_true))
+    FX_t_diff = FX_t_true - FX_t_learned
+    var_FX_diag_test_t = torch.diagonal(
+        var_FX_t, dim1=0, dim2=1).reshape(N, M, D, D)
+    sq_sum = FX_t_diff.unsqueeze(-2).matmul(
+        FX_t_diff.unsqueeze(-1).solve(var_FX_diag_test_t).solution
+    ).reshape(-1).sum()
+    n = np.prod(FX_t_true.shape[:-1])
+    return np.sqrt(sq_sum / n)
 
 def learn_dynamics_matrix_vector_independent_vis(
         xlabel=r'$\theta$',
@@ -1120,16 +1098,22 @@ def learn_dynamics_matrix_vector_independent_vis(
                             figsize=(10, 7.0))
     fig.subplots_adjust(wspace=0.2, hspace=0.3, left=0.07, right=0.95,
                         bottom=0.07, top=0.92)
-    theta_omega_grid = logdata['plot_learned_2D_func/matrix/fx/true/theta_omega_grid'][0][1]
-    FX_true = logdata['plot_learned_2D_func/matrix/fx/true/FX'][0][1]
-    Xtrain = logdata['plot_learned_2D_func/matrix/fx/Xtrain'][0][1]
+    theta_omega_grid = logdata['log_learned_model/matrix/Fx/theta_omega_grid'][0][1]
+    FX_t_true = logdata['log_learned_model/matrix/Fx/FX_true'][0][1]
+    batch_shape = FX_t_true.shape[:-1]
+    FX_true = FX_t_true.reshape(*batch_shape, 2, 2).transpose(0, 1, 3, 2)
+    Xtrain = logdata['log_learned_model/matrix/Fx/Xtrain'][0][1]
 
     csets_fx = None
     csets_gx = None
     for e, exp in enumerate(exp_conf.keys()):
         axtitle = exp_conf[exp]['axtitle']
-        FX_learned = logdata['plot_learned_2D_func/' + exp + '/fx/learned/FX'][0][1]
-        csets_fx = plot_2D_f_func(theta_omega_grid, FX_learned,
+        FX_t_learned = logdata['log_learned_model/' + exp + '/Fx/FX_learned'][0][1]
+        var_FX_t = logdata['log_learned_model/' + exp + '/Fx/var_FX'][0][1]
+        print("exp: ", exp, "; error: ", measure_error(FX_t_learned, var_FX_t, FX_t_true))
+        batch_shape = FX_t_learned.shape[:-1]
+        FX_learned = FX_t_learned.reshape(*batch_shape, 2, 2).transpose(0, 1, 3, 2)
+        csets_fx = plot_2D_f_func(theta_omega_grid, FX_learned[:, :, 0, :],
                                   axes_gen=lambda _: axs[e+1, :2],
                                   axtitle=axtitle + r" $f(x)_{i}$",
                                   xsample=Xtrain[-1, :],
@@ -1139,8 +1123,7 @@ def learn_dynamics_matrix_vector_independent_vis(
                                                   if csets_fx is None else
                                                   [c.levels for c in csets_fx])
         )
-        GX_learned = logdata['plot_learned_2D_func/' + exp + '/gx/learned/FX'][0][1]
-        csets_gx = plot_2D_f_func(theta_omega_grid, GX_learned,
+        csets_gx = plot_2D_f_func(theta_omega_grid, FX_learned[:, :, 1, :],
                                   axes_gen=lambda _: axs[e+1, 2:],
                                   axtitle=axtitle + r" $g(x)_{{{i},1}}$",
                                   xsample=Xtrain[-1, :],
@@ -1152,22 +1135,20 @@ def learn_dynamics_matrix_vector_independent_vis(
         )
 
 
-    FX_true = logdata['plot_learned_2D_func/' + exp + '/fx/true/FX'][0][1]
-    csets_fx = plot_2D_f_func(theta_omega_grid, FX_true,
-                                      axes_gen=lambda _: axs[0, :2],
-                                      axtitle="True $f(x)_{i}$",
-                                      xsample=Xtrain[-1, :],
-                                      xlabel=None,
-                                      ylabel=ylabel,
-                                      contour_levels=[c.levels for c in csets_fx])
-    GX_true = logdata['plot_learned_2D_func/' + exp + '/gx/true/FX'][0][1]
-    csets_gx = plot_2D_f_func(theta_omega_grid, GX_true,
-                                      axes_gen=lambda _: axs[0, 2:],
-                                      axtitle="True $g(x)_{{{i},1}}$",
-                                      xsample=Xtrain[-1, :],
-                                      xlabel=None,
-                                      ylabel=None,
-                                      contour_levels=[c.levels for c in csets_gx])
+    csets_fx = plot_2D_f_func(theta_omega_grid, FX_true[:, :, 0, :],
+                              axes_gen=lambda _: axs[0, :2],
+                              axtitle="True $f(x)_{i}$",
+                              xsample=Xtrain[-1, :],
+                              xlabel=None,
+                              ylabel=ylabel,
+                              contour_levels=[c.levels for c in csets_fx])
+    csets_gx = plot_2D_f_func(theta_omega_grid, FX_true[:, :, 1, :],
+                              axes_gen=lambda _: axs[0, 2:],
+                              axtitle="True $g(x)_{{{i},1}}$",
+                              xsample=Xtrain[-1, :],
+                              xlabel=None,
+                              ylabel=None,
+                              contour_levels=[c.levels for c in csets_gx])
 
     xmin = np.min(theta_omega_grid[0, ...])
     xmax = np.max(theta_omega_grid[0, ...])
@@ -1259,7 +1240,7 @@ def speed_test_matrix_vector_independent_exp(
     return events_file
 
 def speed_test_matrix_vector_independent_vis(
-        events_file='saved-runs/speed_test_matrix_vector_independent_v1.2.2/events.out.tfevents.1607401666.dwarf.27869.0',
+        events_file='saved-runs/speed_test_matrix_vector_independent_v1.3.0/events.out.tfevents.1608186154.dwarf.14269.0',
         exp_conf=dict(
             independent=dict(label='Decoupled GP'),
             vector=dict(label='Coregionalization GP'),
@@ -1295,5 +1276,5 @@ if __name__ == '__main__':
     #run_pendulum_control_cbf_clf()
     # learn_dynamics()
     #run_pendulum_control_online_learning()
-    # learn_dynamics_matrix_vector_independent()
-    speed_test_matrix_vector_independent()
+    learn_dynamics_matrix_vector_independent()
+    #speed_test_matrix_vector_independent()

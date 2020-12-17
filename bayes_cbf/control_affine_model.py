@@ -908,6 +908,16 @@ class ControlAffineRegressorExact(ControlAffineRegressor):
             varFXU = Xtest.new_zeros(Xtest.shape[0], Xtestp.shape[0], *A.shape)
         return (meanFXU, varFXU)
 
+    def custom_predict_fullmat(self, Xtest_in, Xtestp_in=None):
+        Xtest = self._ensure_device_dtype(Xtest_in)
+        Xtestp = (self._ensure_device_dtype(Xtestp_in) if Xtestp_in is not None
+                  else Xtest)
+        meanFX, A, BkXX = self._custom_predict_matrix(Xtest_in, Xtestp_in,
+                                                      compute_cov=True)
+        return meanFX, torch_kron(BkXX, A.unsqueeze(0).unsqueeze(0),
+                                  batch_dims=2)
+
+
     def _custom_predict_matrix(self, Xtest_in, Xtestp_in=None, compute_cov=True):
         """
 
@@ -998,15 +1008,6 @@ class ControlAffineRegressorExact(ControlAffineRegressor):
         return mean_k, A, BkXX
 
 
-
-class ControlAffineRegressorIndependent(ControlAffineRegressor):
-    def custom_predict(self, Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None,
-                       Utestp_in=None, UHfillp=1,
-                       compute_cov=True):
-        """
-        """
-        pass
-
 class ControlAffineRegressorVector(ControlAffineRegressor):
     def custom_predict(self, Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None,
                        Utestp_in=None, UHfillp=1,
@@ -1045,6 +1046,13 @@ class ControlAffineRegressorVector(ControlAffineRegressor):
             k, n = Xtest.shape
             varFXU = Xtest.new_zeros(Xtest.shape[0], Xtestp.shape[0], n, n)
         return (meanFXU, varFXU)
+
+    def custom_predict_fullmat(self, Xtest_in, Xtestp_in=None):
+        Xtest = self._ensure_device_dtype(Xtest_in)
+        Xtestp = (self._ensure_device_dtype(Xtestp_in) if Xtestp_in is not None
+                  else Xtest)
+        return self._custom_predict_matrix(Xtest_in, Xtestp_in,
+                                           compute_cov=True)
 
 
     def _perturbed_cholesky_compute(self,

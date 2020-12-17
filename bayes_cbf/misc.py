@@ -95,12 +95,15 @@ def torch_kron(A, B, batch_dims=1):
     """
     assert A.ndim == B.ndim
     b = B.shape[0:batch_dims]
-    assert A.shape[0:batch_dims] == b
+    #assert A.shape[0:batch_dims] == b
+    a = A.shape[0:batch_dims]
     B_shape = sum([[1, si] for si in B.shape[batch_dims:]], [])
     A_shape = sum([[si, 1] for si in A.shape[batch_dims:]], [])
     kron_shape = [a*b for a, b in zip_longest(A.shape[batch_dims:],
                                               B.shape[batch_dims:], fillvalue=1)]
-    return (A.reshape(*b, *A_shape) * B.reshape(*b, *B_shape)).reshape(*b, *kron_shape)
+    kron = (A.reshape(*a, *A_shape) * B.reshape(*b, *B_shape))
+    k = kron.shape[:batch_dims]
+    return kron.reshape(*k, *kron_shape)
 
 
 class DynamicsModel(ABC):
@@ -177,6 +180,9 @@ class DynamicsModel(ABC):
 
     def set_init_state(self, x0):
         self._state = x0.clone()
+
+    def F_func(self, X):
+        return torch.cat([self.f_func(X).unsqueeze(-1), self.g_func(X)], dim=-1)
 
 class BayesianDynamicsModel(DynamicsModel):
     @abstractmethod

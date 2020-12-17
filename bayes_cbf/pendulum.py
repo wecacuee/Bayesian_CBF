@@ -1106,11 +1106,13 @@ def learn_dynamics_matrix_vector_independent_vis(
 
     csets_fx = None
     csets_gx = None
+    exp_error_data = []
     for e, exp in enumerate(exp_conf.keys()):
         axtitle = exp_conf[exp]['axtitle']
         FX_t_learned = logdata['log_learned_model/' + exp + '/Fx/FX_learned'][0][1]
         var_FX_t = logdata['log_learned_model/' + exp + '/Fx/var_FX'][0][1]
-        print("exp: ", exp, "; error: ", measure_error(FX_t_learned, var_FX_t, FX_t_true))
+        error = measure_error(FX_t_learned, var_FX_t, FX_t_true)
+        exp_error_data.append((exp, error))
         batch_shape = FX_t_learned.shape[:-1]
         FX_learned = FX_t_learned.reshape(*batch_shape, 2, 2).transpose(0, 1, 3, 2)
         csets_fx = plot_2D_f_func(theta_omega_grid, FX_learned[:, :, 0, :],
@@ -1161,6 +1163,13 @@ def learn_dynamics_matrix_vector_independent_vis(
     fig.suptitle(figtitle)
     if hasattr(fig, "canvas") and hasattr(fig.canvas, "set_window_title"):
         fig.canvas.set_window_title(figtitle)
+
+    error_file = osp.join(events_dir,
+                          'vector_matrix_independent_learning_error.txt')
+    exp_names, exp_errors = zip(*exp_error_data)
+    np.savetxt(error_file, [exp_errors],
+               fmt='%.03f',
+               header=' '.join(exp_names))
 
     plot_file = osp.join(events_dir, 'learned_f_g_vs_true_f_g_mat_vec_ind.pdf')
     fig.savefig(plot_file)

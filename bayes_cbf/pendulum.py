@@ -1192,6 +1192,14 @@ def learn_dynamics_matrix_vector_independent(**kw):
 
 
 def speed_test_matrix_vector_independent_exp(
+        # max_train_variations=[64, 512], # testing GPU
+        max_train_variations=[64, 128, 256, 512], # final GPU
+        # max_train_variations=[10, 25, 50, 80, 125], # CPU
+        # ntimes = 20, # How many times the inference should be repeated
+        ntimes = 50, # How many times the inference should be repeated
+        logger_class=partial(TBLogger,
+                             exp_tags=['speed_test_matrix_vector_independent'],
+                             runs_dir='data/runs'),
         exps=dict(matrix=dict(regressor_class=ControlAffineRegressorExact),
                   vector=dict(regressor_class=ControlAffineRegressorVector),
                   independent=dict(regressor_class=ControlAffineRegressorIndependent)),
@@ -1201,14 +1209,8 @@ def speed_test_matrix_vector_independent_exp(
         mass=1,
         gravity=10,
         length=1,
-        max_train_variations=[40, 80, 160, 320], # testing GPU
-        # max_train_variations=[100, 200, 400, 625], # GPU
-        # max_train_variations=[10, 25, 50, 80, 125], # CPU
         numSteps=1000,
-        logger_class=partial(TBLogger,
-                             exp_tags=['speed_test_matrix_vector_independent'],
-                             runs_dir='data/runs'),
-        pendulum_dynamics_class=PendulumDynamicsModel
+        pendulum_dynamics_class=PendulumDynamicsModel,
 ):
     logger = logger_class()
     pend_env = pendulum_dynamics_class(m=1, n=2, mass=mass, gravity=gravity,
@@ -1216,32 +1218,38 @@ def speed_test_matrix_vector_independent_exp(
     dX, X, U = sampling_pendulum_data(
         pend_env, D=numSteps, x0=torch.tensor([theta0,omega0]),
         dt=tau,
+        visualizer=VisualizerZ(),
         controller=ControlRandom(mass=mass, gravity=gravity, length=length).control,
         plot_every_n_steps=numSteps)
     for t,  (dx, x, u) in enumerate(zip(dX, X, U)):
         logger.add_tensors("traj", dict(dx=dx, x=x, u=u), t)
 
-    # Test train split
     shuffled_order = np.arange(X.shape[0]-1)
-    #shuffled_order = torch.randint(D, size=(D,))
 
     dgp = dict()
     for max_train in max_train_variations:
+        # Test train split
+        np.random.shuffle(shuffled_order)
+        shuffled_order_t = torch.from_numpy(shuffled_order)
+        test_indices = shuffled_order_t[-10:]
+        Xtest = X[test_indices, :]
+        Utest = U[test_indices, :]
+        XdotTest = dX[test_indices, :]
+
+        train_indices = shuffled_order_t[:max_train]
+        Xtrain = X[train_indices, :]
+        Utrain = U[train_indices, :]
+        XdotTrain = dX[train_indices, :]
         for name, kw in exps.items():
-            np.random.shuffle(shuffled_order)
-            shuffled_order_t = torch.from_numpy(shuffled_order)
-            test_indices = shuffled_order_t[:10]
-            Xtest = X[test_indices, :]
-            Utest = U[test_indices, :]
-            XdotTest = dX[test_indices, :]
-            dgp, _ = learn_dynamics_from_data(dX, X, U, pend_env,
-                                           kw['regressor_class'], logger,
-                                           max_train=max_train,
-                                           tags=[])
-            ntimes = 100
-            elapsed = timeit.timeit(
-                lambda : (dgp.custom_predict(Xtest, Utest), dgp.clear_cache()),
-                number=ntimes)
+            dgp = kw['regressor_class'](Xtrain.shape[-1], Utrain.shape[-1])
+            dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50)
+            elapsed = min(timeit.repeat(
+                stmt='dgp.custom_predict(Xtest, Utest);dgp.clear_cache()',
+                repeat=5,
+                number=ntimes,
+                globals=dict(dgp=dgp,
+                             Xtest=Xtest,
+                             Utest=Utest)))
             logger.add_scalars(name, dict(elapsed=elapsed / ntimes), max_train)
             print(name, max_train, elapsed)
 

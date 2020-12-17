@@ -398,8 +398,11 @@ class TBLogger(Logger):
         if not osp.exists(self.exp_dir): osp.makedirs(self.exp_dir)
         add_tensors(self.summary_writer, tag, var_dict, t)
 
+def ensuredirs(fpath):
+    fdir = osp.dirname(fpath)
+    if not osp.exists(fdir):
+        os.makedirs(fdir)
+    return fpath
 
 def mkdir_savefig(fig, figpath):
-    figdir = osp.dirname(figpath)
-    if not osp.exists(figdir): os.makedirs(figdir)
-    fig.savefig(figpath)
+    fig.savefig(ensuredirs(figpath))

@@ -45,7 +45,7 @@ from bayes_cbf.controllers import (Controller, ControlCBFLearned,
 from bayes_cbf.misc import (t_vstack, t_hstack, to_numpy, store_args,
                             DynamicsModel, ZeroDynamicsModel, variable_required_grad,
                             epsilon, add_tensors, gitdescribe, TBLogger,
-                            load_tensorboard_scalars)
+                            load_tensorboard_scalars, ensuredirs)
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, RelDeg2Safety
 
 
@@ -127,14 +127,49 @@ class PendulumDynamicsModel(DynamicsModel):
             return noise + torch.tensor([[0], [1/(mass*length)]], dtype=self.dtype)
 
 
+class PendulumVisualizer(Visualizer):
+    def __init__(self, plotfile='data/plots/pendulum_data_{t}.pdf',
+                 plot_every_n_steps=20):
+        self.plotfile = plotfile
+        self.plot_every_n_steps = plot_every_n_steps
+
+        self._reset()
+
+    def _reset(self):
+        # initializations
+        self.omega_vec = []
+        self.theta_vec = []
+        self.u_vec = []
+        self.axs = None
+
+    def setStateCtrl(self, x, u, t, **kw):
+        self.theta_vec.append(float(x[0]))
+        self.omega_vec.append(float(x[1]))
+        self.u_vec.append(float(u))
+
+        if t % self.plot_every_n_steps == 0:
+            self.axs = plot_results(np.arange(t+1),
+                                    np.asarray(self.omega_vec),
+                                    np.asarray(self.theta_vec),
+                                    np.asarray(self.u_vec),
+                                    axs=self.axs)
+            plt_savefig_with_data(self.axs.flatten()[0].figure,
+                                ensuredirs(self.plotfile.format(t=t)))
+            plt.pause(0.001)
+
+
 def sampling_pendulum(dynamics_model, numSteps,
                       controller=None,
                       x0=None,
                       dt=0.01,
                       plot_every_n_steps=20,
                       axs=None,
-                      visualizer=VisualizerZ(),
+                      visualizer=None,
+                      visualizer_class=PendulumVisualizer,
                       plotfile='data/plots/pendulum_data_{t}.pdf'):
+    if visualizer is None:
+        visualizer = visualizer_class(plotfile=plotfile,
+                                      plot_every_n_steps=plot_every_n_steps)
     assert controller is not None, 'Surprise !! Changed interface to make controller a required argument'
     m, g, l = (dynamics_model.mass, dynamics_model.gravity,
                dynamics_model.length)
@@ -186,17 +221,9 @@ def sampling_pendulum(dynamics_model, numSteps,
         # record the values
         #record and normalize theta to be in -pi to pi range
         theta = (((theta+math.pi) % (2*math.pi)) - math.pi)
-        if t % plot_every_n_steps == 0:
-            axs = plot_results(np.arange(t+1),
-                               omega_vec[:t+1].detach().cpu().numpy(),
-                               theta_vec[:t+1].detach().cpu().numpy(),
-                               u_vec[:t+1].detach().cpu().numpy(),
-                               axs=axs)
-            plt_savefig_with_data(axs.flatten()[0].figure, plotfile.format(t=t))
-            plt.pause(0.001)
-            visualizer.setStateCtrl(
-                Xold[0], u, t=t,
-                **uncertainity_vis_kwargs(controller, Xold[0], u, tau))
+        visualizer.setStateCtrl(
+            Xold[0], u, t=t,
+            **uncertainity_vis_kwargs(controller, Xold[0], u, tau))
 
     assert torch.all((theta_vec <= math.pi) & (-math.pi <= theta_vec))
     damge_perc=damage_vec.sum() * 100/numSteps
@@ -1174,7 +1201,8 @@ def speed_test_matrix_vector_independent_exp(
         mass=1,
         gravity=10,
         length=1,
-        max_train_variations=[100, 200, 400, 625], # GPU
+        max_train_variations=[40, 80, 160, 320], # testing GPU
+        # max_train_variations=[100, 200, 400, 625], # GPU
         # max_train_variations=[10, 25, 50, 80, 125], # CPU
         numSteps=1000,
         logger_class=partial(TBLogger,

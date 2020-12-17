@@ -39,3 +39,8 @@ Copied to overleaf with script.
 
 
 
+# Dec 16
+
+## 20:38
+
+1. Why is decoupled GP slower than MVGP

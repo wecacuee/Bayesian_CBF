@@ -147,8 +147,8 @@ class LinePlotSerialization:
 
 
 def plt_savefig_with_data(fig, filename):
-    npz_filename = osp.splitext(filename)[0] + ".npz"
-    LinePlotSerialization.serialize(npz_filename, fig.get_axes())
+    # npz_filename = osp.splitext(filename)[0] + ".npz"
+    # LinePlotSerialization.serialize(npz_filename, fig.get_axes())
     fig.savefig(filename)
 
 def draw_ellipse(ax, scale, theta, x0, **kwargs):

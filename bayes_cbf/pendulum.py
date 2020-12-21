@@ -33,7 +33,8 @@ from tensorboard.backend.event_processing import event_file_loader
 from bayes_cbf.control_affine_model import (ControlAffineRegressor, LOG as CALOG,
                                             ControlAffineRegressorExact,
                                             ControlAffineRegressorVector,
-                                            ControlAffineRegressorIndependent)
+                                            ControlAffineRegressorIndependent,
+                                            is_psd)
 CALOG.setLevel(logging.WARNING)
 
 from bayes_cbf.plotting import (plot_results, plot_learned_2D_func_from_data,
@@ -434,6 +435,8 @@ def Xtest_from_theta_omega_grid(theta_omega_grid, xsample):
     return Xgrid.reshape(N, M, D)
 
 def evaluate_func_on_grid(theta_omega_grid, f_func, xsample):
+    _, N, M = theta_omega_grid.shape
+    D = xsample.shape[-1]
     Xgrid = Xtest_from_theta_omega_grid(theta_omega_grid, xsample)
     FX = f_func(Xgrid.reshape(-1, D)).reshape(N, M, D)
     return to_numpy(FX)
@@ -447,13 +450,17 @@ def log_learned_model(Xtrain, model, true_f_func,
     _, N, M = theta_omega_grid.shape
     Xtest = Xtest_from_theta_omega_grid(theta_omega_grid, Xtrain[0, :])
     FX_learned, var_FX = model.custom_predict_fullmat(Xtest.reshape(-1, D))
+    assert not torch.isnan(FX_learned).any()
+    assert not torch.isnan(var_FX).any()
+    # FX_true.shape == (*, n, (1+m))
     FX_true = to_numpy(true_f_func(Xtest).reshape(N, M, -1))
     logger.add_tensors("/".join(("log_learned_model", key)),
                        dict(Xtrain=Xtrain,
                             theta_omega_grid=theta_omega_grid,
                             FX_learned=to_numpy(FX_learned.reshape(N, M, -1)),
                             var_FX=to_numpy(var_FX),
-                            FX_true=FX_true), 0)
+                            FX_true=FX_true),
+                       0)
 
 
 def plot_learned_2D_func(Xtrain, learned_f_func, true_f_func, axtitle='f(x)[{i}]',
@@ -1070,23 +1077,27 @@ def learn_dynamics_matrix_vector_independent_exp(
         key=lambda f: os.stat(f).st_mtime)
     return events_file
 
-def measure_error(FX_t_learned, var_FX_t, FX_t_true):
-    N, M, D = FX_t_true.shape
-    FX_t_learned, var_FX_t, FX_t_true = map(
-        torch.from_numpy, (FX_t_learned, var_FX_t, FX_t_true))
-    FX_t_diff = FX_t_true - FX_t_learned
-    var_FX_diag_test_t = torch.diagonal(
-        var_FX_t, dim1=0, dim2=1).reshape(N, M, D, D)
-    sq_sum = FX_t_diff.unsqueeze(-2).matmul(
-        FX_t_diff.unsqueeze(-1).solve(var_FX_diag_test_t).solution
-    ).reshape(-1).sum()
-    n = np.prod(FX_t_true.shape[:-1])
-    return np.sqrt(sq_sum / n)
+def measure_error(FX_learned, var_FX, FX_true):
+    N, M, D = FX_true.shape
+    FX_learned, var_FX, FX_true = map(
+        torch.from_numpy, (FX_learned, var_FX, FX_true))
+    FX_t_diff = FX_true - FX_learned
+    errors = FX_t_diff.reshape(-1) @ (
+        FX_t_diff.reshape(-1, 1).solve(var_FX).solution
+    )
+    assert (errors > 0).all()
+    sq_sum = errors.reshape(-1).sum()
+    assert not torch.isnan(sq_sum).any()
+    assert sq_sum > 0
+    n = np.prod(FX_true.shape[:-1])
+    return np.sqrt(to_numpy(sq_sum) / n)
 
 def learn_dynamics_matrix_vector_independent_vis(
         xlabel=r'$\theta$',
         ylabel=r'$\omega$',
         figtitle='Comparing GP Learning methods',
+        n = 2,
+        m = 1,
         exp_conf=dict(
             independent=dict(axtitle='Decoupled GP'),
             vector=dict(axtitle='Coregionalization GP'),
@@ -1099,9 +1110,7 @@ def learn_dynamics_matrix_vector_independent_vis(
     fig.subplots_adjust(wspace=0.2, hspace=0.3, left=0.07, right=0.95,
                         bottom=0.07, top=0.92)
     theta_omega_grid = logdata['log_learned_model/matrix/Fx/theta_omega_grid'][0][1]
-    FX_t_true = logdata['log_learned_model/matrix/Fx/FX_true'][0][1]
-    batch_shape = FX_t_true.shape[:-1]
-    FX_true = FX_t_true.reshape(*batch_shape, 2, 2).transpose(0, 1, 3, 2)
+    FX_true = logdata['log_learned_model/matrix/Fx/FX_true'][0][1]
     Xtrain = logdata['log_learned_model/matrix/Fx/Xtrain'][0][1]
 
     csets_fx = None
@@ -1109,12 +1118,13 @@ def learn_dynamics_matrix_vector_independent_vis(
     exp_error_data = []
     for e, exp in enumerate(exp_conf.keys()):
         axtitle = exp_conf[exp]['axtitle']
-        FX_t_learned = logdata['log_learned_model/' + exp + '/Fx/FX_learned'][0][1]
-        var_FX_t = logdata['log_learned_model/' + exp + '/Fx/var_FX'][0][1]
-        error = measure_error(FX_t_learned, var_FX_t, FX_t_true)
+        FX_learned = logdata['log_learned_model/' + exp + '/Fx/FX_learned'][0][1]
+        var_FX = logdata['log_learned_model/' + exp + '/Fx/var_FX'][0][1]
+        error = measure_error(FX_learned, var_FX, FX_true)
         exp_error_data.append((exp, error))
-        batch_shape = FX_t_learned.shape[:-1]
-        FX_learned = FX_t_learned.reshape(*batch_shape, 2, 2).transpose(0, 1, 3, 2)
+        batch_shape = FX_learned.shape[:-1]
+        # FX_earned.shape = (*b, n, (1+m))
+        FX_learned = FX_learned.reshape(*batch_shape, n, (1+m))
         csets_fx = plot_2D_f_func(theta_omega_grid, FX_learned[:, :, 0, :],
                                   axes_gen=lambda _: axs[e+1, :2],
                                   axtitle=axtitle + r" $f(x)_{i}$",
@@ -1137,14 +1147,16 @@ def learn_dynamics_matrix_vector_independent_vis(
         )
 
 
-    csets_fx = plot_2D_f_func(theta_omega_grid, FX_true[:, :, 0, :],
+    batch_shape = FX_true.shape[:-1]
+    FX_true = FX_true.reshape(*batch_shape, n, (1+m))
+    csets_fx = plot_2D_f_func(theta_omega_grid, FX_true[:, :, :, 0],
                               axes_gen=lambda _: axs[0, :2],
                               axtitle="True $f(x)_{i}$",
                               xsample=Xtrain[-1, :],
                               xlabel=None,
                               ylabel=ylabel,
                               contour_levels=[c.levels for c in csets_fx])
-    csets_gx = plot_2D_f_func(theta_omega_grid, FX_true[:, :, 1, :],
+    csets_gx = plot_2D_f_func(theta_omega_grid, FX_true[:, :, :, 1],
                               axes_gen=lambda _: axs[0, 2:],
                               axtitle="True $g(x)_{{{i},1}}$",
                               xsample=Xtrain[-1, :],
@@ -1167,6 +1179,7 @@ def learn_dynamics_matrix_vector_independent_vis(
     error_file = osp.join(events_dir,
                           'vector_matrix_independent_learning_error.txt')
     exp_names, exp_errors = zip(*exp_error_data)
+    print(exp_names, exp_errors)
     np.savetxt(error_file, [exp_errors],
                fmt='%.03f',
                header=' '.join(exp_names))
@@ -1225,6 +1238,7 @@ def speed_test_matrix_vector_independent_exp(
         Xtest = X[test_indices, :]
         Utest = U[test_indices, :]
         XdotTest = dX[test_indices, :]
+        FX_true = pend_env.F_func(Xtest)
 
         train_indices = shuffled_order_t[:max_train]
         Xtrain = X[train_indices, :]
@@ -1234,14 +1248,19 @@ def speed_test_matrix_vector_independent_exp(
             dgp = kw['regressor_class'](Xtrain.shape[-1], Utrain.shape[-1])
             dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50)
             elapsed = min(timeit.repeat(
-                stmt='dgp.custom_predict(Xtest, Utest);dgp.clear_cache()',
+                stmt='dgp.custom_predict_fullmat(Xtest);dgp.clear_cache()',
                 repeat=5,
                 number=ntimes,
                 globals=dict(dgp=dgp,
                              Xtest=Xtest,
                              Utest=Utest)))
-            logger.add_scalars(name, dict(elapsed=elapsed / ntimes), max_train)
+            FX_learned, var_FX = model.custom_predict_fullmat(
+                Xtest.reshape(-1, D))
+            error = measure_error(FX_learned, var_FX, FX_true)
             print(name, max_train, elapsed)
+            print(name, max_train, error)
+            logger.add_scalars(name, dict(elapsed=elapsed / ntimes,
+                                          error=error), max_train)
 
     events_file = max(
         glob.glob(osp.join(logger.experiment_logs_dir, "*.tfevents*")),

@@ -202,3 +202,115 @@ class HetergeneousMatrixVariateKernel(MatrixVariateKernel):
             assert not torch.isnan(value).any()
         res = self.mask_dependent_covar(M1, U1, M2, U2, covar_x)
         return res.diag() if diag else res
+
+
+class HetergeneousCoregionalizationKernel(MatrixVariateKernel):
+    def num_outputs_per_input(self, mxu1, mxu2):
+        M1, X1, U1 = self.decoder.decode(mxu1)
+
+        M1s = M1[..., 0]
+        idxs1 = torch.nonzero(M1s - torch.ones_like(M1s))
+        idxend1 = torch.min(idxs1).item() if idxs1.numel() else M1s.size(-1)
+        train_size = idxend1 * X1.shape[-1]
+        test_size = (M1s.size(-1) - idxend1) * prod(
+            self.task_covar_module.matshape)
+        ret = (train_size +  test_size) // M1s.size(-1)
+        ret_float = (train_size + test_size) / M1s.size(-1)
+        return ret_float
+
+    def kernel1(self, Kxx, H1, H2, Sigma):
+        # TODO: Make this a separate module
+        # If M1, M2 = (1, 1)
+        #    (H₁ᵀ ⊗ Iₙ)[ K ⊗ Σ ] (H₂ ⊗ Iₙ)
+        _, x_dim, u_dim_p_1 = self.decoder.sizes
+        In = torch.eye(x_dim, dtype=H1.dtype, device=H1.device)
+        Kij_xx_11 = (KroneckerProductLazyTensor(H1, In)
+                     @ KroneckerProductLazyTensor(Kxx, Sigma)
+                     @ KroneckerProductLazyTensor(H2.t(), In))
+        return Kij_xx_11
+
+    def kernel2(self, Kxx, Sigma):
+        # TODO: Make this a separate module
+        # if M1, M2 = (0, 0)
+        #    [ k_** ⊗ Σ ]
+        Kij_xx_22 = KroneckerProductLazyTensor(Kxx, Sigma)
+        return Kij_xx_22
+
+    def correlation_kernel_12(self, Kxx, H1, Sigma):
+        # TODO: Make this a separate module
+        # elif M1, M2 = (1, 0)
+        #    (H₁ᵀ ⊗ Iₙ) [ k_x* ⊗ Σ ]
+        _, x_dim, u_dim_p_1 = self.decoder.sizes
+        In = torch.eye(x_dim, dtype=H1.dtype, device=H1.device)
+        Kij_xx_12 = KroneckerProductLazyTensor(
+            H1, In)  @ KroneckerProductLazyTensor(Kxx, Sigma)
+        return Kij_xx_12
+
+    def mask_dependent_covar(self, M1s, U1, M2s, U2, covar_xx):
+        # Assume M1s, M2s sorted descending
+        B = M1s.shape[:-1]
+        M1s = M1s[..., 0]
+        idxs1 = torch.nonzero(M1s - torch.ones_like(M1s))
+        idxend1 = torch.min(idxs1).item() if idxs1.numel() else M1s.size(-1)
+        # assume sorted
+        assert (M1s[..., idxend1:] == 0).all()
+        U1s = U1[..., :idxend1, :]
+
+        M2s = M2s[..., 0]
+        idxs2 = torch.nonzero(M2s - torch.ones_like(M2s))
+        idxend2 = torch.min(idxs2).item() if idxs2.numel() else M2s.size(-1)
+        # assume sorted
+        assert (M2s[..., idxend2:] == 0).all()
+        U2s = U2[..., :idxend2, :]
+
+        Sigma = ensurelazy(self.task_covar_module.covar_matrix)
+        Kxx = ensurelazy(covar_xx)
+        k_xx_22 = Kxx[idxend1:, idxend2:]
+        if k_xx_22.numel():
+            Kij_xx_22 = self.kernel2(k_xx_22, Sigma)
+
+        k_xx_11 = Kxx[:idxend1, :idxend2]
+        if k_xx_11.numel():
+            H1 = BlockDiagLazyTensor(NonLazyTensor(U1s.unsqueeze(1)))
+            H2 = BlockDiagLazyTensor(NonLazyTensor(U2s.unsqueeze(1)))
+            Kij_xx_11 = self.kernel1(k_xx_11, H1, H2, Sigma)
+
+        if k_xx_11.numel() and k_xx_22.numel():
+            k_xx_12 = Kxx[:idxend1, idxend2:]
+            assert k_xx_12.numel()
+            Kij_xx_12 = self.correlation_kernel_12(k_xx_12, H1, Sigma)
+
+            k_xx_21 = Kxx[idxend1:, :idxend2]
+            assert k_xx_21.numel()
+            Kij_xx_21 = self.correlation_kernel_12(k_xx_21.t(), H2, Sigma).t()
+
+            Kij_xx = lazycat([lazycat([Kij_xx_11, Kij_xx_12], dim=1),
+                            lazycat([Kij_xx_21, Kij_xx_22], dim=1)],
+                             dim=0)
+            #Kij_xx.evaluate()
+            return Kij_xx
+        elif k_xx_22.numel():
+            return Kij_xx_22
+        else:
+            assert k_xx_11.numel()
+            return Kij_xx_11
+
+
+    def forward(self, mxu1, mxu2, diag=False, last_dim_is_batch=False, **params):
+        assert not torch.isnan(mxu1).any()
+        assert not torch.isnan(mxu2).any()
+        M1, X1, U1 = self.decoder.decode(mxu1)
+        M2, X2, U2 = self.decoder.decode(mxu2)
+
+        if last_dim_is_batch:
+            raise RuntimeError("HetergeneousCoregionalizationKernel does not accept the last_dim_is_batch argument.")
+        #covar_i = self.mask_dependent_covar(self, M1, U1, M2, U2)
+        covar_x = lazify(self.data_covar_module.forward(X1, X2, **params))
+        #if torch.rand(1).item() < 0.1:
+        #    for name, value in self.data_covar_module.named_parameters():
+        #            print(name, value)
+
+        for name, value in self.data_covar_module.named_parameters():
+            assert not torch.isnan(value).any()
+        res = self.mask_dependent_covar(M1, U1, M2, U2, covar_x)
+        return res.diag() if diag else res

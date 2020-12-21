@@ -23,7 +23,9 @@ from gpytorch.priors import GammaPrior
 from gpytorch.utils.memoize import cached
 import gpytorch.settings as gpsettings
 
-from bayes_cbf.matrix_variate_multitask_kernel import MatrixVariateIndexKernel, HetergeneousMatrixVariateKernel
+from bayes_cbf.matrix_variate_multitask_kernel import (
+    MatrixVariateIndexKernel, HetergeneousMatrixVariateKernel,
+    HetergeneousCoregionalizationKernel)
 from bayes_cbf.matrix_variate_multitask_model import HetergeneousMatrixVariateMean
 from bayes_cbf.misc import (torch_kron, DynamicsModel, t_jac, variable_required_grad,
                             t_hessian, gradgradcheck)
@@ -363,22 +365,7 @@ class ControlAffineRegressor(DynamicsModel):
 
         # Kb can be singular because of repeated datasamples
         # Add diagonal jitter
-        Kb_sqrt = None
-        cholesky_perturb_factor = cholesky_perturb_init
-        for _ in range(cholesky_tries):
-            try:
-                Kbp = Kb + cholesky_perturb_factor * (
-                    torch.eye(Kb.shape[0], dtype=Kb.dtype, device=Kb.device) *
-                    torch.rand(Kb.shape[0], dtype=Kb.dtype, device=Kb.device)
-                    )
-                Kb_sqrt = torch.cholesky(Kbp)
-            except RuntimeError as e:
-                LOG.warning("Cholesky failed with perturb={} on error {}".format(cholesky_perturb_factor, str(e)))
-                cholesky_perturb_factor = cholesky_perturb_factor * cholesky_perturb_scale
-                continue
-
-        if Kb_sqrt is None:
-            raise
+        Kbp, Kb_sqrt = make_psd(Kb)
         return Kb_sqrt
 
     def _perturbed_cholesky(self, k, B, Xtrain, UHtrain,
@@ -425,6 +412,7 @@ class ControlAffineRegressor(DynamicsModel):
            4. v := L \ kb*
            5. k* := k(x*,x*) - vᵀv
            6. log p(y|X) := -0.5 yᵀ α - ∑ log Lᵢᵢ - 0.5 n log(2π)
+
         """
         Xtest = self._ensure_device_dtype(Xtest_in)
         Xtestp = (self._ensure_device_dtype(Xtestp_in) if Xtestp_in is not None
@@ -875,6 +863,36 @@ class ControlAffineRegressor(DynamicsModel):
         self.load_state_dict(torch.load(path))
 
 
+def is_psd(X):
+    try:
+        torch.cholesky(X)
+    except RuntimeError as e:
+        print(e)
+        return False
+    return True
+
+def make_psd(Kb,
+             cholesky_tries=10,
+             cholesky_perturb_init=1e-5,
+             cholesky_perturb_scale=10):
+    cholesky_perturb_factor = cholesky_perturb_init
+    for _ in range(cholesky_tries):
+        try:
+            Kbp = Kb + cholesky_perturb_factor * (
+                torch.eye(Kb.shape[0], dtype=Kb.dtype, device=Kb.device) *
+                torch.rand(Kb.shape[0], dtype=Kb.dtype, device=Kb.device)
+                )
+            Kb_sqrt = torch.cholesky(Kbp)
+            break
+        except RuntimeError as e:
+            LOG.warning("Cholesky failed with perturb={} on error {}".format(cholesky_perturb_factor, str(e)))
+            cholesky_perturb_factor = cholesky_perturb_factor * cholesky_perturb_scale
+            continue
+
+    if Kb_sqrt is None:
+        raise
+    return Kbp, Kb_sqrt
+
 class ControlAffineRegressorExact(ControlAffineRegressor):
     def custom_predict(self, Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None,
                        Utestp_in=None, UHfillp=1,
@@ -914,8 +932,17 @@ class ControlAffineRegressorExact(ControlAffineRegressor):
                   else Xtest)
         meanFX, A, BkXX = self._custom_predict_matrix(Xtest_in, Xtestp_in,
                                                       compute_cov=True)
-        return meanFX, torch_kron(BkXX, A.unsqueeze(0).unsqueeze(0),
-                                  batch_dims=2)
+        assert not torch.isnan(meanFX).any()
+        b = Xtest.shape[0]
+        m = self.u_dim
+        n = self.x_dim
+        assert meanFX.shape == (b, n, (1+m))
+        meanFX = meanFX.transpose(-2, -1) # (b, (1+m), n)
+        var_FX = torch_kron(BkXX.transpose(2, 1).reshape(b*(1+m), b*(1+m)), # (b(1+m), b(1+m))
+                            A, # (n, n)
+                            batch_dims=0) # (b(1+m)n, b(1+m)n)
+        # assert is_psd(var_FX)
+        return meanFX.reshape(-1), var_FX
 
 
     def _custom_predict_matrix(self, Xtest_in, Xtestp_in=None, compute_cov=True):
@@ -942,6 +969,7 @@ class ControlAffineRegressorExact(ControlAffineRegressor):
            3. 𝐌ₖ(x*) := 𝐌(x*) +  Y @ B†               ∈ (n, (1+m))    O(nk²(1+m))
            4. 𝐁ₖ(x*, x*) := B k(x*,x*) - 𝔅(XU, x*) @ B† ∈ (1+m, 1+m)  O(k²(1+m)²)
            5. log p(y|X) := -0.5  Y @ ( (LLᵀ) \ Y )  - ∑ log Lᵢᵢ - 0.5 n log(2π)
+
         """
         Xtest = self._ensure_device_dtype(Xtest_in)
         Xtestp = (self._ensure_device_dtype(Xtestp_in) if Xtestp_in is not None
@@ -986,29 +1014,79 @@ class ControlAffineRegressorExact(ControlAffineRegressor):
         # UHtrain \in (k, (1+m))
         # B \in (1+m, 1+m)
         kb_star = k_sx(Xtest, Xtrain).unsqueeze(-1) *  (UHtrain @ B).unsqueeze(0) # (b, k, (1+m))
-        # 2. B†(x) := ( LLᵀ) \ (𝔅(XU, x))
+        # 2. B†(x) := ( LLᵀ) \ (𝔅(XU, x)ᵀ)
         Bdagger = torch.cholesky_solve(kb_star, Kb_sqrt) # (b, k, (1+m))
         # 3. 𝐌ₖ := 𝐌₀(x) + Y₁ₖ B†(x)
         mean_k = fX_mean_test + torch.matmul(Y.t().unsqueeze(0), Bdagger) # (b, n, (1+m))
 
         if compute_cov:
-            # 4. v := 𝐁(x)𝔘 @ B†(x)
-            # Bₖ(x, x') = B₀(x, x') - 𝐁(x)𝔘 @ α
+            # 4. 𝐁ₖ(x*, x*) := B k(x*,x*) - 𝔅(XU, x*) @ B†
+            k_xtest_xtestp = k_ss(Xtest, Xtestp) # (b, b)
+            #k_xtest_xtestp, _ = make_psd(k_xtest_xtestp)
+            #assert is_psd(B)
+            KXTestBXTestB = torch_kron(
+                k_xtest_xtestp, B, batch_dims=0) # (b(1+m), b(1+m))
+            # assert is_psd(KXTestBXTestB)
+            # assert is_psd(
+            #     torch.cat([
+            #         torch.cat([Kb_sqrt @ Kb_sqrt.t(),
+            #                    kb_star.reshape(-1, b*(1+m))], dim=-1),
+            #         torch.cat([kb_star.transpose(0, 2).reshape(b*(1+m),-1),
+            #                    KXTestBXTestB], dim=-1)
+            #     ], dim=0)
+            # )
+            # v = Lᵀ 𝔅(XU, x*)
+            # v = torch.solve(kb_star, Kb_sqrt).solution # (b, k, (1+m))
+            b = Xtest.shape[0]
+            m = self.u_dim
+            n = self.x_dim
+            k = Xtrain.shape[0]
             BkXX = (
-                k_ss(Xtest, Xtestp).unsqueeze(-1).unsqueeze(-1) * B # (b, b, (1+m), (1+m))
-                - torch.matmul(
-                    kb_star.unsqueeze(1).transpose(-2, -1), # (b, 1, (1+m), k)
-                    Bdagger.unsqueeze(0) # (1, b, k, (1+m))
-                ) # (b, b, (1+m), (1+m))
+                KXTestBXTestB # (b(1+m), b(1+m))
+                - (
+                    kb_star.transpose(-2, -1) # (b, (1+m), k)
+                   .reshape(b*(1+m), k) # (b (1+m), k)
+                   @
+                    (Bdagger.transpose(1, 0) # (k, b, (1+m))
+                     .reshape(k, b*(1+m))) # (k, b(1+m))
+                ) # (b(1+m), b(1+m))
             )
+            BkXX, _ = make_psd(BkXX)
+            # assert is_psd(BkXX)
+            BkXX = BkXX.reshape(b, (1+m), b, (1+m)).transpose(1, 2) # (b, b, (1+m), (1+m))
         else:
-            n = self.model.matshape[1]
-            BkXX = Xtest.new_zeros(Xtest.shape[0], Xtestp.shape[0], n, n)
+            m = self.u_dim
+            BkXX = Xtest.new_zeros(Xtest.shape[0], Xtestp.shape[0], (1+m), (1+m))
         # (b, n, (1+m)), (n, n), (b, b, (1+m), (1+m))
         return mean_k, A, BkXX
 
 
+class ControlAffineVectorGP(ControlAffineExactGP):
+    def __init__(self, x_dim, u_dim, likelihood, rank=1, gamma_length_scale_prior=None):
+        ExactGP.__init__(self, None, None, likelihood)
+        self.matshape = (1+u_dim, x_dim)
+        self.decoder = CatEncoder(1, x_dim, 1+u_dim)
+        self.mean_module = HetergeneousMatrixVariateMean(
+            ConstantMean(),
+            self.decoder,
+            self.matshape)
+
+        self.task_covar = IndexKernel(num_tasks=np.prod(self.matshape))
+
+        prior_args = dict() if gamma_length_scale_prior is None else dict(
+            lengthscale_prior=GammaPrior(*gamma_length_scale_prior))
+        self.input_covar = ScaleKernel(
+            RBFKernel(**prior_args) + LinearKernel())
+        self.covar_module = HetergeneousCoregionalizationKernel(
+            self.task_covar,
+            self.input_covar,
+            self.decoder,
+        )
+
 class ControlAffineRegressorVector(ControlAffineRegressor):
+    def __init__(self, *args, model_class=ControlAffineVectorGP, **kwargs):
+        super().__init__(*args, model_class=model_class, **kwargs)
+
     def custom_predict(self, Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None,
                        Utestp_in=None, UHfillp=1,
                        compute_cov=True):
@@ -1051,8 +1129,17 @@ class ControlAffineRegressorVector(ControlAffineRegressor):
         Xtest = self._ensure_device_dtype(Xtest_in)
         Xtestp = (self._ensure_device_dtype(Xtestp_in) if Xtestp_in is not None
                   else Xtest)
-        return self._custom_predict_matrix(Xtest_in, Xtestp_in,
-                                           compute_cov=True)
+        meanFX, varFX = self._custom_predict_matrix(Xtest_in, Xtestp_in,
+                                                    compute_cov=True)
+        b = Xtest.shape[0]
+        m = self.u_dim
+        n = self.x_dim
+        assert meanFX.shape == (b, n, (1+m))
+        meanFX = meanFX.transpose(-2, -1) # (b, (1+m), n)
+        return (meanFX.reshape(-1), # (b(1+m)n)
+                varFX # (b, b, (1+m)n, (1+m)n))
+                .transpose(2, 1) # (b, (1+m)n, b, (1+m)n)
+                .reshape(b*(1+m)*n, b*(1+m)*n))
 
 
     def _perturbed_cholesky_compute(self,
@@ -1123,6 +1210,7 @@ class ControlAffineRegressorVector(ControlAffineRegressor):
            4. v(x*) = L \ 𝔎(XU, x*)            ∈ (kn, (1+m)n)   O(k²n³(1+m))
            5. Σₖ(x, x') = Σ₀(x, x') - v(x*)ᵀ v(x*)  ∈ ((1+m)n, (1+m)n))   O(k²n⁴(1+m)²))
            6. log p(y|X) := -0.5  Y @ ( (LLᵀ) \ Y )  - ∑ log Lᵢᵢ - 0.5 n log(2π)
+
         """
         Xtest = self._ensure_device_dtype(Xtest_in)
         Xtestp = (self._ensure_device_dtype(Xtestp_in) if Xtestp_in is not None
@@ -1130,9 +1218,7 @@ class ControlAffineRegressorVector(ControlAffineRegressor):
         k_xx = lambda x, xp: self.model.covar_module.data_covar_module(
             x, xp).evaluate()
         mean_s = self.model.mean_module
-        _A = self.model.covar_module.task_covar_module.U.covar_matrix.evaluate()
-        _B = self.model.covar_module.task_covar_module.V.covar_matrix.evaluate()
-        Σ = torch_kron(_B, _A, batch_dims=0) # ((1+m)n, (1+m)n)
+        Σ = self.model.covar_module.task_covar_module.covar_matrix.evaluate() # ((1+m)n, (1+m)n)
 
         # Output of mean_s(Xtest) is (b, (1+m)n)
         # Make it (b, (1+m), n, 1) then transpose
@@ -1193,10 +1279,18 @@ class ControlAffineRegressorVector(ControlAffineRegressor):
             v = torch.solve(kb_star, # (b, kn, (1+m)n)
                             Kb_sqrt # (kn, kn)
                             ).solution # (b, kn, (1+m)n)
+            b = Xtest.shape[0]
+            m = self.u_dim
+            n = self.x_dim
+            k = Xtrain.shape[0]
+            vb = v.transpose(0, 1).reshape(k*n, b*(1+m)*n) # (kn, b(1+m)n)
             KkXX = (
-                k_xx(Xtest, Xtestp).unsqueeze(-1).unsqueeze(-1) * Σ # (b, b, (1+m)n, (1+m)n)
-                - v.unsqueeze(1).transpose(-2, -1) @ v.unsqueeze(0) # (b, b, (1+m)n, (1+m)n)
+                torch_kron(k_xx(Xtest, Xtestp),
+                           Σ, batch_dims=0) # (b(1+m)n, b(1+m)n)
+                - vb.t() @ vb # (b(1+m)n, b(1+m)n)
             )
+            KkXX, _ = make_psd(KkXX)
+            KkXX = KkXX.reshape(b, (1+m)*n, b, (1+m)*n).transpose(2, 1)
         else:
             n = self.model.matshape[1]
             m = self.model.matshape[0]-1

@@ -10,11 +10,11 @@ def controller_sine(xi, t=1):
 
 class Visualizer(ABC):
     @abstractmethod
-    def setStateCtrl(self, x, u, t=0):
+    def setStateCtrl(self, x, u, t=0, **kw):
         pass
 
 class VisualizerZ(Visualizer):
-    def setStateCtrl(self, x, u, t=0):
+    def setStateCtrl(self, x, u, t=0, **kw):
         pass
 
 def uncertainity_vis_kwargs(controller, x, u, dt):

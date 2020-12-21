@@ -876,6 +876,7 @@ def make_psd(Kb,
              cholesky_perturb_init=1e-5,
              cholesky_perturb_scale=10):
     cholesky_perturb_factor = cholesky_perturb_init
+    Kb_sqrt = None
     for _ in range(cholesky_tries):
         try:
             Kbp = Kb + cholesky_perturb_factor * (
@@ -942,6 +943,7 @@ class ControlAffineRegressorExact(ControlAffineRegressor):
                             A, # (n, n)
                             batch_dims=0) # (b(1+m)n, b(1+m)n)
         # assert is_psd(var_FX)
+        # (b(1+m)n), (b(1+m)n, b(1+m)n)
         return meanFX.reshape(-1), var_FX
 
 

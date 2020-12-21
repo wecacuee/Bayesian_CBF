@@ -1078,9 +1078,6 @@ def learn_dynamics_matrix_vector_independent_exp(
     return events_file
 
 def measure_error(FX_learned, var_FX, FX_true):
-    N, M, D = FX_true.shape
-    FX_learned, var_FX, FX_true = map(
-        torch.from_numpy, (FX_learned, var_FX, FX_true))
     FX_t_diff = FX_true - FX_learned
     errors = FX_t_diff.reshape(-1) @ (
         FX_t_diff.reshape(-1, 1).solve(var_FX).solution
@@ -1120,7 +1117,9 @@ def learn_dynamics_matrix_vector_independent_vis(
         axtitle = exp_conf[exp]['axtitle']
         FX_learned = logdata['log_learned_model/' + exp + '/Fx/FX_learned'][0][1]
         var_FX = logdata['log_learned_model/' + exp + '/Fx/var_FX'][0][1]
-        error = measure_error(FX_learned, var_FX, FX_true)
+        FX_learned_t, var_FX_t, FX_true_t = map(
+            torch.from_numpy, (FX_learned, var_FX, FX_true))
+        error = measure_error(FX_learned_t, var_FX_t, FX_true_t)
         exp_error_data.append((exp, error))
         batch_shape = FX_learned.shape[:-1]
         # FX_earned.shape = (*b, n, (1+m))
@@ -1234,16 +1233,20 @@ def speed_test_matrix_vector_independent_exp(
         # Test train split
         np.random.shuffle(shuffled_order)
         shuffled_order_t = torch.from_numpy(shuffled_order)
-        test_indices = shuffled_order_t[-10:]
-        Xtest = X[test_indices, :]
-        Utest = U[test_indices, :]
-        XdotTest = dX[test_indices, :]
-        FX_true = pend_env.F_func(Xtest)
 
         train_indices = shuffled_order_t[:max_train]
         Xtrain = X[train_indices, :]
         Utrain = U[train_indices, :]
         XdotTrain = dX[train_indices, :]
+
+        theta_omega_grid = get_grid_from_Xtrain(to_numpy(Xtrain))
+        Xtest = torch.from_numpy(
+            theta_omega_grid.reshape(-1, Xtrain.shape[-1])).to(
+                dtype=Xtrain.dtype,
+                device=Xtrain.device)
+        # b, n, 1+m
+        FX_true = pend_env.F_func(Xtest)
+
         for name, kw in exps.items():
             dgp = kw['regressor_class'](Xtrain.shape[-1], Utrain.shape[-1])
             dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50)
@@ -1252,11 +1255,15 @@ def speed_test_matrix_vector_independent_exp(
                 repeat=5,
                 number=ntimes,
                 globals=dict(dgp=dgp,
-                             Xtest=Xtest,
-                             Utest=Utest)))
-            FX_learned, var_FX = model.custom_predict_fullmat(
-                Xtest.reshape(-1, D))
-            error = measure_error(FX_learned, var_FX, FX_true)
+                             Xtest=Xtest)))
+            FX_learned, var_FX = dgp.custom_predict_fullmat(
+                Xtest.reshape(-1, Xtest.shape[-1]))
+            m = pend_env.ctrl_size
+            n = pend_env.state_size
+            error = measure_error(FX_learned, var_FX,
+                                  FX_true.transpose(-1, 2).reshape(-1).to(
+                                      dtype=FX_learned.dtype,
+                                      device=FX_learned.device))
             print(name, max_train, elapsed)
             print(name, max_train, error)
             logger.add_scalars(name, dict(elapsed=elapsed / ntimes,
@@ -1274,20 +1281,28 @@ def speed_test_matrix_vector_independent_vis(
             vector=dict(label='Coregionalization GP'),
             matrix=dict(label='Matrix Variate GP')),
         marker_rotation=['b*-', 'g+-', 'r.-'],
-        ylabel='Inference time (secs)',
+        elapsed_ylabel='Inference time (secs)',
+        error_ylabel=r'''$ \sum_{\mathbf{x} \in \mathbf{X}_{test}} \sum_{\mathbf{x}' \in \mathbf{X}_{test}} \mbox{vec}(F_{err}(\mathbf{x}))^\top \mathbf{K}_k(\mathbf{x}, \mathbf{x}') \mbox{vec}(F_{err}(\mathbf{x}')) $''',
         xlabel='Training samples'
 ):
     logdata = load_tensorboard_scalars(events_file)
     events_dir = osp.dirname(events_file)
-    fig, ax = plt.subplots(1,1, figsize=(5, 3.0))
-    fig.subplots_adjust(bottom=0.2)
+    fig, axes = plt.subplots(1,2, figsize=(8, 4.7))
+    fig.subplots_adjust(bottom=0.2, wspace=0.25)
     for mrkr, (gp, gp_conf) in zip(marker_rotation,exp_conf.items()):
         xs, ys = zip(*logdata[gp + '/elapsed'])
         ys = np.hstack(ys)
-        ax.plot(xs, ys, mrkr, label=gp_conf['label'])
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.legend()
+        axes[0].plot(xs, ys, mrkr, label=gp_conf['label'])
+        axes[0].set_xlabel(xlabel)
+        axes[0].set_ylabel(elapsed_ylabel)
+        axes[0].legend()
+
+        xs, ys = zip(*logdata[gp + '/error'])
+        ys = np.hstack(ys)
+        axes[1].plot(xs, ys, mrkr, label=gp_conf['label'])
+        axes[1].set_xlabel(xlabel)
+        axes[1].set_ylabel(error_ylabel)
+        axes[1].legend()
     plot_file = osp.join(events_dir, 'speed_test_mat_vec_ind.pdf')
     fig.savefig(plot_file)
     subprocess.run(["xdg-open", plot_file])
@@ -1305,4 +1320,4 @@ if __name__ == '__main__':
     # learn_dynamics()
     #run_pendulum_control_online_learning()
     learn_dynamics_matrix_vector_independent()
-    #speed_test_matrix_vector_independent()
+    speed_test_matrix_vector_independent()

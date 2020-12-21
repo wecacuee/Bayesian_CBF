@@ -21,6 +21,8 @@ import logging
 import json
 import glob
 import os
+import timeit
+
 from scipy.special import erfinv
 from kwplus.variations import kwvariations, expand_variations
 from kwplus.functools import recpartial
@@ -52,12 +54,15 @@ from torch.utils.tensorboard import SummaryWriter
 
 import bayes_cbf
 from bayes_cbf.gp_algebra import DeterministicGP, GaussianProcess
-from bayes_cbf.control_affine_model import ControlAffineRegressor
+from bayes_cbf.control_affine_model import (ControlAffineRegressor,
+                                            ControlAffineRegressorExact,
+                                            ControlAffineRegressorVector,
+                                            ControlAffineRegressorIndependent)
 from bayes_cbf.misc import (to_numpy, normalize_radians, ZeroDynamicsModel,
                             make_tensor_summary, add_tensors, gitdescribe,
                             stream_tensorboard_scalars, load_tensorboard_scalars,
-                            mkdir_savefig)
-from bayes_cbf.sampling import sample_generator_trajectory
+                            mkdir_savefig, TBLogger)
+from bayes_cbf.sampling import sample_generator_trajectory, VisualizerZ
 from bayes_cbf.planner import PiecewiseLinearPlanner, SplinePlanner
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, cbc2_safety_factor
 from bayes_cbf.plotting import (draw_ellipse, var_to_scale_theta)
@@ -244,6 +249,9 @@ class AckermanDrive:
                         torch.cat([zeros_,    inv_L], dim=-1)], dim=-2)
         return gX.squeeze(0) if state_in.dim() <= 1 else gX
 
+    def F_func(self, X):
+        return torch.cat([self.f_func(X).unsqueeze(-1), self.g_func(X)], dim=-1)
+
     def fu_func_gp(self, u):
         f, g = self.f_func, self.g_func
         n = self.state_size
@@ -273,6 +281,7 @@ class LearnedShiftInvariantDynamics:
     def __init__(self,
                  dt = None,
                  learned_dynamics = None,
+                 learned_dynamics_class = ControlAffineRegressor,
                  mean_dynamics = CartesianDynamics(),
                  max_train = 200,
                  training_iter = 100,
@@ -285,7 +294,7 @@ class LearnedShiftInvariantDynamics:
         self.mean_dynamics = mean_dynamics
         self.learned_dynamics = (learned_dynamics
                                  if learned_dynamics is not None else
-                                 ControlAffineRegressor(
+                                 learned_dynamics_class(
                                      self.state_size,
                                      self.ctrl_size))
         self.shift_invariant = shift_invariant
@@ -317,40 +326,43 @@ class LearnedShiftInvariantDynamics:
             and self.enable_learning
         ):
             # train every n steps
-            self._train()
+            Xtrain = torch.cat(self.Xtrain).reshape(-1, self.Xtrain[0].shape[-1])
+            Utrain = torch.cat(self.Utrain).reshape(-1, self.Utrain[0].shape[-1])
+            XdotTrain = (self.Xtrain[1:, :] - self.Xtrain[:-1, :]) / self.dt
+            self.fit(XdotTrain, self.Xtrain[:-1, :], self.Utrain[:-1, :])
 
         # record the xi, ui pair
         self.Xtrain.append(xi.detach())
         self.Utrain.append(uopt.detach())
         assert len(self.Xtrain) == len(self.Utrain)
 
-    def _train(self):
-        LOG.info("Training GP with dataset size {}".format(len(self.Xtrain)))
-        if not len(self.Xtrain):
+    def fit(self, Xtrain, Utrain, XdotTrain, training_iter=100):
+        if not len(Xtrain):
+            LOG.info("Nothing to fit")
             return
-        assert len(self.Xtrain) == len(self.Utrain), \
+        LOG.info("Training GP with dataset size {}".format(len(Xtrain)))
+        assert len(Xtrain) == len(Utrain), \
             "Call train when Xtrain and Utrain are balanced"
 
-        Xtrain = torch.cat(self.Xtrain).reshape(-1, self.Xtrain[0].shape[-1])
-
-        Utrain = torch.cat(self.Utrain).reshape(-1, self.Utrain[0].shape[-1])
-        XdotTrain = (Xtrain[1:, :] - Xtrain[:-1, :]) / self.dt
-
-        if self.shift_invariant:
-            Xtrain[:, :2] = 0.
+        Xtrain = self._shift_invariant_wrapper(Xtrain)
 
         XdotMean = self.mean_dynamics.f_func(Xtrain) + (
             self.mean_dynamics.g_func(Xtrain).bmm(Utrain.unsqueeze(-1)).squeeze(-1))
-        XdotError = XdotTrain - XdotMean[:-1, :]
+        XdotError = XdotTrain - XdotMean
 
         LOG.info("Training model with datasize {}".format(XdotTrain.shape[0]))
         if XdotTrain.shape[0] > self.max_train:
-            indices = torch.randint(XdotTrain.shape[0], (self.max_train,))
-            train_data = Xtrain[indices, :], Utrain[indices, :], XdotError[indices, :],
+            indices = np.arange(XdotTrain.shape[0])
+            shuffled_indices = torch.from_numpy(np.random.shuffle(indices))
+            #indices = torch.randint(XdotTrain.shape[0], (self.max_train,))
+            train_indices = (shuffled_indices[:self.max_train]
+                             if XdotTrain.shape[0] > self.max_train
+                             else shuffled_indices)
+            train_data = Xtrain[train_indices, :], Utrain[train_indices, :], XdotError[train_indices, :],
         else:
-            train_data = Xtrain[:-1, :], Utrain[:-1, :], XdotError
+            train_data = Xtrain, Utrain, XdotError
 
-        self.learned_dynamics.fit(*train_data, training_iter=100)
+        self.learned_dynamics.fit(*train_data, training_iter=training_iter)
 
     def fu_func_gp(self, U):
         if self.enable_learning:
@@ -369,6 +381,24 @@ class LearnedShiftInvariantDynamics:
         self.current_state = x + xdot * dt
         return dict(xdot = xdot,
                     x = self.current_state)
+
+    def custom_predict_fullmat(self, Xtest, **kw):
+        Xtest_orig = self._shift_invariant_wrapper(Xtest)
+        with torch.no_grad():
+            # (b(1+m)n)
+            diffFX, diffVarFX = self.learned_dynamics.custom_predict_fullmat(Xtest_orig, **kw)
+        # (bn(1+m))
+        meanFX = torch_to(self.mean_dynamics.F_func(Xtest_orig),
+                          dtype=diffFX.dtype,
+                          device=diffFX.device)
+        b = Xtest.shape[0]
+        n = self.state_size
+        m = self.ctrl_size
+        return (meanFX.transpose(-2, -1).reshape(-1) + diffFX, # b(1+m)n
+                diffVarFX) # (b(1+m)n, b(1+m)n)
+
+    def clear_cache(self):
+        self.learned_dynamics.clear_cache()
 
 
 def angdiff(thetap, theta):
@@ -1898,12 +1928,176 @@ def unicycle_no_learning_gets_stuck(**kw):
     unicycle_no_learning_gets_stuck_vis(events_dir)
 
 
+def measure_error(FX_learned, var_FX, FX_true):
+    FX_t_diff = FX_true - FX_learned
+    errors = FX_t_diff.reshape(-1) @ (
+        FX_t_diff.reshape(-1, 1).solve(var_FX).solution
+    )
+    assert (errors > 0).all()
+    sq_sum = errors.reshape(-1).sum()
+    assert not torch.isnan(sq_sum).any()
+    assert sq_sum > 0
+    n = np.prod(FX_true.shape[:-1])
+    return np.sqrt(to_numpy(sq_sum) / n)
+
+
+def unicycle_speed_test_matrix_vector_independent_exp(
+        # max_train_variations=[64, 512], # testing GPU
+        max_train_variations=[16, 32, 64, 128], # final GPU
+        # max_train_variations=[10, 25, 50, 80, 125], # CPU
+        # ntimes = 20, # How many times the inference should be repeated
+        ntimes = 10, # How many times the inference should be repeated
+        state_start = [-3, -1, -math.pi/4],
+        state_goal = [0, 0, math.pi/4],
+        numSteps = 512,
+        dt = 0.01,
+        true_dynamics_gen=partial(AckermanDrive,
+                                  L = 1.0),
+        mean_dynamics_gen=partial(AckermanDrive,
+                                  L = 12.0),
+        logger_class=partial(TBLogger,
+                             exp_tags=['unicycle_speed_test_matrix_vector_independent'],
+                             runs_dir='data/runs'),
+        exps=dict(
+            matrix=dict(
+                regressor_class=partial(
+                    LearnedShiftInvariantDynamics,
+                    learned_dynamics_class=ControlAffineRegressorExact)),
+            vector=dict(
+                regressor_class=partial(
+                    LearnedShiftInvariantDynamics,
+                    learned_dynamics_class=ControlAffineRegressorVector)),
+            independent=dict(
+                regressor_class=partial(
+                    LearnedShiftInvariantDynamics,
+                    learned_dynamics_class=ControlAffineRegressorIndependent))),
+):
+    logger = logger_class()
+    global TBLOG
+    TBLOG = logger.summary_writer
+    true_dynamics_model=true_dynamics_gen()
+    Xdot, X, U = sample_generator_trajectory(
+        dynamics_model=true_dynamics_model,
+        D=numSteps,
+        controller=ControllerCLF(
+            NoPlanner(torch.tensor(state_goal)),
+            coordinate_converter = lambda x, x_g: x,
+            dynamics = CartesianDynamics(),
+            clf = CLFCartesian()
+        ).control,
+        visualizer=VisualizerZ(),
+        x0=state_start,
+        dt=dt)
+    for t,  (dx, x, u) in enumerate(zip(Xdot, X, U)):
+        logger.add_tensors("traj", dict(dx=dx, x=x, u=u), t)
+
+    shuffled_order = np.arange(X.shape[0]-1)
+
+    dgp = dict()
+    for max_train in max_train_variations:
+        # Test train split
+        np.random.shuffle(shuffled_order)
+        shuffled_order_t = torch.from_numpy(shuffled_order)
+        train_indices = shuffled_order_t[:max_train]
+        Xtrain = X[train_indices, :]
+        Utrain = U[train_indices, :]
+        XdotTrain = Xdot[train_indices, :]
+
+        x_range = slice(*list(map(float,
+                                  (Xtrain[:, 0].min(),
+                                   Xtrain[:, 0].max(),
+                                   (Xtrain[:, 0].max() - Xtrain[:, 0].min()) / 1))))
+        y_range = slice(*list(map(float,
+                                  (Xtrain[:, 1].min(),
+                                   Xtrain[:, 1].max(),
+                                   (Xtrain[:, 1].max() - Xtrain[:, 1].min()) / 1))))
+        theta_range = slice(*list(map(float,
+                                  (Xtrain[:, 2].min(),
+                                   Xtrain[:, 2].max(),
+                                   (Xtrain[:, 2].max() - Xtrain[:, 2].min()) / 20))))
+        xtest_grid = np.mgrid[x_range, y_range, theta_range]
+        Xtest = torch.from_numpy(
+            xtest_grid.reshape(-1, Xtrain.shape[-1])).to(
+                dtype=Xtrain.dtype,
+                device=Xtrain.device)
+        # b, n, 1+m
+        FX_true = true_dynamics_model.F_func(Xtest)
+
+        for name, kw in exps.items():
+            model = kw['regressor_class'](dt = dt,
+                                          mean_dynamics=mean_dynamics_gen(),
+                                          max_train=max_train)
+            model.fit(Xtrain, Utrain, XdotTrain, training_iter=50)
+            elapsed = min(timeit.repeat(
+                stmt='model.custom_predict_fullmat(Xtest);model.clear_cache()',
+                repeat=5,
+                number=ntimes,
+                globals=dict(model=model,
+                             Xtest=Xtest)))
+            FX_learned, var_FX = model.custom_predict_fullmat(
+                Xtest.reshape(-1, Xtest.shape[-1]))
+            m = true_dynamics_model.ctrl_size
+            n = true_dynamics_model.state_size
+            error = measure_error(FX_learned, var_FX,
+                                  FX_true.transpose(-1, 2).reshape(-1).to(
+                                      dtype=FX_learned.dtype,
+                                      device=FX_learned.device))
+            print(name, max_train, elapsed)
+            print(name, max_train, error)
+            logger.add_scalars(name, dict(elapsed=elapsed / ntimes,
+                                          error=error), max_train)
+
+    events_file = max(
+        glob.glob(osp.join(logger.experiment_logs_dir, "*.tfevents*")),
+        key=lambda f: os.stat(f).st_mtime)
+    return events_file
+
+def unicycle_speed_test_matrix_vector_independent_vis(
+        events_file='saved-runs/speed_test_matrix_vector_independent_v1.3.0/events.out.tfevents.1608186154.dwarf.14269.0',
+        exp_conf=dict(
+            independent=dict(label='Decoupled GP'),
+            vector=dict(label='Coregionalization GP'),
+            matrix=dict(label='Matrix Variate GP')),
+        marker_rotation=['b*-', 'g+-', 'r.-'],
+        elapsed_ylabel='Inference time (secs)',
+        error_ylabel=r'''$ \sum_{\mathbf{x} \in \mathbf{X}_{test}} \sum_{\mathbf{x}' \in \mathbf{X}_{test}} \mbox{vec}(F_{err}(\mathbf{x}))^\top \mathbf{K}_k(\mathbf{x}, \mathbf{x}') \mbox{vec}(F_{err}(\mathbf{x}')) $''',
+        xlabel='Training samples'
+):
+    logdata = load_tensorboard_scalars(events_file)
+    events_dir = osp.dirname(events_file)
+    fig, axes = plt.subplots(1,2, figsize=(8, 4.7))
+    fig.subplots_adjust(bottom=0.2, wspace=0.25)
+    for mrkr, (gp, gp_conf) in zip(marker_rotation,exp_conf.items()):
+        xs, ys = zip(*logdata[gp + '/elapsed'])
+        ys = np.hstack(ys)
+        axes[0].plot(xs, ys, mrkr, label=gp_conf['label'])
+        axes[0].set_xlabel(xlabel)
+        axes[0].set_ylabel(elapsed_ylabel)
+        axes[0].legend()
+
+        xs, ys = zip(*logdata[gp + '/error'])
+        ys = np.hstack(ys)
+        axes[1].plot(xs, ys, mrkr, label=gp_conf['label'])
+        axes[1].set_xlabel(xlabel)
+        axes[1].set_ylabel(error_ylabel)
+        axes[1].legend()
+    plot_file = osp.join(events_dir, 'speed_test_mat_vec_ind.pdf')
+    fig.savefig(plot_file)
+    subprocess.run(["xdg-open", plot_file])
+    return plot_file
+
+
+def unicycle_speed_test_matrix_vector_independent(**kw):
+    events_file = unicycle_speed_test_matrix_vector_independent_exp(**kw)
+    return unicycle_speed_test_matrix_vector_independent_vis(events_file)
+
+
 
 
 if __name__ == '__main__':
     import doctest
     doctest.testmod() # always run unittests first
-    # Run any one of these
+    # Entrypoints:
     # unicycle_demo_pid()
     # unicycle_demo_clf_polar()
     # unicycle_demo_clf_cartesian()
@@ -1913,8 +2107,11 @@ if __name__ == '__main__':
     # unicycle_demo_track_trajectory_ackerman_clf_bayesian()
     # unicycle_demo_track_trajectory_ackerman_clf_bayesian_mult()
     # unicycle_force_around_obstacle_mult()
-    unicycle_mean_cbf_collides_obstacle()
-    unicycle_bayes_cbf_safe_obstacle()
-    unicycle_learning_helps_avoid_getting_stuck()
+
+    # unicycle_mean_cbf_collides_obstacle()
+    # unicycle_bayes_cbf_safe_obstacle()
+    # unicycle_learning_helps_avoid_getting_stuck()
     unicycle_no_learning_gets_stuck()
+
+    unicycle_speed_test_matrix_vector_independent()
 

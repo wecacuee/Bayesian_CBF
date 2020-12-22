@@ -1,0 +1,2 @@
+# independent vector matrix
+0.662 3.714 2.230

@@ -227,7 +227,8 @@ def speed_test_matrix_vector_plot(
             matrix=dict(label='MVGP (full)')),
         marker_rotation=['b*-', 'g+-', 'r.-', 'k^-'],
         elapsed_ylabel='Inference time (secs)',
-        error_ylabel=r'''$ \sqrt{\frac{1}{n} \sum_{\mathbf{x} \in \mathbf{X}_{test}} \left\|\mathbf{K}^{-\frac{1}{2}}_k(\mathbf{x}, \mathbf{x}) \mbox{vec}(\mathbf{M}_k(\mathbf{x})-F_{true}(\mathbf{x})) \right\|_2^2}$''',
+        error_ylabel='Variance weighted error',
+        #error_ylabel=r'''$ \sqrt{\frac{1}{n} \sum_{\mathbf{x} \in \mathbf{X}_{test}} \left\|\mathbf{K}^{-\frac{1}{2}}_k(\mathbf{x}, \mathbf{x}) \mbox{vec}(\mathbf{M}_k(\mathbf{x})-F_{true}(\mathbf{x})) \right\|_2^2}$''',
         xlabel='Training samples'
 ):
     for mrkr, (gp, gp_conf) in zip(marker_rotation,exp_conf.items()):
@@ -239,14 +240,16 @@ def speed_test_matrix_vector_plot(
         axes[0].legend()
 
         ys = np.vstack(exp_data[gp]['errors'])
-        ymean = np.mean(ys, axis=1)
-        yerr = np.std(ys, axis=1)
+        ymean = np.median(ys, axis=1)
+        ytop = np.quantile(ys, 0.1, axis=1)
+        ybottom = np.quantile(ys, 0.9, axis=1)
+        yerr = np.vstack((ytop, ybottom))
         axes[1].errorbar(training_samples, ymean,
                          fmt=mrkr, yerr=yerr,label=gp_conf['label'],
                          capsize=2)
         axes[1].set_xlabel(xlabel)
         axes[1].set_ylabel(error_ylabel)
-        axes[1].legend()
+        #axes[1].legend()
 
 
 if __name__ == '__main__':

@@ -1393,7 +1393,7 @@ def speed_test_matrix_vector_exp(
     return events_file
 
 def speed_test_matrix_vector_vis(
-        events_file='saved-runs/speed_test_matrix_vector_v1.5.1-5-g90f04f2/events.out.tfevents.1608618034.dwarf.20956.1',
+        events_file='',
         exp_conf=OrderedDict(
             vectordiag=dict(label='CoGP (diag)'),
             matrixdiag=dict(label='MVGP (diag)'),
@@ -1401,7 +1401,8 @@ def speed_test_matrix_vector_vis(
             matrix=dict(label='MVGP (full)')),
         marker_rotation=['b*-', 'g+-', 'r.-', 'k^-'],
         elapsed_ylabel='Inference time (secs)',
-        error_ylabel=r'''$ \sqrt{\frac{1}{n}\sum_{\mathbf{x} \in \mathbf{X}_{test}} \left\|\mathbf{K}^{-\frac{1}{2}}_k(\mathbf{x}, \mathbf{x}) \mbox{vec}(\mathbf{M}_k(\mathbf{x})-F_{true}(\mathbf{x})) \right\|_2^2}$''',
+        error_ylabel='Variance weighted error',
+        #error_ylabel=r'''$ \sqrt{\frac{1}{n}\sum_{\mathbf{x} \in \mathbf{X}_{test}} \left\|\mathbf{K}^{-\frac{1}{2}}_k(\mathbf{x}, \mathbf{x}) \mbox{vec}(\mathbf{M}_k(\mathbf{x})-F_{true}(\mathbf{x})) \right\|_2^2}$''',
         xlabel='Training samples'
 ):
     logdata = load_tensorboard_scalars(events_file)
@@ -1412,7 +1413,8 @@ def speed_test_matrix_vector_vis(
         training_samples, errors = zip(*logdata[gp + '/errors'])
         exp_data[gp] = dict(elapsed=elapsed, errors=errors)
     fig, axes = plt.subplots(1,2, figsize=(8, 4.7))
-    fig.subplots_adjust(bottom=0.2, wspace=0.30)
+    fig.subplots_adjust(bottom=0.1, wspace=0.20, top=0.90, right=0.95, left=0.1)
+    fig.suptitle('Pendulum')
     speed_test_matrix_vector_plot(axes,
                                   training_samples,
                                   exp_data,

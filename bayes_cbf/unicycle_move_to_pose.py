@@ -2129,7 +2129,7 @@ def compute_errors(regressor_class, sampling_callable, true_dynamics,
 
 
 def unicycle_speed_test_matrix_vector_vis(
-        events_file='saved-runs/unicycle_speed_test_matrix_vector_v1.5.1-5-g90f04f2/events.out.tfevents.1608622049.dwarf.24753.0',
+        events_file='saved-runs/unicycle_speed_test_matrix_vector_v1.6.1-1-gd845a15/events.out.tfevents.1608669492.dwarf.656.0',
         exp_names=['matrix', 'vector', 'matrixdiag', 'vectordiag'],
 ):
     logdata = load_tensorboard_scalars(events_file)
@@ -2140,7 +2140,8 @@ def unicycle_speed_test_matrix_vector_vis(
         training_samples, errors = zip(*logdata[gp + '/errors'])
         exp_data[gp] = dict(elapsed=elapsed, errors=errors)
     fig, axes = plt.subplots(1,2, figsize=(8, 4.7))
-    fig.subplots_adjust(bottom=0.2, wspace=0.30)
+    fig.subplots_adjust(bottom=0.1, wspace=0.20, top=0.90, right=0.95, left=0.1)
+    fig.suptitle('Unicycle')
     speed_test_matrix_vector_plot(axes,
                                               training_samples,
                                               exp_data)

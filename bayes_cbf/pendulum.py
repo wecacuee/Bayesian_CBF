@@ -1209,7 +1209,7 @@ def learn_dynamics_matrix_vector_independent_vis(
 
     plot_file = osp.join(events_dir, 'learned_f_g_vs_true_f_g_mat_vec_ind.pdf')
     fig.savefig(plot_file)
-    subprocess.run(["xdg-open", plot_file])
+    # subprocess.run(["xdg-open", plot_file])
     return plot_file
 
 def learn_dynamics_matrix_vector_independent(**kw):
@@ -1279,7 +1279,7 @@ def speed_test_matrix_vector_independent_exp(
         # ntimes = 20, # How many times the inference should be repeated
         ntimes = 50, # How many times the inference should be repeated
         repeat = 5,
-        errorbartries = 20,
+        errorbartries = 50,
         logger_class=partial(TBLogger,
                              exp_tags=['speed_test_matrix_vector_independent'],
                              runs_dir='data/runs'),

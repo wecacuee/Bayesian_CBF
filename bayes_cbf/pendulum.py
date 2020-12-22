@@ -1302,8 +1302,8 @@ def compute_errors(regressor_class, sampling_callable, pend_env,
 
 
 def speed_test_matrix_vector_exp(
-        max_train_variations=[16, 32], # testing GPU
-        # max_train_variations=[256, 256+64, 256+128, 256+256], # final GPU
+        # max_train_variations=[16, 32], # testing GPU
+        max_train_variations=[256, 256+64, 256+128, 256+256], # final GPU
         # max_train_variations=[10, 25, 50, 80, 125], # CPU
         # ntimes = 20, # How many times the inference should be repeated
         ntimes = 50, # How many times the inference should be repeated
@@ -1395,11 +1395,11 @@ def speed_test_matrix_vector_exp(
 def speed_test_matrix_vector_vis(
         events_file='saved-runs/speed_test_matrix_vector_v1.5.1-5-g90f04f2/events.out.tfevents.1608618034.dwarf.20956.1',
         exp_conf=OrderedDict(
-            matrixdiag=dict(label='MVGP (diag)'),
             vectordiag=dict(label='CoGP (diag)'),
+            matrixdiag=dict(label='MVGP (diag)'),
             vector=dict(label='CoGP (full)'),
             matrix=dict(label='MVGP (full)')),
-        marker_rotation=['b*-', 'g+-', 'r.-'],
+        marker_rotation=['b*-', 'g+-', 'r.-', 'k^-'],
         elapsed_ylabel='Inference time (secs)',
         error_ylabel=r'''$ \sqrt{\frac{1}{n}\sum_{\mathbf{x} \in \mathbf{X}_{test}} \left\|\mathbf{K}^{-\frac{1}{2}}_k(\mathbf{x}, \mathbf{x}) \mbox{vec}(\mathbf{M}_k(\mathbf{x})-F_{true}(\mathbf{x})) \right\|_2^2}$''',
         xlabel='Training samples'
@@ -1414,13 +1414,13 @@ def speed_test_matrix_vector_vis(
     fig, axes = plt.subplots(1,2, figsize=(8, 4.7))
     fig.subplots_adjust(bottom=0.2, wspace=0.30)
     speed_test_matrix_vector_plot(axes,
-                                              training_samples,
-                                              exp_data,
-                                              exp_conf=exp_conf,
-                                              marker_rotation=marker_rotation,
-                                              xlabel=xlabel,
-                                              error_ylabel=error_ylabel,
-                                              elapsed_ylabel=elapsed_ylabel)
+                                  training_samples,
+                                  exp_data,
+                                  exp_conf=exp_conf,
+                                  marker_rotation=marker_rotation,
+                                  xlabel=xlabel,
+                                  error_ylabel=error_ylabel,
+                                  elapsed_ylabel=elapsed_ylabel)
     plot_file = osp.join(events_dir, 'speed_test_mat_vec_ind.pdf')
     fig.savefig(plot_file)
     subprocess.run(["xdg-open", plot_file])

@@ -1,5 +1,7 @@
 #plot the result
 from functools import partial
+from collections import OrderedDict
+
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -210,6 +212,39 @@ def var_to_scale_theta(V):
     scale = 3*w
     theta = angle_from_rotmat(E)
     return scale, theta
+
+
+def speed_test_matrix_vector_independent_plot(
+        axes,
+        training_samples,
+        exp_data,
+        exp_conf=OrderedDict(
+            independent=dict(label='Decoupled GP'),
+            vector=dict(label='Coregionalization GP'),
+            matrix=dict(label='Matrix Variate GP')),
+        marker_rotation=['b*-', 'g+-', 'r.-'],
+        elapsed_ylabel='Inference time (secs)',
+        error_ylabel=r'''$ \sqrt{\sum_{\mathbf{x} \in \mathbf{X}_{test}} \left\|\mathbf{K}^{-\frac{1}{2}}_k(\mathbf{x}, \mathbf{x}) \mbox{vec}(\mathbf{M}_k(\mathbf{x})-F_{true}(\mathbf{x})) \right\|_2^2}$''',
+        xlabel='Training samples'
+):
+    for mrkr, (gp, gp_conf) in zip(marker_rotation,exp_conf.items()):
+        elapsed = np.hstack(exp_data[gp]['elapsed'])
+        axes[0].plot(training_samples, elapsed, mrkr,
+                     label=gp_conf['label'])
+        axes[0].set_xlabel(xlabel)
+        axes[0].set_ylabel(elapsed_ylabel)
+        axes[0].legend()
+
+        ys = np.vstack(exp_data[gp]['errors'])
+        ymean = np.mean(ys, axis=1)
+        yerr = np.std(ys, axis=1)
+        axes[1].errorbar(training_samples, ymean,
+                         fmt=mrkr, yerr=yerr,label=gp_conf['label'],
+                         capsize=2)
+        axes[1].set_xlabel(xlabel)
+        axes[1].set_ylabel(error_ylabel)
+        axes[1].legend()
+
 
 if __name__ == '__main__':
     import doctest

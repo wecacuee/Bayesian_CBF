@@ -65,7 +65,8 @@ from bayes_cbf.misc import (to_numpy, normalize_radians, ZeroDynamicsModel,
 from bayes_cbf.sampling import sample_generator_trajectory, VisualizerZ
 from bayes_cbf.planner import PiecewiseLinearPlanner, SplinePlanner
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, cbc2_safety_factor
-from bayes_cbf.plotting import (draw_ellipse, var_to_scale_theta)
+from bayes_cbf.plotting import (draw_ellipse, var_to_scale_theta,
+                                speed_test_matrix_vector_independent_plot)
 
 TBLOG = None
 
@@ -1951,6 +1952,7 @@ def unicycle_speed_test_matrix_vector_independent_exp(
         # ntimes = 20, # How many times the inference should be repeated
         ntimes = 10, # How many times the inference should be repeated
         repeat = 50, # How many times to repeat at take minima
+        errorbartries = 20, # How many repeats needed to plot accuracy error bars
         state_start = [-3, -1, -math.pi/4],
         state_goal = [0, 0, math.pi/4],
         numSteps = 512,
@@ -2033,64 +2035,110 @@ def unicycle_speed_test_matrix_vector_independent_exp(
                 number=ntimes,
                 globals=dict(model=model,
                              Xtest=Xtest)))
-            # b(1+m)n
-            FX_learned, var_FX = model.custom_predict_fullmat(
-                Xtest.reshape(-1, Xtest.shape[-1]))
-            m = true_dynamics_model.ctrl_size
-            n = true_dynamics_model.state_size
-            b = Xtest.shape[0]
-
-            var_FX_t = var_FX.reshape(b, (1+m)*n, b, (1+m)*n)
-            var_FX_diag_t = torch.empty((b, (1+m)*n, (1+m)*n),
-                                        dtype=var_FX_t.dtype,
-                                        device=var_FX_t.device)
-            for i in range(b):
-                var_FX_diag_t[i, :, :] = var_FX_t[i, :, i, :]
-            error = measure_batch_error(
-                FX_learned.reshape(-1, (1+m)*n),
-                var_FX_diag_t,
-                FX_true.reshape(-1, (1+m)*n).to(
-                    dtype=FX_learned.dtype,
-                    device=FX_learned.device))
-            print(name, max_train, elapsed)
-            print(name, max_train, error)
-            logger.add_scalars(name, dict(elapsed=elapsed / ntimes,
-                                          error=error), max_train)
+            errors = compute_errors(kw['regressor_class'],
+                                    partial(sample_generator_trajectory,
+                                            dynamics_model=true_dynamics_model,
+                                            D=numSteps,
+                                            controller=ControllerCLF(
+                                                NoPlanner(torch.tensor(state_goal)),
+                                                coordinate_converter = lambda x, x_g: x,
+                                                dynamics = CartesianDynamics(),
+                                                clf = CLFCartesian()
+                                            ).control,
+                                            visualizer=VisualizerZ(),
+                                            x0=state_start,
+                                            dt=dt),
+                                    true_dynamics_model,
+                                    mean_dynamics_gen = mean_dynamics_gen,
+                                    dt = dt,
+                                    max_train=max_train,
+                                    ntries=errorbartries)
+            print(name, "training: ", max_train, "time:", elapsed, "error:",
+                  np.mean(errors), "+-", np.std(errors))
+            logger.add_scalars(name, dict(elapsed=elapsed / ntimes), max_train)
+            logger.add_tensors(name, dict(errors=np.asarray(errors)), max_train)
 
     events_file = max(
         glob.glob(osp.join(logger.experiment_logs_dir, "*.tfevents*")),
         key=lambda f: os.stat(f).st_mtime)
     return events_file
 
+
+def compute_errors(regressor_class, sampling_callable, true_dynamics,
+                   ntries=5, max_train=200, test_on_grid=False, ntest=400,
+                   dt = 0.01, mean_dynamics_gen = None):
+    error_list = []
+    # b(1+m)n
+    for _ in range(ntries):
+        dX, X, U = sampling_callable()
+
+        shuffled_order = np.arange(X.shape[0]-1)
+
+        # Test train split
+        np.random.shuffle(shuffled_order)
+        shuffled_order_t = torch.from_numpy(shuffled_order)
+
+        train_indices = shuffled_order_t[:max_train]
+        Xtrain = X[train_indices, :]
+        Utrain = U[train_indices, :]
+        XdotTrain = dX[train_indices, :]
+
+        if test_on_grid:
+            theta_omega_grid = get_grid_from_Xtrain(to_numpy(Xtrain))
+            Xtest = torch.from_numpy(
+                theta_omega_grid.reshape(-1, Xtrain.shape[-1])).to(
+                    dtype=Xtrain.dtype,
+                    device=Xtrain.device)
+        else:
+            Xtest = X[shuffled_order_t[-ntest:], :]
+
+        # b, 1+m, n
+        FX_true = true_dynamics.F_func(Xtest).transpose(-2, -1) # (b, n, 1+m) -> (b, 1+m, n)
+
+        dgp = regressor_class(dt = dt,
+                              mean_dynamics=mean_dynamics_gen(),
+                              max_train=max_train)
+
+
+        # b(1+m)n
+        FX_learned, var_FX = dgp.custom_predict_fullmat(
+            Xtest.reshape(-1, Xtest.shape[-1]))
+        b = Xtest.shape[0]
+        n = true_dynamics.state_size
+        m = true_dynamics.ctrl_size
+
+        var_FX_t = var_FX.reshape(b, (1+m)*n, b, (1+m)*n)
+        var_FX_diag_t = torch.empty((b, (1+m)*n, (1+m)*n),
+                                    dtype=var_FX_t.dtype,
+                                    device=var_FX_t.device)
+        for i in range(b):
+            var_FX_diag_t[i, :, :] = var_FX_t[i, :, i, :]
+        error = measure_batch_error(
+            FX_learned.reshape(-1, (1+m)*n),
+            var_FX_diag_t,
+            FX_true.reshape(-1, (1+m)*n).to(
+                dtype=FX_learned.dtype,
+                device=FX_learned.device))
+        error_list.append(error)
+    return error_list
+
+
 def unicycle_speed_test_matrix_vector_independent_vis(
         events_file='saved-runs/speed_test_matrix_vector_independent_v1.3.0/events.out.tfevents.1608186154.dwarf.14269.0',
-        exp_conf=OrderedDict(
-            independent=dict(label='Decoupled GP'),
-            vector=dict(label='Coregionalization GP'),
-            matrix=dict(label='Matrix Variate GP')),
-        marker_rotation=['b*-', 'g+-', 'r.-'],
-        elapsed_ylabel='Inference time (secs)',
-        error_ylabel=r'''$ \sqrt{\sum_{\mathbf{x} \in \mathbf{X}_{test}} \left\|\mathbf{K}^{-\frac{1}{2}}_k(\mathbf{x}, \mathbf{x}) \mbox{vec}(\mathbf{M}_k(\mathbf{x})-F_{true}(\mathbf{x})) \right\|_2^2}$''',
-        xlabel='Training samples'
+        exp_names=['matrix', 'vector', 'independent'],
 ):
     logdata = load_tensorboard_scalars(events_file)
     events_dir = osp.dirname(events_file)
+    exp_data = dict()
+    for gp in exp_names:
+        training_samples, elapsed = zip(*logdata[gp + '/elapsed'])
+        training_samples, errors = zip(*logdata[gp + '/errors'])
+        exp_data[gp] = dict(elapsed=elapsed, errors=errors)
     fig, axes = plt.subplots(1,2, figsize=(8, 4.7))
     fig.subplots_adjust(bottom=0.2, wspace=0.30)
-    for mrkr, (gp, gp_conf) in zip(marker_rotation,exp_conf.items()):
-        xs, ys = zip(*logdata[gp + '/elapsed'])
-        ys = np.hstack(ys)
-        axes[0].plot(xs, ys, mrkr, label=gp_conf['label'])
-        axes[0].set_xlabel(xlabel)
-        axes[0].set_ylabel(elapsed_ylabel)
-        axes[0].legend()
-
-        xs, ys = zip(*logdata[gp + '/error'])
-        ys = np.hstack(ys)
-        axes[1].plot(xs, ys, mrkr, label=gp_conf['label'])
-        axes[1].set_xlabel(xlabel)
-        axes[1].set_ylabel(error_ylabel)
-        axes[1].legend()
+    speed_test_matrix_vector_independent_plot(axes,
+                                              training_samples,
+                                              exp_data)
     plot_file = osp.join(events_dir, 'speed_test_mat_vec_ind.pdf')
     fig.savefig(plot_file)
     # subprocess.run(["xdg-open", plot_file])

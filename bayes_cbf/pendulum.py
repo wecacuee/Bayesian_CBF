@@ -38,7 +38,8 @@ from bayes_cbf.control_affine_model import (ControlAffineRegressor, LOG as CALOG
 CALOG.setLevel(logging.WARNING)
 
 from bayes_cbf.plotting import (plot_results, plot_learned_2D_func_from_data,
-                                plt_savefig_with_data, plot_2D_f_func)
+                                plt_savefig_with_data, plot_2D_f_func,
+                                speed_test_matrix_vector_independent_plot)
 from bayes_cbf.sampling import (sample_generator_trajectory, controller_sine,
                                 Visualizer, VisualizerZ, uncertainity_vis_kwargs)
 from bayes_cbf.controllers import (Controller, ControlCBFLearned,
@@ -1233,7 +1234,7 @@ def learn_dynamics_matrix_vector_independent(**kw):
 
 
 def compute_errors(regressor_class, sampling_callable, pend_env,
-                   ntries=5, max_train=200, test_on_grid=True, ntest=400):
+                   ntries=5, max_train=200, test_on_grid=False, ntest=400):
     error_list = []
     # b(1+m)n
     for _ in range(ntries):
@@ -1377,31 +1378,6 @@ def speed_test_matrix_vector_independent_exp(
         glob.glob(osp.join(logger.experiment_logs_dir, "*.tfevents*")),
         key=lambda f: os.stat(f).st_mtime)
     return events_file
-
-def speed_test_matrix_vector_independent_plot(axes,
-                                              training_samples,
-                                              exp_data,
-                                              xlabel='',
-                                              error_ylabel='',
-                                              elapsed_ylabel='',
-                                              exp_conf={},
-                                              marker_rotation=[]):
-    for mrkr, (gp, gp_conf) in zip(marker_rotation,exp_conf.items()):
-        elapsed = np.hstack(exp_data[gp]['elapsed'])
-        axes[0].plot(training_samples, elapsed, mrkr,
-                     label=gp_conf['label'])
-        axes[0].set_xlabel(xlabel)
-        axes[0].set_ylabel(elapsed_ylabel)
-        axes[0].legend()
-
-        ys = np.vstack(exp_data[gp]['errors'])
-        ymean = np.mean(ys, axis=1)
-        yerr = np.std(ys, axis=1)
-        axes[1].errorbar(training_samples, ymean,
-                         fmt=mrkr, yerr=yerr,label=gp_conf['label'])
-        axes[1].set_xlabel(xlabel)
-        axes[1].set_ylabel(error_ylabel)
-        axes[1].legend()
 
 def speed_test_matrix_vector_independent_vis(
         events_file='saved-runs/speed_test_matrix_vector_independent_v1.3.0/events.out.tfevents.1608186154.dwarf.14269.0',

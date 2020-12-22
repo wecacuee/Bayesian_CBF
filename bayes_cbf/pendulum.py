@@ -1103,7 +1103,12 @@ def measure_batch_error(FX_learned, var_FX, FX_true):
     n = np.prod(FX_true.shape[:-1])
     return np.sqrt(to_numpy(sq_sum) / n)
 
-def learn_dynamics_matrix_vector_independent_vis(
+def learn_dynamics_matrix_vector_independent_plot(
+        exps,
+        exp_data,
+        FX_true,
+        Xtrain,
+        theta_omega_grid,
         xlabel=r'$\theta$',
         ylabel=r'$\omega$',
         figtitle='Comparing GP Learning methods',
@@ -1113,24 +1118,18 @@ def learn_dynamics_matrix_vector_independent_vis(
             independent=dict(axtitle='Decoupled GP'),
             vector=dict(axtitle='Coregionalization GP'),
             matrix=dict(axtitle='Matrix Variate GP')),
-        events_file='saved-runs/learn_matrix_vector_independent_v1.1.0/events.out.tfevents.1607382261.dwarf.5274.7'):
-    logdata = load_tensorboard_scalars(events_file)
-    events_dir = osp.dirname(events_file)
+):
     fig, axs = plt.subplots(4, 4, sharex=True, sharey=True, squeeze=False,
                             figsize=(10, 7.0))
     fig.subplots_adjust(wspace=0.2, hspace=0.3, left=0.07, right=0.95,
                         bottom=0.07, top=0.92)
-    theta_omega_grid = logdata['log_learned_model/matrix/Fx/theta_omega_grid'][0][1]
-    FX_true = logdata['log_learned_model/matrix/Fx/FX_true'][0][1]
-    Xtrain = logdata['log_learned_model/matrix/Fx/Xtrain'][0][1]
-
     csets_fx = None
     csets_gx = None
     exp_error_data = []
     for e, exp in enumerate(exp_conf.keys()):
         axtitle = exp_conf[exp]['axtitle']
-        FX_learned = logdata['log_learned_model/' + exp + '/Fx/FX_learned'][0][1]
-        var_FX = logdata['log_learned_model/' + exp + '/Fx/var_FX'][0][1]
+        FX_learned = exp_data[exp]['FX_learned']
+        var_FX = exp_data[exp]['var_FX']
         FX_learned_t, var_FX_t, FX_true_t = map(
             torch.from_numpy, (FX_learned, var_FX, FX_true))
         b = int(np.prod(FX_learned_t.shape[:-2]))
@@ -1198,7 +1197,24 @@ def learn_dynamics_matrix_vector_independent_vis(
     fig.suptitle(figtitle)
     if hasattr(fig, "canvas") and hasattr(fig.canvas, "set_window_title"):
         fig.canvas.set_window_title(figtitle)
+    return fig, exp_error_data
 
+def learn_dynamics_matrix_vector_independent_vis(
+        exps=['independent', 'matrix', 'vector'],
+        events_file='saved-runs/learn_matrix_vector_independent_v1.1.0/events.out.tfevents.1607382261.dwarf.5274.7'):
+    logdata = load_tensorboard_scalars(events_file)
+    events_dir = osp.dirname(events_file)
+    theta_omega_grid = logdata['log_learned_model/matrix/Fx/theta_omega_grid'][0][1]
+    FX_true = logdata['log_learned_model/matrix/Fx/FX_true'][0][1]
+    Xtrain = logdata['log_learned_model/matrix/Fx/Xtrain'][0][1]
+    exp_data = dict()
+    for e, exp in enumerate(exps):
+        axtitle = exp_conf[exp]['axtitle']
+        exp_data[exp] = dict()
+        exp_data[exp]['FX_learned'] = logdata['log_learned_model/' + exp + '/Fx/FX_learned'][0][1]
+        exp_data[exp]['var_FX'] = logdata['log_learned_model/' + exp + '/Fx/var_FX'][0][1]
+    fig, exp_error_data = learn_dynamics_matrix_vector_independent_plot(
+        exps, exp_data, FX_true, Xtrain, theta_omega_grid)
     error_file = osp.join(events_dir,
                           'vector_matrix_independent_learning_error.txt')
     exp_names, exp_errors = zip(*exp_error_data)
@@ -1244,12 +1260,13 @@ def compute_errors(regressor_class, sampling_callable, pend_env,
         else:
             Xtest = X[shuffled_order_t[-ntest:], :]
 
-        # b, n, 1+m
-        FX_true = pend_env.F_func(Xtest).transpose(-2, -1)
+        # b, 1+m, n
+        FX_true = pend_env.F_func(Xtest).transpose(-2, -1) # (b, n, 1+m) -> (b, 1+m, n)
 
         dgp = regressor_class(Xtrain.shape[-1], Utrain.shape[-1])
 
 
+        # b(1+m)n
         FX_learned, var_FX = dgp.custom_predict_fullmat(
             Xtest.reshape(-1, Xtest.shape[-1]))
         b = Xtest.shape[0]
@@ -1279,7 +1296,7 @@ def speed_test_matrix_vector_independent_exp(
         # ntimes = 20, # How many times the inference should be repeated
         ntimes = 50, # How many times the inference should be repeated
         repeat = 5,
-        errorbartries = 50,
+        errorbartries = 40,
         logger_class=partial(TBLogger,
                              exp_tags=['speed_test_matrix_vector_independent'],
                              runs_dir='data/runs'),
@@ -1328,7 +1345,7 @@ def speed_test_matrix_vector_independent_exp(
                 dtype=Xtrain.dtype,
                 device=Xtrain.device)
         # b, n, 1+m
-        FX_true = pend_env.F_func(Xtest).transpose(-2, -1)
+        FX_true = pend_env.F_func(Xtest).transpose(-2, -1) # (b, n, 1+m) -> (b, 1+m, n)
 
         for name, kw in exps.items():
             dgp = kw['regressor_class'](Xtrain.shape[-1], Utrain.shape[-1])
@@ -1362,6 +1379,31 @@ def speed_test_matrix_vector_independent_exp(
         key=lambda f: os.stat(f).st_mtime)
     return events_file
 
+def speed_test_matrix_vector_independent_plot(axes,
+                                              training_samples,
+                                              elapsed,
+                                              errors,
+                                              xlabel='',
+                                              error_ylabel='',
+                                              elapsed_ylabel='',
+                                              exp_conf={},
+                                              marker_rotation=[]):
+    for mrkr, (gp, gp_conf) in zip(marker_rotation,exp_conf.items()):
+        elapsed = np.hstack(elapsed)
+        axes[0].plot(training_samples, elapsed, mrkr, label=gp_conf['label'])
+        axes[0].set_xlabel(xlabel)
+        axes[0].set_ylabel(elapsed_ylabel)
+        axes[0].legend()
+
+        ys = np.vstack(errors)
+        ymean = np.mean(ys, axis=1)
+        yerr = np.std(ys, axis=1)
+        axes[1].errorbar(training_samples, ymean,
+                         fmt=mrkr, yerr=yerr,label=gp_conf['label'])
+        axes[1].set_xlabel(xlabel)
+        axes[1].set_ylabel(error_ylabel)
+        axes[1].legend()
+
 def speed_test_matrix_vector_independent_vis(
         events_file='saved-runs/speed_test_matrix_vector_independent_v1.3.0/events.out.tfevents.1608186154.dwarf.14269.0',
         exp_conf=OrderedDict(
@@ -1375,25 +1417,18 @@ def speed_test_matrix_vector_independent_vis(
 ):
     logdata = load_tensorboard_scalars(events_file)
     events_dir = osp.dirname(events_file)
+    training_samples, elapsed = zip(*logdata[gp + '/elapsed'])
+    training_samples, errors = zip(*logdata[gp + '/errors'])
     fig, axes = plt.subplots(1,2, figsize=(8, 4.7))
     fig.subplots_adjust(bottom=0.2, wspace=0.30)
-    for mrkr, (gp, gp_conf) in zip(marker_rotation,exp_conf.items()):
-        xs, ys = zip(*logdata[gp + '/elapsed'])
-        ys = np.hstack(ys)
-        axes[0].plot(xs, ys, mrkr, label=gp_conf['label'])
-        axes[0].set_xlabel(xlabel)
-        axes[0].set_ylabel(elapsed_ylabel)
-        axes[0].legend()
-
-        xs, ys = zip(*logdata[gp + '/errors'])
-        ys = np.vstack(ys)
-        ymean = np.mean(ys, axis=1)
-        yerr = np.std(ys, axis=1)
-        axes[1].errorbar(xs, ymean,
-                         fmt=mrkr, yerr=yerr,label=gp_conf['label'])
-        axes[1].set_xlabel(xlabel)
-        axes[1].set_ylabel(error_ylabel)
-        axes[1].legend()
+    speed_test_matrix_vector_independent_plot(axes,
+                                              training_samples,
+                                              elapsed,
+                                              exp_conf=exp_conf,
+                                              marker_rotation=marker_rotation,
+                                              xlabel=xlabel,
+                                              error_ylabel=error_ylabel,
+                                              elapsed_ylabel=elapsed_ylabel)
     plot_file = osp.join(events_dir, 'speed_test_mat_vec_ind.pdf')
     fig.savefig(plot_file)
     subprocess.run(["xdg-open", plot_file])
@@ -1410,5 +1445,5 @@ if __name__ == '__main__':
     #run_pendulum_control_cbf_clf()
     # learn_dynamics()
     #run_pendulum_control_online_learning()
-    learn_dynamics_matrix_vector_independent()
+    # learn_dynamics_matrix_vector_independent()
     speed_test_matrix_vector_independent()

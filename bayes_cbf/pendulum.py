@@ -1114,20 +1114,18 @@ def learn_dynamics_matrix_vector_plot(
         n = 2,
         m = 1,
         exp_conf=dict(
-            true=dict(rowlabel='True'),
             vector=dict(rowlabel='CoGP'),
             matrix=dict(rowlabel='MVGP')),
         collabels=[r'$f(x)_{i}$', r'$g(x)_{{{{i},1}}$']
 ):
     fig, axs = plt.subplots(3, 4, sharex=True, sharey=True, squeeze=False,
-                            figsize=(10, 5.0))
-    fig.subplots_adjust(wspace=0.2, hspace=0.3, left=0.07, right=0.95,
-                        bottom=0.07, top=0.92)
+                            figsize=(10, 6.0))
+    fig.subplots_adjust(wspace=0.2, hspace=0.2, left=0.10, right=0.95,
+                        bottom=0.07, top=0.90)
     csets_fx = None
     csets_gx = None
     exp_error_data = []
     for e, exp in enumerate(exp_conf.keys()):
-        axtitle = exp_conf[exp]['axtitle']
         FX_learned = exp_data[exp]['FX_learned']
         var_FX = exp_data[exp]['var_FX']
         FX_learned_t, var_FX_t, FX_true_t = map(
@@ -1149,9 +1147,9 @@ def learn_dynamics_matrix_vector_plot(
         FX_learned = FX_learned.reshape(*batch_shape, (1+m), n)
         csets_fx = plot_2D_f_func(theta_omega_grid, FX_learned[:, :, 0, :],
                                   axes_gen=lambda _: axs[e+1, :2],
-                                  axtitle=axtitle + r" $f(x)_{i}$",
+                                  axtitle=None,
                                   xsample=Xtrain[-1, :],
-                                  xlabel=(xlabel if (e+1 == len(exp_conf)) else None),
+                                  xlabel=xlabel,
                                   ylabel=ylabel,
                                   contour_levels=(None
                                                   if csets_fx is None else
@@ -1159,32 +1157,47 @@ def learn_dynamics_matrix_vector_plot(
         )
         csets_gx = plot_2D_f_func(theta_omega_grid, FX_learned[:, :, 1, :],
                                   axes_gen=lambda _: axs[e+1, 2:],
-                                  axtitle=axtitle + r" $g(x)_{{{i},1}}$",
+                                  axtitle=None,
                                   xsample=Xtrain[-1, :],
-                                  xlabel=(xlabel if (e+1 == len(exp_conf)) else None),
+                                  xlabel=xlabel,
                                   ylabel=None,
                                   contour_levels=(None
                                                   if csets_gx is None else
                                                   [c.levels for c in csets_gx])
         )
+        pad = 5
+        axs[e+1, 0].annotate(exp_conf[exp]['rowlabel'],
+                             xy=(0.0, 0.5), # loc in axes fraction
+                             xytext=(-axs[e+1, 0].yaxis.labelpad - pad, 5), # padding in pts
+                             xycoords=axs[e+1, 0].yaxis.label,
+                             textcoords='offset points',
+                             size='large', ha='right', va='center',
+                             rotation=90)
 
 
     batch_shape = FX_true.shape[:-2]
     FX_true = FX_true.reshape(*batch_shape, (1+m), n)
     csets_fx = plot_2D_f_func(theta_omega_grid, FX_true[:, :, 0, :],
                               axes_gen=lambda _: axs[0, :2],
-                              axtitle="True $f(x)_{i}$",
+                              axtitle="$f(x)_{i}$",
                               xsample=Xtrain[-1, :],
-                              xlabel=None,
+                              xlabel=xlabel,
                               ylabel=ylabel,
                               contour_levels=[c.levels for c in csets_fx])
     csets_gx = plot_2D_f_func(theta_omega_grid, FX_true[:, :, 1, :],
                               axes_gen=lambda _: axs[0, 2:],
-                              axtitle="True $g(x)_{{{i},1}}$",
+                              axtitle="$g(x)_{{{i},1}}$",
                               xsample=Xtrain[-1, :],
-                              xlabel=None,
+                              xlabel=xlabel,
                               ylabel=None,
                               contour_levels=[c.levels for c in csets_gx])
+    axs[0, 0].annotate('Ground Truth',
+                       xy=(0.0, 0.5), # loc in axes fraction
+                       xytext=(-axs[0, 0].yaxis.labelpad - pad, 5), # padding in pts
+                       xycoords=axs[0, 0].yaxis.label,
+                       textcoords='offset points',
+                       size='large', ha='right', va='center',
+                       rotation=90)
 
     xmin = np.min(theta_omega_grid[0, ...])
     xmax = np.max(theta_omega_grid[0, ...])
@@ -1194,7 +1207,7 @@ def learn_dynamics_matrix_vector_plot(
         ax.plot(Xtrain[:, 0], Xtrain[:, 1], marker='+', linestyle='', color='r')
         ax.set_xlim(xmin, xmax)
         ax.set_ylim(ymin, ymax)
-    fig.suptitle(figtitle)
+    fig.suptitle(figtitle, fontsize='x-large')
     if hasattr(fig, "canvas") and hasattr(fig.canvas, "set_window_title"):
         fig.canvas.set_window_title(figtitle)
     return fig, exp_error_data

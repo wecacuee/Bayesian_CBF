@@ -11,7 +11,7 @@ P. I. Corke, "Robotics, Vision & Control", Springer 2017, ISBN 978-3-319-54413-7
 from datetime import datetime
 from random import random
 from functools import partial
-from collections import namedtuple
+from collections import namedtuple, OrderedDict
 import inspect
 import sys
 import subprocess
@@ -1946,7 +1946,7 @@ def measure_batch_error(FX_learned, var_FX, FX_true):
 
 def unicycle_speed_test_matrix_vector_independent_exp(
         # max_train_variations=[64, 512], # testing GPU
-        max_train_variations=[16, 32, 64, 128], # final GPU
+        max_train_variations=[64, 64+16, 64+32, 128], # final GPU
         # max_train_variations=[10, 25, 50, 80, 125], # CPU
         # ntimes = 20, # How many times the inference should be repeated
         ntimes = 10, # How many times the inference should be repeated
@@ -2064,19 +2064,19 @@ def unicycle_speed_test_matrix_vector_independent_exp(
 
 def unicycle_speed_test_matrix_vector_independent_vis(
         events_file='saved-runs/speed_test_matrix_vector_independent_v1.3.0/events.out.tfevents.1608186154.dwarf.14269.0',
-        exp_conf=dict(
+        exp_conf=OrderedDict(
             independent=dict(label='Decoupled GP'),
             vector=dict(label='Coregionalization GP'),
             matrix=dict(label='Matrix Variate GP')),
         marker_rotation=['b*-', 'g+-', 'r.-'],
         elapsed_ylabel='Inference time (secs)',
-        error_ylabel=r'''$ \sum_{\mathbf{x} \in \mathbf{X}_{test}} \left\|\mathbf{K}^\frac{1}{2}_k(\mathbf{x}, \mathbf{x}) \mbox{vec}(F(\mathbf{x})-F_{true}(\mathbf{x})) \right\|_2^2$''',
+        error_ylabel=r'''$ \sqrt{\sum_{\mathbf{x} \in \mathbf{X}_{test}} \left\|\mathbf{K}^{-\frac{1}{2}}_k(\mathbf{x}, \mathbf{x}) \mbox{vec}(\mathbf{M}_k(\mathbf{x})-F_{true}(\mathbf{x})) \right\|_2^2}$''',
         xlabel='Training samples'
 ):
     logdata = load_tensorboard_scalars(events_file)
     events_dir = osp.dirname(events_file)
     fig, axes = plt.subplots(1,2, figsize=(8, 4.7))
-    fig.subplots_adjust(bottom=0.2, wspace=0.28)
+    fig.subplots_adjust(bottom=0.2, wspace=0.30)
     for mrkr, (gp, gp_conf) in zip(marker_rotation,exp_conf.items()):
         xs, ys = zip(*logdata[gp + '/elapsed'])
         ys = np.hstack(ys)
@@ -2093,7 +2093,7 @@ def unicycle_speed_test_matrix_vector_independent_vis(
         axes[1].legend()
     plot_file = osp.join(events_dir, 'speed_test_mat_vec_ind.pdf')
     fig.savefig(plot_file)
-    subprocess.run(["xdg-open", plot_file])
+    # subprocess.run(["xdg-open", plot_file])
     return plot_file
 
 

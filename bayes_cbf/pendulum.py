@@ -407,12 +407,14 @@ def learn_dynamics_exp(
                                                  max_train=max_train, tags=[])
     return dgp, dX, U, logger
 
+
 def learn_dynamics(**kw):
     dgp, dX, U, logger = learn_dynamics_exp(**kw)
     events_file = max(
         glob.glob(osp.join(logger.experiment_logs_dir, "*.tfevents*")),
         key=lambda f: os.stat(f).st_mtime)
     learn_dynamics_plot_from_log(events_file)
+
 
 def get_grid_from_Xtrain(Xtrain):
     theta_range = slice(Xtrain[:, 0].min(), Xtrain[:, 0].max(),
@@ -434,6 +436,7 @@ def Xtest_from_theta_omega_grid(theta_omega_grid, xsample):
         theta_omega_grid.transpose(1, 2, 0).reshape(-1, 2)).to(torch.float32)
     return Xgrid.reshape(N, M, D)
 
+
 def evaluate_func_on_grid(theta_omega_grid, f_func, xsample):
     _, N, M = theta_omega_grid.shape
     D = xsample.shape[-1]
@@ -449,17 +452,24 @@ def log_learned_model(Xtrain, model, true_f_func,
     D = Xtrain.shape[-1]
     _, N, M = theta_omega_grid.shape
     Xtest = Xtest_from_theta_omega_grid(theta_omega_grid, Xtrain[0, :])
+    # b(1+m)n
     FX_learned, var_FX = model.custom_predict_fullmat(Xtest.reshape(-1, D))
+    n = model.x_dim
+    m = model.u_dim
+    assert FX_learned.shape == (N*M*(1+m)*n,)
+    FX_learned = FX_learned.reshape(N, M, (1+m), n)
+    var_FX = var_FX.reshape(N, M, (1+m), n, N, M, (1+m), n)
     assert not torch.isnan(FX_learned).any()
     assert not torch.isnan(var_FX).any()
-    # FX_true.shape == (*, n, (1+m))
-    FX_true = to_numpy(true_f_func(Xtest).reshape(N, M, -1))
+    FX_true = true_f_func(Xtest)
+    assert FX_true.shape == (N, M, n, (1+m))
+    FX_true = FX_true.transpose(-1, -2) # (N, M, (1+m), n)
     logger.add_tensors("/".join(("log_learned_model", key)),
                        dict(Xtrain=Xtrain,
                             theta_omega_grid=theta_omega_grid,
-                            FX_learned=to_numpy(FX_learned.reshape(N, M, -1)),
+                            FX_learned=to_numpy(FX_learned),
                             var_FX=to_numpy(var_FX),
-                            FX_true=FX_true),
+                            FX_true=to_numpy(FX_true)),
                        0)
 
 
@@ -1077,10 +1087,14 @@ def learn_dynamics_matrix_vector_independent_exp(
         key=lambda f: os.stat(f).st_mtime)
     return events_file
 
-def measure_error(FX_learned, var_FX, FX_true):
+
+def measure_batch_error(FX_learned, var_FX, FX_true):
+    N, D = FX_learned.shape
+    assert FX_true.shape == (N, D)
+    assert var_FX.shape == (N, D, D)
     FX_t_diff = FX_true - FX_learned
-    errors = FX_t_diff.reshape(-1) @ (
-        FX_t_diff.reshape(-1, 1).solve(var_FX).solution
+    errors = FX_t_diff.unsqueeze(-2).bmm(
+        FX_t_diff.unsqueeze(-1).solve(var_FX).solution
     )
     assert (errors > 0).all()
     sq_sum = errors.reshape(-1).sum()
@@ -1119,11 +1133,21 @@ def learn_dynamics_matrix_vector_independent_vis(
         var_FX = logdata['log_learned_model/' + exp + '/Fx/var_FX'][0][1]
         FX_learned_t, var_FX_t, FX_true_t = map(
             torch.from_numpy, (FX_learned, var_FX, FX_true))
-        error = measure_error(FX_learned_t, var_FX_t, FX_true_t)
+        b = int(np.prod(FX_learned_t.shape[:-2]))
+        var_FX_t = var_FX_t.reshape(b, (1+m)*n, b, (1+m)*n)
+        var_FX_diag_t = torch.empty((b, (1+m)*n, (1+m)*n),
+                                    dtype=var_FX_t.dtype,
+                                    device=var_FX_t.device)
+        # Extract diagonal
+        for i in range(b):
+            var_FX_diag_t[i, :, :] = var_FX_t[i, :, i, :]
+        error = measure_batch_error(FX_learned_t.reshape(-1, (1+m)*n),
+                                    var_FX_diag_t,
+                                    FX_true_t.reshape(-1, (1+m)*n))
         exp_error_data.append((exp, error))
-        batch_shape = FX_learned.shape[:-1]
-        # FX_earned.shape = (*b, n, (1+m))
-        FX_learned = FX_learned.reshape(*batch_shape, n, (1+m))
+        batch_shape = FX_learned.shape[:-2]
+        # FX_learned.shape = (*b, (1+m), n)
+        FX_learned = FX_learned.reshape(*batch_shape, (1+m), n)
         csets_fx = plot_2D_f_func(theta_omega_grid, FX_learned[:, :, 0, :],
                                   axes_gen=lambda _: axs[e+1, :2],
                                   axtitle=axtitle + r" $f(x)_{i}$",
@@ -1146,16 +1170,16 @@ def learn_dynamics_matrix_vector_independent_vis(
         )
 
 
-    batch_shape = FX_true.shape[:-1]
-    FX_true = FX_true.reshape(*batch_shape, n, (1+m))
-    csets_fx = plot_2D_f_func(theta_omega_grid, FX_true[:, :, :, 0],
+    batch_shape = FX_true.shape[:-2]
+    FX_true = FX_true.reshape(*batch_shape, (1+m), n)
+    csets_fx = plot_2D_f_func(theta_omega_grid, FX_true[:, :, 0, :],
                               axes_gen=lambda _: axs[0, :2],
                               axtitle="True $f(x)_{i}$",
                               xsample=Xtrain[-1, :],
                               xlabel=None,
                               ylabel=ylabel,
                               contour_levels=[c.levels for c in csets_fx])
-    csets_gx = plot_2D_f_func(theta_omega_grid, FX_true[:, :, :, 1],
+    csets_gx = plot_2D_f_func(theta_omega_grid, FX_true[:, :, 1, :],
                               axes_gen=lambda _: axs[0, 2:],
                               axtitle="True $g(x)_{{{i},1}}$",
                               xsample=Xtrain[-1, :],
@@ -1199,6 +1223,7 @@ def speed_test_matrix_vector_independent_exp(
         # max_train_variations=[10, 25, 50, 80, 125], # CPU
         # ntimes = 20, # How many times the inference should be repeated
         ntimes = 50, # How many times the inference should be repeated
+        repeat = 5,
         logger_class=partial(TBLogger,
                              exp_tags=['speed_test_matrix_vector_independent'],
                              runs_dir='data/runs'),
@@ -1245,25 +1270,35 @@ def speed_test_matrix_vector_independent_exp(
                 dtype=Xtrain.dtype,
                 device=Xtrain.device)
         # b, n, 1+m
-        FX_true = pend_env.F_func(Xtest)
+        FX_true = pend_env.F_func(Xtest).transpose(-2, -1)
 
         for name, kw in exps.items():
             dgp = kw['regressor_class'](Xtrain.shape[-1], Utrain.shape[-1])
             dgp.fit(Xtrain, Utrain, XdotTrain, training_iter=50)
             elapsed = min(timeit.repeat(
                 stmt='dgp.custom_predict_fullmat(Xtest);dgp.clear_cache()',
-                repeat=5,
+                repeat=repeat,
                 number=ntimes,
                 globals=dict(dgp=dgp,
                              Xtest=Xtest)))
+            # b(1+m)n
             FX_learned, var_FX = dgp.custom_predict_fullmat(
                 Xtest.reshape(-1, Xtest.shape[-1]))
             m = pend_env.ctrl_size
             n = pend_env.state_size
-            error = measure_error(FX_learned, var_FX,
-                                  FX_true.transpose(-1, 2).reshape(-1).to(
-                                      dtype=FX_learned.dtype,
-                                      device=FX_learned.device))
+            b = Xtest.shape[0]
+
+            var_FX_t = var_FX.reshape(b, (1+m)*n, b, (1+m)*n)
+            var_FX_diag_t = torch.empty((b, (1+m)*n, (1+m)*n),
+                                        dtype=var_FX_t.dtype,
+                                        device=var_FX_t.device)
+            for i in range(b):
+                var_FX_diag_t[i, :, :] = var_FX_t[i, :, i, :]
+            error = measure_batch_error(FX_learned.reshape(-1, (1+m)*n),
+                                        var_FX_diag_t,
+                                        FX_true.reshape(-1, (1+m)*n).to(
+                                            dtype=FX_learned.dtype,
+                                            device=FX_learned.device))
             print(name, max_train, elapsed)
             print(name, max_train, error)
             logger.add_scalars(name, dict(elapsed=elapsed / ntimes,
@@ -1282,13 +1317,13 @@ def speed_test_matrix_vector_independent_vis(
             matrix=dict(label='Matrix Variate GP')),
         marker_rotation=['b*-', 'g+-', 'r.-'],
         elapsed_ylabel='Inference time (secs)',
-        error_ylabel=r'''$ \sum_{\mathbf{x} \in \mathbf{X}_{test}} \sum_{\mathbf{x}' \in \mathbf{X}_{test}} \mbox{vec}(F_{err}(\mathbf{x}))^\top \mathbf{K}_k(\mathbf{x}, \mathbf{x}') \mbox{vec}(F_{err}(\mathbf{x}')) $''',
+        error_ylabel=r'''$ \sum_{\mathbf{x} \in \mathbf{X}_{test}} \left\|\mathbf{K}^\frac{1}{2}_k(\mathbf{x}, \mathbf{x}) \mbox{vec}(F(\mathbf{x})-F_{true}(\mathbf{x})) \right\|_2^2$''',
         xlabel='Training samples'
 ):
     logdata = load_tensorboard_scalars(events_file)
     events_dir = osp.dirname(events_file)
     fig, axes = plt.subplots(1,2, figsize=(8, 4.7))
-    fig.subplots_adjust(bottom=0.2, wspace=0.25)
+    fig.subplots_adjust(bottom=0.2, wspace=0.28)
     for mrkr, (gp, gp_conf) in zip(marker_rotation,exp_conf.items()):
         xs, ys = zip(*logdata[gp + '/elapsed'])
         ys = np.hstack(ys)

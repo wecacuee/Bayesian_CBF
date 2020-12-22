@@ -1928,10 +1928,13 @@ def unicycle_no_learning_gets_stuck(**kw):
     unicycle_no_learning_gets_stuck_vis(events_dir)
 
 
-def measure_error(FX_learned, var_FX, FX_true):
+def measure_batch_error(FX_learned, var_FX, FX_true):
+    N, D = FX_learned.shape
+    assert FX_true.shape == (N, D)
+    assert var_FX.shape == (N, D, D)
     FX_t_diff = FX_true - FX_learned
-    errors = FX_t_diff.reshape(-1) @ (
-        FX_t_diff.reshape(-1, 1).solve(var_FX).solution
+    errors = FX_t_diff.unsqueeze(-2).bmm(
+        FX_t_diff.unsqueeze(-1).solve(var_FX).solution
     )
     assert (errors > 0).all()
     sq_sum = errors.reshape(-1).sum()
@@ -1947,6 +1950,7 @@ def unicycle_speed_test_matrix_vector_independent_exp(
         # max_train_variations=[10, 25, 50, 80, 125], # CPU
         # ntimes = 20, # How many times the inference should be repeated
         ntimes = 10, # How many times the inference should be repeated
+        repeat = 50, # How many times to repeat at take minima
         state_start = [-3, -1, -math.pi/4],
         state_goal = [0, 0, math.pi/4],
         numSteps = 512,
@@ -2003,25 +2007,20 @@ def unicycle_speed_test_matrix_vector_independent_exp(
         Utrain = U[train_indices, :]
         XdotTrain = Xdot[train_indices, :]
 
-        x_range = slice(*list(map(float,
-                                  (Xtrain[:, 0].min(),
-                                   Xtrain[:, 0].max(),
-                                   (Xtrain[:, 0].max() - Xtrain[:, 0].min()) / 1))))
-        y_range = slice(*list(map(float,
-                                  (Xtrain[:, 1].min(),
-                                   Xtrain[:, 1].max(),
-                                   (Xtrain[:, 1].max() - Xtrain[:, 1].min()) / 1))))
-        theta_range = slice(*list(map(float,
-                                  (Xtrain[:, 2].min(),
-                                   Xtrain[:, 2].max(),
-                                   (Xtrain[:, 2].max() - Xtrain[:, 2].min()) / 20))))
-        xtest_grid = np.mgrid[x_range, y_range, theta_range]
+        slice_range = []
+        for i, num in enumerate([1, 1, 20]):
+            x_range = slice(*list(map(float,
+                                    (Xtrain[:, i].min(),
+                                    Xtrain[:, i].max(),
+                                     (Xtrain[:, i].max() - Xtrain[:, i].min()) / num))))
+            slice_range.append(x_range)
+        xtest_grid = np.mgrid[tuple(slice_range)]
         Xtest = torch.from_numpy(
             xtest_grid.reshape(-1, Xtrain.shape[-1])).to(
                 dtype=Xtrain.dtype,
                 device=Xtrain.device)
         # b, n, 1+m
-        FX_true = true_dynamics_model.F_func(Xtest)
+        FX_true = true_dynamics_model.F_func(Xtest).transpose(-2, -1)
 
         for name, kw in exps.items():
             model = kw['regressor_class'](dt = dt,
@@ -2030,18 +2029,29 @@ def unicycle_speed_test_matrix_vector_independent_exp(
             model.fit(Xtrain, Utrain, XdotTrain, training_iter=50)
             elapsed = min(timeit.repeat(
                 stmt='model.custom_predict_fullmat(Xtest);model.clear_cache()',
-                repeat=5,
+                repeat=repeat,
                 number=ntimes,
                 globals=dict(model=model,
                              Xtest=Xtest)))
+            # b(1+m)n
             FX_learned, var_FX = model.custom_predict_fullmat(
                 Xtest.reshape(-1, Xtest.shape[-1]))
             m = true_dynamics_model.ctrl_size
             n = true_dynamics_model.state_size
-            error = measure_error(FX_learned, var_FX,
-                                  FX_true.transpose(-1, 2).reshape(-1).to(
-                                      dtype=FX_learned.dtype,
-                                      device=FX_learned.device))
+            b = Xtest.shape[0]
+
+            var_FX_t = var_FX.reshape(b, (1+m)*n, b, (1+m)*n)
+            var_FX_diag_t = torch.empty((b, (1+m)*n, (1+m)*n),
+                                        dtype=var_FX_t.dtype,
+                                        device=var_FX_t.device)
+            for i in range(b):
+                var_FX_diag_t[i, :, :] = var_FX_t[i, :, i, :]
+            error = measure_batch_error(
+                FX_learned.reshape(-1, (1+m)*n),
+                var_FX_diag_t,
+                FX_true.reshape(-1, (1+m)*n).to(
+                    dtype=FX_learned.dtype,
+                    device=FX_learned.device))
             print(name, max_train, elapsed)
             print(name, max_train, error)
             logger.add_scalars(name, dict(elapsed=elapsed / ntimes,
@@ -2060,13 +2070,13 @@ def unicycle_speed_test_matrix_vector_independent_vis(
             matrix=dict(label='Matrix Variate GP')),
         marker_rotation=['b*-', 'g+-', 'r.-'],
         elapsed_ylabel='Inference time (secs)',
-        error_ylabel=r'''$ \sum_{\mathbf{x} \in \mathbf{X}_{test}} \sum_{\mathbf{x}' \in \mathbf{X}_{test}} \mbox{vec}(F_{err}(\mathbf{x}))^\top \mathbf{K}_k(\mathbf{x}, \mathbf{x}') \mbox{vec}(F_{err}(\mathbf{x}')) $''',
+        error_ylabel=r'''$ \sum_{\mathbf{x} \in \mathbf{X}_{test}} \left\|\mathbf{K}^\frac{1}{2}_k(\mathbf{x}, \mathbf{x}) \mbox{vec}(F(\mathbf{x})-F_{true}(\mathbf{x})) \right\|_2^2$''',
         xlabel='Training samples'
 ):
     logdata = load_tensorboard_scalars(events_file)
     events_dir = osp.dirname(events_file)
     fig, axes = plt.subplots(1,2, figsize=(8, 4.7))
-    fig.subplots_adjust(bottom=0.2, wspace=0.25)
+    fig.subplots_adjust(bottom=0.2, wspace=0.28)
     for mrkr, (gp, gp_conf) in zip(marker_rotation,exp_conf.items()):
         xs, ys = zip(*logdata[gp + '/elapsed'])
         ys = np.hstack(ys)
@@ -2092,8 +2102,6 @@ def unicycle_speed_test_matrix_vector_independent(**kw):
     return unicycle_speed_test_matrix_vector_independent_vis(events_file)
 
 
-
-
 if __name__ == '__main__':
     import doctest
     doctest.testmod() # always run unittests first
@@ -2111,7 +2119,7 @@ if __name__ == '__main__':
     # unicycle_mean_cbf_collides_obstacle()
     # unicycle_bayes_cbf_safe_obstacle()
     # unicycle_learning_helps_avoid_getting_stuck()
-    unicycle_no_learning_gets_stuck()
+    # unicycle_no_learning_gets_stuck()
 
     unicycle_speed_test_matrix_vector_independent()
 

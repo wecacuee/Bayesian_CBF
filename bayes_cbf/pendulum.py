@@ -1209,7 +1209,6 @@ def learn_dynamics_matrix_vector_independent_vis(
     Xtrain = logdata['log_learned_model/matrix/Fx/Xtrain'][0][1]
     exp_data = dict()
     for e, exp in enumerate(exps):
-        axtitle = exp_conf[exp]['axtitle']
         exp_data[exp] = dict()
         exp_data[exp]['FX_learned'] = logdata['log_learned_model/' + exp + '/Fx/FX_learned'][0][1]
         exp_data[exp]['var_FX'] = logdata['log_learned_model/' + exp + '/Fx/var_FX'][0][1]
@@ -1234,7 +1233,7 @@ def learn_dynamics_matrix_vector_independent(**kw):
 
 
 def compute_errors(regressor_class, sampling_callable, pend_env,
-                   ntries=5, max_train=200, test_on_grid=False, ntest=400):
+                   ntries=5, max_train=200, test_on_grid=True, ntest=400):
     error_list = []
     # b(1+m)n
     for _ in range(ntries):
@@ -1296,7 +1295,7 @@ def speed_test_matrix_vector_independent_exp(
         # ntimes = 20, # How many times the inference should be repeated
         ntimes = 50, # How many times the inference should be repeated
         repeat = 5,
-        errorbartries = 40,
+        errorbartries = 30,
         logger_class=partial(TBLogger,
                              exp_tags=['speed_test_matrix_vector_independent'],
                              runs_dir='data/runs'),
@@ -1381,21 +1380,21 @@ def speed_test_matrix_vector_independent_exp(
 
 def speed_test_matrix_vector_independent_plot(axes,
                                               training_samples,
-                                              elapsed,
-                                              errors,
+                                              exp_data,
                                               xlabel='',
                                               error_ylabel='',
                                               elapsed_ylabel='',
                                               exp_conf={},
                                               marker_rotation=[]):
     for mrkr, (gp, gp_conf) in zip(marker_rotation,exp_conf.items()):
-        elapsed = np.hstack(elapsed)
-        axes[0].plot(training_samples, elapsed, mrkr, label=gp_conf['label'])
+        elapsed = np.hstack(exp_data[gp]['elapsed'])
+        axes[0].plot(training_samples, elapsed, mrkr,
+                     label=gp_conf['label'])
         axes[0].set_xlabel(xlabel)
         axes[0].set_ylabel(elapsed_ylabel)
         axes[0].legend()
 
-        ys = np.vstack(errors)
+        ys = np.vstack(exp_data[gp]['errors'])
         ymean = np.mean(ys, axis=1)
         yerr = np.std(ys, axis=1)
         axes[1].errorbar(training_samples, ymean,
@@ -1417,13 +1416,16 @@ def speed_test_matrix_vector_independent_vis(
 ):
     logdata = load_tensorboard_scalars(events_file)
     events_dir = osp.dirname(events_file)
-    training_samples, elapsed = zip(*logdata[gp + '/elapsed'])
-    training_samples, errors = zip(*logdata[gp + '/errors'])
+    exp_data = dict()
+    for gp, gp_conf in exp_conf.items():
+        training_samples, elapsed = zip(*logdata[gp + '/elapsed'])
+        training_samples, errors = zip(*logdata[gp + '/errors'])
+        exp_data[gp] = dict(elapsed=elapsed, errors=errors)
     fig, axes = plt.subplots(1,2, figsize=(8, 4.7))
     fig.subplots_adjust(bottom=0.2, wspace=0.30)
     speed_test_matrix_vector_independent_plot(axes,
                                               training_samples,
-                                              elapsed,
+                                              exp_data,
                                               exp_conf=exp_conf,
                                               marker_rotation=marker_rotation,
                                               xlabel=xlabel,
@@ -1445,5 +1447,5 @@ if __name__ == '__main__':
     #run_pendulum_control_cbf_clf()
     # learn_dynamics()
     #run_pendulum_control_online_learning()
-    # learn_dynamics_matrix_vector_independent()
+    learn_dynamics_matrix_vector_independent()
     speed_test_matrix_vector_independent()

@@ -214,14 +214,15 @@ def var_to_scale_theta(V):
     return scale, theta
 
 
-def speed_test_matrix_vector_independent_plot(
+def speed_test_matrix_vector_plot(
         axes,
         training_samples,
         exp_data,
         exp_conf=OrderedDict(
-            independent=dict(label='Decoupled GP'),
-            vector=dict(label='Coregionalization GP'),
-            matrix=dict(label='Matrix Variate GP')),
+            matrixdiag=dict(label='MVGP (diag)'),
+            vectordiag=dict(label='CoGP (diag)'),
+            vector=dict(label='CoGP (full)'),
+            matrix=dict(label='MVGP (full)')),
         marker_rotation=['b*-', 'g+-', 'r.-'],
         elapsed_ylabel='Inference time (secs)',
         error_ylabel=r'''$ \sqrt{\frac{1}{n} \sum_{\mathbf{x} \in \mathbf{X}_{test}} \left\|\mathbf{K}^{-\frac{1}{2}}_k(\mathbf{x}, \mathbf{x}) \mbox{vec}(\mathbf{M}_k(\mathbf{x})-F_{true}(\mathbf{x})) \right\|_2^2}$''',

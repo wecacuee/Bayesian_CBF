@@ -57,7 +57,8 @@ from bayes_cbf.gp_algebra import DeterministicGP, GaussianProcess
 from bayes_cbf.control_affine_model import (ControlAffineRegressor,
                                             ControlAffineRegressorExact,
                                             ControlAffineRegressorVector,
-                                            ControlAffineRegressorIndependent)
+                                            ControlAffineRegMatrixDiag,
+                                            ControlAffineRegVectorDiag)
 from bayes_cbf.misc import (to_numpy, normalize_radians, ZeroDynamicsModel,
                             make_tensor_summary, add_tensors, gitdescribe,
                             stream_tensorboard_scalars, load_tensorboard_scalars,
@@ -66,7 +67,7 @@ from bayes_cbf.sampling import sample_generator_trajectory, VisualizerZ
 from bayes_cbf.planner import PiecewiseLinearPlanner, SplinePlanner
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, cbc2_safety_factor
 from bayes_cbf.plotting import (draw_ellipse, var_to_scale_theta,
-                                speed_test_matrix_vector_independent_plot)
+                                speed_test_matrix_vector_plot)
 
 TBLOG = None
 
@@ -1945,7 +1946,7 @@ def measure_batch_error(FX_learned, var_FX, FX_true):
     return np.sqrt(to_numpy(sq_sum) / n)
 
 
-def unicycle_speed_test_matrix_vector_independent_exp(
+def unicycle_speed_test_matrix_vector_exp(
         # max_train_variations=[64, 512], # testing GPU
         max_train_variations=[64, 64+16, 64+32, 128], # final GPU
         # max_train_variations=[10, 25, 50, 80, 125], # CPU
@@ -1962,7 +1963,7 @@ def unicycle_speed_test_matrix_vector_independent_exp(
         mean_dynamics_gen=partial(AckermanDrive,
                                   L = 12.0),
         logger_class=partial(TBLogger,
-                             exp_tags=['unicycle_speed_test_matrix_vector_independent'],
+                             exp_tags=['unicycle_speed_test_matrix_vector'],
                              runs_dir='data/runs'),
         exps=dict(
             matrix=dict(
@@ -1973,10 +1974,14 @@ def unicycle_speed_test_matrix_vector_independent_exp(
                 regressor_class=partial(
                     LearnedShiftInvariantDynamics,
                     learned_dynamics_class=ControlAffineRegressorVector)),
-            independent=dict(
+            vectordiag=dict(
                 regressor_class=partial(
                     LearnedShiftInvariantDynamics,
-                    learned_dynamics_class=ControlAffineRegressorIndependent))),
+                    learned_dynamics_class=ControlAffineRegVectorDiag)),
+            matrixdiag=dict(
+                regressor_class=partial(
+                    LearnedShiftInvariantDynamics,
+                    learned_dynamics_class=ControlAffineRegMatrixDiag))),
 ):
     logger = logger_class()
     global TBLOG
@@ -2123,9 +2128,9 @@ def compute_errors(regressor_class, sampling_callable, true_dynamics,
     return error_list
 
 
-def unicycle_speed_test_matrix_vector_independent_vis(
-        events_file='saved-runs/unicycle_speed_test_matrix_vector_independent_v1.5.1-5-g90f04f2/events.out.tfevents.1608622049.dwarf.24753.0',
-        exp_names=['matrix', 'vector', 'independent'],
+def unicycle_speed_test_matrix_vector_vis(
+        events_file='saved-runs/unicycle_speed_test_matrix_vector_v1.5.1-5-g90f04f2/events.out.tfevents.1608622049.dwarf.24753.0',
+        exp_names=['matrix', 'vector', 'matrixdiag', 'vectordiag'],
 ):
     logdata = load_tensorboard_scalars(events_file)
     events_dir = osp.dirname(events_file)
@@ -2136,7 +2141,7 @@ def unicycle_speed_test_matrix_vector_independent_vis(
         exp_data[gp] = dict(elapsed=elapsed, errors=errors)
     fig, axes = plt.subplots(1,2, figsize=(8, 4.7))
     fig.subplots_adjust(bottom=0.2, wspace=0.30)
-    speed_test_matrix_vector_independent_plot(axes,
+    speed_test_matrix_vector_plot(axes,
                                               training_samples,
                                               exp_data)
     plot_file = osp.join(events_dir, 'speed_test_mat_vec_ind.pdf')
@@ -2145,9 +2150,9 @@ def unicycle_speed_test_matrix_vector_independent_vis(
     return plot_file
 
 
-def unicycle_speed_test_matrix_vector_independent(**kw):
-    events_file = unicycle_speed_test_matrix_vector_independent_exp(**kw)
-    return unicycle_speed_test_matrix_vector_independent_vis(events_file)
+def unicycle_speed_test_matrix_vector(**kw):
+    events_file = unicycle_speed_test_matrix_vector_exp(**kw)
+    return unicycle_speed_test_matrix_vector_vis(events_file)
 
 
 if __name__ == '__main__':
@@ -2169,5 +2174,5 @@ if __name__ == '__main__':
     # unicycle_learning_helps_avoid_getting_stuck()
     # unicycle_no_learning_gets_stuck()
 
-    unicycle_speed_test_matrix_vector_independent()
+    unicycle_speed_test_matrix_vector()
 

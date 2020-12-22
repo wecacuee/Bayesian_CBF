@@ -33,13 +33,14 @@ from tensorboard.backend.event_processing import event_file_loader
 from bayes_cbf.control_affine_model import (ControlAffineRegressor, LOG as CALOG,
                                             ControlAffineRegressorExact,
                                             ControlAffineRegressorVector,
-                                            ControlAffineRegressorIndependent,
+                                            ControlAffineRegMatrixDiag,
+                                            ControlAffineRegVectorDiag,
                                             is_psd)
 CALOG.setLevel(logging.WARNING)
 
 from bayes_cbf.plotting import (plot_results, plot_learned_2D_func_from_data,
                                 plt_savefig_with_data, plot_2D_f_func,
-                                speed_test_matrix_vector_independent_plot)
+                                speed_test_matrix_vector_plot)
 from bayes_cbf.sampling import (sample_generator_trajectory, controller_sine,
                                 Visualizer, VisualizerZ, uncertainity_vis_kwargs)
 from bayes_cbf.controllers import (Controller, ControlCBFLearned,
@@ -1049,11 +1050,9 @@ run_pendulum_control_online_learning = partial(
 Run save pendulum control while learning the parameters online
 """
 
-def learn_dynamics_matrix_vector_independent_exp(
+def learn_dynamics_matrix_vector_exp(
         exps=dict(matrix=dict(regressor_class=ControlAffineRegressorExact),
-                  vector=dict(regressor_class=ControlAffineRegressorVector),
-                  independent=dict(regressor_class=ControlAffineRegressorIndependent)
-        ),
+                  vector=dict(regressor_class=ControlAffineRegressorVector)),
         theta0=5*math.pi/6,
         omega0=-0.01,
         tau=0.01,
@@ -1063,7 +1062,7 @@ def learn_dynamics_matrix_vector_independent_exp(
         max_train=200,
         numSteps=1000,
         logger_class=partial(TBLogger,
-                             exp_tags=['learn_matrix_vector_independent'],
+                             exp_tags=['learn_matrix_vector'],
                              runs_dir='data/runs'),
         pendulum_dynamics_class=PendulumDynamicsModel
 ):
@@ -1103,7 +1102,7 @@ def measure_batch_error(FX_learned, var_FX, FX_true):
     assert sq_sum > 0
     return np.sqrt(to_numpy(sq_sum) / N)
 
-def learn_dynamics_matrix_vector_independent_plot(
+def learn_dynamics_matrix_vector_plot(
         exps,
         exp_data,
         FX_true,
@@ -1115,12 +1114,13 @@ def learn_dynamics_matrix_vector_independent_plot(
         n = 2,
         m = 1,
         exp_conf=dict(
-            independent=dict(axtitle='Decoupled GP'),
-            vector=dict(axtitle='Coregionalization GP'),
-            matrix=dict(axtitle='Matrix Variate GP')),
+            true=dict(rowlabel='True'),
+            vector=dict(rowlabel='CoGP'),
+            matrix=dict(rowlabel='MVGP')),
+        collabels=[r'$f(x)_{i}$', r'$g(x)_{{{{i},1}}$']
 ):
-    fig, axs = plt.subplots(4, 4, sharex=True, sharey=True, squeeze=False,
-                            figsize=(10, 7.0))
+    fig, axs = plt.subplots(3, 4, sharex=True, sharey=True, squeeze=False,
+                            figsize=(10, 5.0))
     fig.subplots_adjust(wspace=0.2, hspace=0.3, left=0.07, right=0.95,
                         bottom=0.07, top=0.92)
     csets_fx = None
@@ -1199,9 +1199,9 @@ def learn_dynamics_matrix_vector_independent_plot(
         fig.canvas.set_window_title(figtitle)
     return fig, exp_error_data
 
-def learn_dynamics_matrix_vector_independent_vis(
-        exps=['independent', 'matrix', 'vector'],
-        events_file='saved-runs/learn_matrix_vector_independent_v1.1.0/events.out.tfevents.1607382261.dwarf.5274.7'):
+def learn_dynamics_matrix_vector_vis(
+        exps=['matrix', 'vector'],
+        events_file='saved-runs/learn_matrix_vector_v1.1.0/events.out.tfevents.1607382261.dwarf.5274.7'):
     logdata = load_tensorboard_scalars(events_file)
     events_dir = osp.dirname(events_file)
     theta_omega_grid = logdata['log_learned_model/matrix/Fx/theta_omega_grid'][0][1]
@@ -1212,10 +1212,10 @@ def learn_dynamics_matrix_vector_independent_vis(
         exp_data[exp] = dict()
         exp_data[exp]['FX_learned'] = logdata['log_learned_model/' + exp + '/Fx/FX_learned'][0][1]
         exp_data[exp]['var_FX'] = logdata['log_learned_model/' + exp + '/Fx/var_FX'][0][1]
-    fig, exp_error_data = learn_dynamics_matrix_vector_independent_plot(
+    fig, exp_error_data = learn_dynamics_matrix_vector_plot(
         exps, exp_data, FX_true, Xtrain, theta_omega_grid)
     error_file = osp.join(events_dir,
-                          'vector_matrix_independent_learning_error.txt')
+                          'vector_matrix_learning_error.txt')
     exp_names, exp_errors = zip(*exp_error_data)
     print(exp_names, exp_errors)
     np.savetxt(error_file, [exp_errors],
@@ -1224,12 +1224,12 @@ def learn_dynamics_matrix_vector_independent_vis(
 
     plot_file = osp.join(events_dir, 'learned_f_g_vs_true_f_g_mat_vec_ind.pdf')
     fig.savefig(plot_file)
-    # subprocess.run(["xdg-open", plot_file])
+    subprocess.run(["xdg-open", plot_file])
     return plot_file
 
-def learn_dynamics_matrix_vector_independent(**kw):
-    events_file = learn_dynamics_matrix_vector_independent_exp(**kw)
-    learn_dynamics_matrix_vector_independent_vis(events_file=events_file)
+def learn_dynamics_matrix_vector(**kw):
+    events_file = learn_dynamics_matrix_vector_exp(**kw)
+    learn_dynamics_matrix_vector_vis(events_file=events_file)
 
 
 def compute_errors(regressor_class, sampling_callable, pend_env,
@@ -1288,20 +1288,21 @@ def compute_errors(regressor_class, sampling_callable, pend_env,
     return error_list
 
 
-def speed_test_matrix_vector_independent_exp(
-        # max_train_variations=[16, 32], # testing GPU
-        max_train_variations=[256, 256+64, 256+128, 256+256], # final GPU
+def speed_test_matrix_vector_exp(
+        max_train_variations=[16, 32], # testing GPU
+        # max_train_variations=[256, 256+64, 256+128, 256+256], # final GPU
         # max_train_variations=[10, 25, 50, 80, 125], # CPU
         # ntimes = 20, # How many times the inference should be repeated
         ntimes = 50, # How many times the inference should be repeated
         repeat = 5,
         errorbartries = 30,
         logger_class=partial(TBLogger,
-                             exp_tags=['speed_test_matrix_vector_independent'],
+                             exp_tags=['speed_test_matrix_vector'],
                              runs_dir='data/runs'),
         exps=dict(matrix=dict(regressor_class=ControlAffineRegressorExact),
                   vector=dict(regressor_class=ControlAffineRegressorVector),
-                  independent=dict(regressor_class=ControlAffineRegressorIndependent)),
+                  matrixdiag=dict(regressor_class=ControlAffineRegMatrixDiag),
+                  vectordiag=dict(regressor_class=ControlAffineRegVectorDiag)),
         theta0=5*math.pi/6,
         omega0=-0.01,
         tau=0.01,
@@ -1378,12 +1379,13 @@ def speed_test_matrix_vector_independent_exp(
         key=lambda f: os.stat(f).st_mtime)
     return events_file
 
-def speed_test_matrix_vector_independent_vis(
-        events_file='saved-runs/speed_test_matrix_vector_independent_v1.5.1-5-g90f04f2/events.out.tfevents.1608618034.dwarf.20956.1',
+def speed_test_matrix_vector_vis(
+        events_file='saved-runs/speed_test_matrix_vector_v1.5.1-5-g90f04f2/events.out.tfevents.1608618034.dwarf.20956.1',
         exp_conf=OrderedDict(
-            independent=dict(label='Decoupled GP'),
-            vector=dict(label='Coregionalization GP'),
-            matrix=dict(label='Matrix Variate GP')),
+            matrixdiag=dict(label='MVGP (diag)'),
+            vectordiag=dict(label='CoGP (diag)'),
+            vector=dict(label='CoGP (full)'),
+            matrix=dict(label='MVGP (full)')),
         marker_rotation=['b*-', 'g+-', 'r.-'],
         elapsed_ylabel='Inference time (secs)',
         error_ylabel=r'''$ \sqrt{\frac{1}{n}\sum_{\mathbf{x} \in \mathbf{X}_{test}} \left\|\mathbf{K}^{-\frac{1}{2}}_k(\mathbf{x}, \mathbf{x}) \mbox{vec}(\mathbf{M}_k(\mathbf{x})-F_{true}(\mathbf{x})) \right\|_2^2}$''',
@@ -1398,7 +1400,7 @@ def speed_test_matrix_vector_independent_vis(
         exp_data[gp] = dict(elapsed=elapsed, errors=errors)
     fig, axes = plt.subplots(1,2, figsize=(8, 4.7))
     fig.subplots_adjust(bottom=0.2, wspace=0.30)
-    speed_test_matrix_vector_independent_plot(axes,
+    speed_test_matrix_vector_plot(axes,
                                               training_samples,
                                               exp_data,
                                               exp_conf=exp_conf,
@@ -1412,9 +1414,9 @@ def speed_test_matrix_vector_independent_vis(
     return plot_file
 
 
-def speed_test_matrix_vector_independent(**kw):
-    events_file = speed_test_matrix_vector_independent_exp(**kw)
-    return speed_test_matrix_vector_independent_vis(events_file)
+def speed_test_matrix_vector(**kw):
+    events_file = speed_test_matrix_vector_exp(**kw)
+    return speed_test_matrix_vector_vis(events_file)
 
 
 if __name__ == '__main__':
@@ -1422,5 +1424,5 @@ if __name__ == '__main__':
     #run_pendulum_control_cbf_clf()
     # learn_dynamics()
     #run_pendulum_control_online_learning()
-    learn_dynamics_matrix_vector_independent()
-    speed_test_matrix_vector_independent()
+    learn_dynamics_matrix_vector()
+    speed_test_matrix_vector()

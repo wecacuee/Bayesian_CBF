@@ -1067,7 +1067,7 @@ class ControlAffineRegressorExact(ControlAffineRegressor):
 
 
 class ControlAffineVectorGP(ControlAffineExactGP):
-    def __init__(self, x_dim, u_dim, likelihood, rank=1, gamma_length_scale_prior=None):
+    def __init__(self, x_dim, u_dim, likelihood, rank=None, gamma_length_scale_prior=None):
         ExactGP.__init__(self, None, None, likelihood)
         self.matshape = (1+u_dim, x_dim)
         self.decoder = CatEncoder(1, x_dim, 1+u_dim)
@@ -1075,8 +1075,9 @@ class ControlAffineVectorGP(ControlAffineExactGP):
             ConstantMean(),
             self.decoder,
             self.matshape)
-
-        self.task_covar = IndexKernel(num_tasks=np.prod(self.matshape))
+        num_tasks=np.prod(self.matshape)
+        self.task_covar = IndexKernel(num_tasks=num_tasks,
+                                      rank=(num_tasks if rank is None else rank))
 
         prior_args = dict() if gamma_length_scale_prior is None else dict(
             lengthscale_prior=GammaPrior(*gamma_length_scale_prior))
@@ -1292,14 +1293,26 @@ class ControlAffineRegressorVector(ControlAffineRegressor):
         return mean_k, KkXX
 
 
-ControlAffineIndependentGP = partial(ControlAffineExactGP, rank=0)
+ControlAffineRegMatrixDiagGP = partial(ControlAffineExactGP, rank=0)
 """
 IndexKernel models are BBᵀ + diag(𝐯) where B is a low rank matrix whose rank is
 controlled by the rank parameters.
 """
 
-ControlAffineRegressorIndependent = partial(ControlAffineRegressorExact,
-                                            model_class=ControlAffineIndependentGP)
+ControlAffineRegMatrixDiag = partial(ControlAffineRegressorExact,
+                                  model_class=ControlAffineRegMatrixDiagGP)
+"""
+Regressor with Independendent REgresssor
+"""
+
+ControlAffineRegVectorDiagGP = partial(ControlAffineVectorGP, rank=0)
+"""
+IndexKernel models are BBᵀ + diag(𝐯) where B is a low rank matrix whose rank is
+controlled by the rank parameters.
+"""
+
+ControlAffineRegVectorDiag = partial(ControlAffineRegressorVector,
+                                     model_class=ControlAffineRegVectorDiagGP)
 """
 Regressor with Independendent REgresssor
 """

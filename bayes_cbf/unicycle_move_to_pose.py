@@ -2124,7 +2124,7 @@ def compute_errors(regressor_class, sampling_callable, true_dynamics,
 
 
 def unicycle_speed_test_matrix_vector_independent_vis(
-        events_file='saved-runs/speed_test_matrix_vector_independent_v1.3.0/events.out.tfevents.1608186154.dwarf.14269.0',
+        events_file='saved-runs/unicycle_speed_test_matrix_vector_independent_v1.5.1-5-g90f04f2/events.out.tfevents.1608622049.dwarf.24753.0',
         exp_names=['matrix', 'vector', 'independent'],
 ):
     logdata = load_tensorboard_scalars(events_file)

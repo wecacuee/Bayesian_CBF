@@ -145,7 +145,7 @@ class ControlAffineExactGP(ExactGP):
         Xdot = F(X)U    if M = 1
         Y = F(X)ᵀ        if M = 0
     """
-    def __init__(self, x_dim, u_dim, likelihood, rank=1, gamma_length_scale_prior=None):
+    def __init__(self, x_dim, u_dim, likelihood, rank=None, gamma_length_scale_prior=None):
         super().__init__(None, None, likelihood)
         self.matshape = (1+u_dim, x_dim)
         self.decoder = CatEncoder(1, x_dim, 1+u_dim)
@@ -155,8 +155,10 @@ class ControlAffineExactGP(ExactGP):
             self.matshape)
 
         self.task_covar = MatrixVariateIndexKernel(
-            IndexKernel(num_tasks=self.matshape[1]),
-            IndexKernel(num_tasks=self.matshape[0]),
+            IndexKernel(num_tasks=self.matshape[1],
+                        rank=(self.matshape[1] if rank is None else rank)),
+            IndexKernel(num_tasks=self.matshape[0],
+                        rank=(self.matshape[0] if rank is None else rank))
         )
         prior_args = dict() if gamma_length_scale_prior is None else dict(
             lengthscale_prior=GammaPrior(*gamma_length_scale_prior))

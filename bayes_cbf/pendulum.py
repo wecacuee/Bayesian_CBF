@@ -1101,8 +1101,7 @@ def measure_batch_error(FX_learned, var_FX, FX_true):
     sq_sum = errors.reshape(-1).sum()
     assert not torch.isnan(sq_sum).any()
     assert sq_sum > 0
-    n = np.prod(FX_true.shape[:-1])
-    return np.sqrt(to_numpy(sq_sum) / n)
+    return np.sqrt(to_numpy(sq_sum) / N)
 
 def learn_dynamics_matrix_vector_independent_plot(
         exps,
@@ -1380,14 +1379,14 @@ def speed_test_matrix_vector_independent_exp(
     return events_file
 
 def speed_test_matrix_vector_independent_vis(
-        events_file='saved-runs/speed_test_matrix_vector_independent_v1.3.0/events.out.tfevents.1608186154.dwarf.14269.0',
+        events_file='saved-runs/speed_test_matrix_vector_independent_v1.5.1-5-g90f04f2/events.out.tfevents.1608618034.dwarf.20956.1',
         exp_conf=OrderedDict(
             independent=dict(label='Decoupled GP'),
             vector=dict(label='Coregionalization GP'),
             matrix=dict(label='Matrix Variate GP')),
         marker_rotation=['b*-', 'g+-', 'r.-'],
         elapsed_ylabel='Inference time (secs)',
-        error_ylabel=r'''$ \sqrt{\sum_{\mathbf{x} \in \mathbf{X}_{test}} \left\|\mathbf{K}^{-\frac{1}{2}}_k(\mathbf{x}, \mathbf{x}) \mbox{vec}(\mathbf{M}_k(\mathbf{x})-F_{true}(\mathbf{x})) \right\|_2^2}$''',
+        error_ylabel=r'''$ \sqrt{\frac{1}{n}\sum_{\mathbf{x} \in \mathbf{X}_{test}} \left\|\mathbf{K}^{-\frac{1}{2}}_k(\mathbf{x}, \mathbf{x}) \mbox{vec}(\mathbf{M}_k(\mathbf{x})-F_{true}(\mathbf{x})) \right\|_2^2}$''',
         xlabel='Training samples'
 ):
     logdata = load_tensorboard_scalars(events_file)

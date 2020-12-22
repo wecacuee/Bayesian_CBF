@@ -877,7 +877,7 @@ def make_psd(Kb,
              cholesky_perturb_scale=10):
     cholesky_perturb_factor = cholesky_perturb_init
     Kb_sqrt = None
-    for _ in range(cholesky_tries):
+    for ntry in range(cholesky_tries):
         try:
             Kbp = Kb + cholesky_perturb_factor * (
                 torch.eye(Kb.shape[0], dtype=Kb.dtype, device=Kb.device) *
@@ -886,12 +886,13 @@ def make_psd(Kb,
             Kb_sqrt = torch.cholesky(Kbp)
             break
         except RuntimeError as e:
-            LOG.warning("Cholesky failed with perturb={} on error {}".format(cholesky_perturb_factor, str(e)))
-            cholesky_perturb_factor = cholesky_perturb_factor * cholesky_perturb_scale
-            continue
+            if ntry == cholesky_tries - 1:
+                raise
+            else:
+                LOG.warning("Cholesky failed with perturb={} on error {}".format(cholesky_perturb_factor, str(e)))
+                cholesky_perturb_factor = cholesky_perturb_factor * cholesky_perturb_scale
+                continue
 
-    if Kb_sqrt is None:
-        raise
     return Kbp, Kb_sqrt
 
 class ControlAffineRegressorExact(ControlAffineRegressor):
@@ -1170,22 +1171,10 @@ class ControlAffineRegressorVector(ControlAffineRegressor):
 
         # Kb can be singular because of repeated datasamples
         # Add diagonal jitter
-        Kb_sqrt = None
-        cholesky_perturb_factor = cholesky_perturb_init
-        for _ in range(cholesky_tries):
-            try:
-                Kbp = Kb + cholesky_perturb_factor * (
-                    torch.eye(Kb.shape[0], dtype=Kb.dtype, device=Kb.device) *
-                    torch.rand(Kb.shape[0], dtype=Kb.dtype, device=Kb.device)
-                    )
-                Kb_sqrt = torch.cholesky(Kbp)
-            except RuntimeError as e:
-                LOG.warning("Cholesky failed with perturb={} on error {}".format(cholesky_perturb_factor, str(e)))
-                cholesky_perturb_factor = cholesky_perturb_factor * cholesky_perturb_scale
-                continue
-
-        if Kb_sqrt is None:
-            raise
+        Kbp, Kb_sqrt = make_psd(Kb,
+                                cholesky_tries=cholesky_tries,
+                                cholesky_perturb_init=cholesky_perturb_init,
+                                cholesky_perturb_scale=cholesky_perturb_scale)
         return Kb_sqrt
 
     def _custom_predict_matrix(self, Xtest_in, Xtestp_in=None, compute_cov=True):

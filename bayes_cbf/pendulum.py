@@ -1209,7 +1209,7 @@ def learn_dynamics_matrix_vector_independent_vis(
 
     plot_file = osp.join(events_dir, 'learned_f_g_vs_true_f_g_mat_vec_ind.pdf')
     fig.savefig(plot_file)
-    #subprocess.run(["xdg-open", plot_file])
+    subprocess.run(["xdg-open", plot_file])
     return plot_file
 
 def learn_dynamics_matrix_vector_independent(**kw):
@@ -1217,13 +1217,69 @@ def learn_dynamics_matrix_vector_independent(**kw):
     learn_dynamics_matrix_vector_independent_vis(events_file=events_file)
 
 
+def compute_errors(regressor_class, sampling_callable, pend_env,
+                   ntries=5, max_train=200, test_on_grid=False, ntest=400):
+    error_list = []
+    # b(1+m)n
+    for _ in range(ntries):
+        dX, X, U = sampling_callable()
+
+        shuffled_order = np.arange(X.shape[0]-1)
+
+        # Test train split
+        np.random.shuffle(shuffled_order)
+        shuffled_order_t = torch.from_numpy(shuffled_order)
+
+        train_indices = shuffled_order_t[:max_train]
+        Xtrain = X[train_indices, :]
+        Utrain = U[train_indices, :]
+        XdotTrain = dX[train_indices, :]
+
+        if test_on_grid:
+            theta_omega_grid = get_grid_from_Xtrain(to_numpy(Xtrain))
+            Xtest = torch.from_numpy(
+                theta_omega_grid.reshape(-1, Xtrain.shape[-1])).to(
+                    dtype=Xtrain.dtype,
+                    device=Xtrain.device)
+        else:
+            Xtest = X[shuffled_order_t[-ntest:], :]
+
+        # b, n, 1+m
+        FX_true = pend_env.F_func(Xtest).transpose(-2, -1)
+
+        dgp = regressor_class(Xtrain.shape[-1], Utrain.shape[-1])
+
+
+        FX_learned, var_FX = dgp.custom_predict_fullmat(
+            Xtest.reshape(-1, Xtest.shape[-1]))
+        b = Xtest.shape[0]
+        n = pend_env.state_size
+        m = pend_env.ctrl_size
+
+        var_FX_t = var_FX.reshape(b, (1+m)*n, b, (1+m)*n)
+        var_FX_diag_t = torch.empty((b, (1+m)*n, (1+m)*n),
+                                    dtype=var_FX_t.dtype,
+                                    device=var_FX_t.device)
+        for i in range(b):
+            var_FX_diag_t[i, :, :] = var_FX_t[i, :, i, :]
+        error = measure_batch_error(
+            FX_learned.reshape(-1, (1+m)*n),
+            var_FX_diag_t,
+            FX_true.reshape(-1, (1+m)*n).to(
+                dtype=FX_learned.dtype,
+                device=FX_learned.device))
+        error_list.append(error)
+    return error_list
+
+
 def speed_test_matrix_vector_independent_exp(
-        # max_train_variations=[64, 512], # testing GPU
-        max_train_variations=[256, 256+64, 256+128, 512], # final GPU
+        # max_train_variations=[16, 32], # testing GPU
+        max_train_variations=[256, 256+64, 256+128, 256+256], # final GPU
         # max_train_variations=[10, 25, 50, 80, 125], # CPU
         # ntimes = 20, # How many times the inference should be repeated
         ntimes = 50, # How many times the inference should be repeated
         repeat = 5,
+        errorbartries = 20,
         logger_class=partial(TBLogger,
                              exp_tags=['speed_test_matrix_vector_independent'],
                              runs_dir='data/runs'),
@@ -1236,12 +1292,13 @@ def speed_test_matrix_vector_independent_exp(
         mass=1,
         gravity=10,
         length=1,
-        numSteps=1000,
+        numSteps=2000,
         pendulum_dynamics_class=PendulumDynamicsModel,
 ):
     logger = logger_class()
     pend_env = pendulum_dynamics_class(m=1, n=2, mass=mass, gravity=gravity,
                                        length=length)
+
     dX, X, U = sampling_pendulum_data(
         pend_env, D=numSteps, x0=torch.tensor([theta0,omega0]),
         dt=tau,
@@ -1255,6 +1312,7 @@ def speed_test_matrix_vector_independent_exp(
 
     dgp = dict()
     for max_train in max_train_variations:
+
         # Test train split
         np.random.shuffle(shuffled_order)
         shuffled_order_t = torch.from_numpy(shuffled_order)
@@ -1281,28 +1339,23 @@ def speed_test_matrix_vector_independent_exp(
                 number=ntimes,
                 globals=dict(dgp=dgp,
                              Xtest=Xtest)))
-            # b(1+m)n
-            FX_learned, var_FX = dgp.custom_predict_fullmat(
-                Xtest.reshape(-1, Xtest.shape[-1]))
-            m = pend_env.ctrl_size
-            n = pend_env.state_size
-            b = Xtest.shape[0]
-
-            var_FX_t = var_FX.reshape(b, (1+m)*n, b, (1+m)*n)
-            var_FX_diag_t = torch.empty((b, (1+m)*n, (1+m)*n),
-                                        dtype=var_FX_t.dtype,
-                                        device=var_FX_t.device)
-            for i in range(b):
-                var_FX_diag_t[i, :, :] = var_FX_t[i, :, i, :]
-            error = measure_batch_error(FX_learned.reshape(-1, (1+m)*n),
-                                        var_FX_diag_t,
-                                        FX_true.reshape(-1, (1+m)*n).to(
-                                            dtype=FX_learned.dtype,
-                                            device=FX_learned.device))
-            print("time:", name, max_train, elapsed)
-            print("error:", name, max_train, error)
-            logger.add_scalars(name, dict(elapsed=elapsed / ntimes,
-                                          error=error), max_train)
+            errors = compute_errors(kw['regressor_class'],
+                                    partial(
+                                        sampling_pendulum_data,
+                                        dynamics_model=pend_env,
+                                        D=numSteps,
+                                        x0=torch.tensor([theta0,omega0]),
+                                        dt=tau,
+                                        visualizer=VisualizerZ(),
+                                        controller=ControlRandom(mass=mass, gravity=gravity, length=length).control,
+                                        plot_every_n_steps=numSteps),
+                                    pend_env,
+                                    max_train=max_train,
+                                    ntries=errorbartries)
+            print(name, "training: ", max_train, "time:", elapsed, "error:",
+                  np.mean(errors), "+-", np.std(errors))
+            logger.add_scalars(name, dict(elapsed=elapsed / ntimes), max_train)
+            logger.add_tensors(name, dict(errors=np.asarray(errors)), max_train)
 
     events_file = max(
         glob.glob(osp.join(logger.experiment_logs_dir, "*.tfevents*")),
@@ -1332,15 +1385,18 @@ def speed_test_matrix_vector_independent_vis(
         axes[0].set_ylabel(elapsed_ylabel)
         axes[0].legend()
 
-        xs, ys = zip(*logdata[gp + '/error'])
-        ys = np.hstack(ys)
-        axes[1].plot(xs, ys, mrkr, label=gp_conf['label'])
+        xs, ys = zip(*logdata[gp + '/errors'])
+        ys = np.vstack(ys)
+        ymean = np.mean(ys, axis=1)
+        yerr = np.std(ys, axis=1)
+        axes[1].errorbar(xs, ymean,
+                         fmt=mrkr, yerr=yerr,label=gp_conf['label'])
         axes[1].set_xlabel(xlabel)
         axes[1].set_ylabel(error_ylabel)
         axes[1].legend()
     plot_file = osp.join(events_dir, 'speed_test_mat_vec_ind.pdf')
     fig.savefig(plot_file)
-    #subprocess.run(["xdg-open", plot_file])
+    subprocess.run(["xdg-open", plot_file])
     return plot_file
 
 

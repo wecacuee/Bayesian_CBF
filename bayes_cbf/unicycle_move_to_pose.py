@@ -1948,7 +1948,7 @@ unicycle_learning_helps_avoid_getting_stuck_vis = partial(
     playback_logfile,
     visualizer_kw=dict(
         figsize=(3, 6),
-        subplots_adjust_kw=dict(top=0.98, left=0.18, hspace=0.13,
+        subplots_adjust_kw=dict(top=0.98, left=0.22, hspace=0.13,
                                 bottom=0.08 ))
     )
 
@@ -1970,7 +1970,7 @@ unicycle_no_learning_gets_stuck_vis = partial(
     playback_logfile,
     visualizer_kw=dict(
         figsize=(3, 6),
-        subplots_adjust_kw=dict(top=0.98, left=0.18, hspace=0.13,
+        subplots_adjust_kw=dict(top=0.98, left=0.22, hspace=0.13,
                                 bottom=0.08 ))
     )
 
@@ -2232,5 +2232,8 @@ if __name__ == '__main__':
 
     # Dec 28th
     # Regenerate uncertainty measure replaced with \ubfu
-    unicycle_no_learning_gets_stuck()
-    unicycle_learning_helps_avoid_getting_stuck()
+    # unicycle_no_learning_gets_stuck()
+    # unicycle_learning_helps_avoid_getting_stuck()
+
+    unicycle_no_learning_gets_stuck_vis('saved-runs/unicycle_move_to_pose_fixed_no_learning_gets_stuck_v1.6.2/')
+    unicycle_learning_helps_avoid_getting_stuck_vis('saved-runs/unicycle_move_to_pose_fixed_learning_helps_avoid_getting_stuck_v1.6.2/')

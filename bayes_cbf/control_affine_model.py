@@ -897,6 +897,12 @@ def make_psd(Kb,
 
     return Kbp, Kb_sqrt
 
+ControlAffineRegressorRankOne = partial(
+    ControlAffineRegressor,
+    model_class=partial(ControlAffineExactGP,
+                        rank=1))
+
+
 class ControlAffineRegressorExact(ControlAffineRegressor):
     def custom_predict(self, Xtest_in, Utest_in=None, UHfill=1, Xtestp_in=None,
                        Utestp_in=None, UHfillp=1,
@@ -1064,6 +1070,13 @@ class ControlAffineRegressorExact(ControlAffineRegressor):
             BkXX = Xtest.new_zeros(Xtest.shape[0], Xtestp.shape[0], (1+m), (1+m))
         # (b, n, (1+m)), (n, n), (b, b, (1+m), (1+m))
         return mean_k, A, BkXX
+
+
+ControlAffineRegressorExactRankOne = partial(
+    ControlAffineRegressorExact,
+    model_class=partial(ControlAffineExactGP,
+                        rank=1))
+
 
 
 class ControlAffineVectorGP(ControlAffineExactGP):

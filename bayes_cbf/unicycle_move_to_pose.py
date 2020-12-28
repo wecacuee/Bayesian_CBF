@@ -55,14 +55,16 @@ from torch.utils.tensorboard import SummaryWriter
 import bayes_cbf
 from bayes_cbf.gp_algebra import DeterministicGP, GaussianProcess
 from bayes_cbf.control_affine_model import (ControlAffineRegressor,
+                                            ControlAffineRegressorRankOne,
                                             ControlAffineRegressorExact,
+                                            ControlAffineRegressorExactRankOne,
                                             ControlAffineRegressorVector,
                                             ControlAffineRegMatrixDiag,
                                             ControlAffineRegVectorDiag)
 from bayes_cbf.misc import (to_numpy, normalize_radians, ZeroDynamicsModel,
                             make_tensor_summary, add_tensors, gitdescribe,
                             stream_tensorboard_scalars, load_tensorboard_scalars,
-                            mkdir_savefig, TBLogger)
+                            mkdir_savefig, TBLogger, torch_kron)
 from bayes_cbf.sampling import sample_generator_trajectory, VisualizerZ
 from bayes_cbf.planner import PiecewiseLinearPlanner, SplinePlanner
 from bayes_cbf.cbc2 import cbc2_quadratic_terms, cbc2_gp, cbc2_safety_factor
@@ -262,7 +264,7 @@ class AckermanDrive:
                                      dtype=u.dtype)
         A = torch.diag(self.kernel_diag_A)
         u_hom = torch.cat([torch.tensor([1.]), u])
-        B = torch.eye(u_hom.shape[0])
+        B = torch.eye(self.ctrl_size + 1)
         return GaussianProcess(
             mean = lambda x: f(x) + g(x) @ u,
             knl = lambda x, xp:  (u_hom @ B @ u_hom) * A,
@@ -276,6 +278,16 @@ class AckermanDrive:
         return dict(xdot = xdot,
                     x = self.current_state)
 
+    def custom_predict_fullmat(self, X):
+        A = torch.diag(self.kernel_diag_A)
+        B = torch.eye(self.ctrl_size + 1)
+        b = X.shape[0]
+        bI = torch.eye(b)
+        return (self.F_func(X).transpose(-2, -1).reshape(-1),
+                torch_kron(bI,
+                           torch_kron(B, A, batch_dims=0),
+                           batch_dims=0))
+
 
 class LearnedShiftInvariantDynamics:
     state_size = 3
@@ -283,8 +295,8 @@ class LearnedShiftInvariantDynamics:
     def __init__(self,
                  dt = None,
                  learned_dynamics = None,
-                 learned_dynamics_class = ControlAffineRegressor,
-                 mean_dynamics = CartesianDynamics(),
+                 learned_dynamics_class = ControlAffineRegressorExactRankOne,
+                 mean_dynamics = AckermanDrive(),
                  max_train = 200,
                  training_iter = 100,
                  shift_invariant = True,
@@ -385,6 +397,8 @@ class LearnedShiftInvariantDynamics:
                     x = self.current_state)
 
     def custom_predict_fullmat(self, Xtest, **kw):
+        if not self.enable_learning:
+            return self.mean_dynamics.custom_predict_fullmat(Xtest)
         Xtest_orig = self._shift_invariant_wrapper(Xtest)
         with torch.no_grad():
             # (b(1+m)n)
@@ -922,7 +936,7 @@ class ControllerCLFBayesian:
             )
 
         problem = cp.Problem(obj, constraints)
-        problem.solve(solver='GUROBI')
+        problem.solve(solver='GUROBI', verbose=False)
         if problem.status not in ["infeasible", "unbounded", "infeasible_inaccurate"]:
             # Otherwise, problem.value is inf or -inf, respectively.
             TBLOG.add_scalar("opt/rho", rho, t)
@@ -1898,10 +1912,6 @@ def unicycle_bayes_cbf_safe_obstacle(**kw):
 
 # Dec 8th
 # Learning makes it pass, otherwise it gets stuck
-# 1. Run unicycle_learning_helps_avoid_getting_stuck(). Make sure
-#        visualizer_class = Visualizer
-# 2. Check the images in data/animation/
-# 3. Make a video or take the put the image to a paper
 unicycle_learning_helps_avoid_getting_stuck_exp = partial(
     unicycle_demo,
     simulator=partial(track_trajectory_ackerman_clf_bayesian,
@@ -1919,8 +1929,8 @@ unicycle_learning_helps_avoid_getting_stuck_exp = partial(
                                                                        top=0.95),
                                                scalar_plots=['DetKnl', 'CBC']),
                       true_dynamics_gen=partial(AckermanDrive, L = 1.0),
-                      mean_dynamics_gen=partial(AckermanDrive, L = 8.0,
-                                                kernel_diag_A=[0.01, 0.01, 0.01]),
+                      mean_dynamics_gen=partial(AckermanDrive, L = 12.0,
+                                                kernel_diag_A=[0.001, 0.001, 0.001]),
                       train_every_n_steps = 40, # Change this
                       enable_learning = True), # Do not change this
     exp_tags = ['learning_helps_avoid_getting_stuck'])
@@ -1946,6 +1956,7 @@ unicycle_no_learning_gets_stuck_exp = recpartial(
     unicycle_learning_helps_avoid_getting_stuck_exp,
     {'exp_tags' : ['no_learning_gets_stuck'],
      'simulator.train_every_n_steps': 200,
+     'simulator.enable_learning' : True,
      'simulator.visualizer_class.suptitle' : 'No Learning'})
 
 # Dec 27th
@@ -2210,11 +2221,11 @@ if __name__ == '__main__':
 
     # Dec 27th
     # unicycle_mean_cbf_collides_obstacle_vis('saved-runs/unicycle_move_to_pose_fixed_mean_cbf_collides_v1.2.3')
-    unicycle_bayes_cbf_safe_obstacle_vis('saved-runs/unicycle_move_to_pose_fixed_mean_cbf_collides_1209-1257')
+    # unicycle_bayes_cbf_safe_obstacle_vis('saved-runs/unicycle_move_to_pose_fixed_mean_cbf_collides_1209-1257')
     # unicycle_learning_helps_avoid_getting_stuck_vis('saved-runs/unicycle_move_to_pose_fixed_learning_helps_avoid_getting_stuck_v1.2.3')
     # unicycle_no_learning_gets_stuck_vis('saved-runs/unicycle_move_to_pose_fixed_no_learning_gets_stuck_v1.2.3/')
 
     # Dec 28th
     # Regenerate uncertainty measure replaced with \ubfu
-    unicycle_learning_helps_avoid_getting_stuck()
     unicycle_no_learning_gets_stuck()
+    # unicycle_learning_helps_avoid_getting_stuck()

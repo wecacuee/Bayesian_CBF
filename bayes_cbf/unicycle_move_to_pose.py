@@ -943,6 +943,9 @@ class ControllerCLFBayesian:
             self.visualizer.add_info(t, 'xtp1',
                                      x_torch + fu_gp.mean(x_torch) * self.planner.dt)
             self.visualizer.add_info(t, 'Fxu_var', fu_gp.knl(x_torch, x_torch))
+            # meanFX.shape = (b(1+m)n), varFX.shape = (b(1+m)n, b(1+m)n)
+            meanFX, varFX = self.dynamics.custom_predict_fullmat(x_torch)
+            self.visualizer.add_info(t, 'Fx_var', varFX) # B otimes A
             cbc_sigma = cbc_A @ uvar.value + cbc_bfb
             cbc_var = torch_to(torch.from_numpy(
                 cbc_sigma.reshape(-1, 1) @ cbc_sigma.reshape(1, -1)),
@@ -1025,27 +1028,29 @@ class VisualizerScalarPlotCBC:
         ax.set_ylabel(r'SCBC')
         ax.set_xlabel(r'timesteps')
 
-class VisualizerScalarPlotDetKnl:
+
+class VisualizerScalarPlotDetKnlNoCtrl:
     def __init__(self):
         self.det_knl_traj = []
 
     def setStateCtrl(self, ax, info, state, uopt, t=None, **kw):
-        Fxu_var = info[t]['Fxu_var']
-        Fxu_var_np = (to_numpy(Fxu_var)
-                      if isinstance(Fxu_var, torch.Tensor)
-                      else Fxu_var)
-        self.det_knl_traj.append(np.linalg.det(Fxu_var_np))
+        Fx_var = info[t]['Fx_var']
+        Fx_var_np = (to_numpy(Fx_var)
+                      if isinstance(Fx_var, torch.Tensor)
+                      else Fx_var)
+        self.det_knl_traj.append(np.linalg.det(Fx_var_np))
         self._plot_det_knl(ax, self.det_knl_traj)
 
     def _plot_det_knl(self, ax, det_knl_traj):
         ax.plot(det_knl_traj)
-        ax.set_ylabel(r'$|\underline{\mathbf{u}}^\top\mathbf{B}_k(\mathbf{x},\mathbf{x})\underline{\mathbf{u}} \otimes \mathbf{A}|$')
+        ax.set_ylabel(r'$|\mathbf{B}_k(\mathbf{x},\mathbf{x}) \otimes \mathbf{A}|$')
         #ax.set_xlabel(r'timesteps')
         ax.set_yscale('log')
 
+
 class Visualizer:
     SCALAR_PLOTS_GEN=dict(Ctrl=VisualizerScalarPlotCtrl,
-                          DetKnl=VisualizerScalarPlotDetKnl,
+                          DetKnl=VisualizerScalarPlotDetKnlNoCtrl,
                           CBC=VisualizerScalarPlotCBC)
     def __init__(self, planner, dt, cbfs=[], compute_contour_every_n_steps=20,
                  scalar_plots = ['Ctrl', 'CBC'],
@@ -2169,7 +2174,7 @@ def unicycle_speed_test_matrix_vector_vis(
         exp_data[gp] = dict(elapsed=elapsed, errors=errors)
     fig, axes = plt.subplots(1,2, figsize=(8, 4.7))
     fig.subplots_adjust(bottom=0.1, wspace=0.20, top=0.90, right=0.95, left=0.1)
-    fig.suptitle('Unicycle')
+    fig.suptitle('Ackerman Drive')
     speed_test_matrix_vector_plot(axes,
                                               training_samples,
                                               exp_data)
@@ -2200,8 +2205,6 @@ if __name__ == '__main__':
 
     # unicycle_mean_cbf_collides_obstacle()
     # unicycle_bayes_cbf_safe_obstacle()
-    # unicycle_learning_helps_avoid_getting_stuck()
-    # unicycle_no_learning_gets_stuck()
 
     # unicycle_speed_test_matrix_vector()
 
@@ -2210,3 +2213,8 @@ if __name__ == '__main__':
     unicycle_bayes_cbf_safe_obstacle_vis('saved-runs/unicycle_move_to_pose_fixed_mean_cbf_collides_1209-1257')
     # unicycle_learning_helps_avoid_getting_stuck_vis('saved-runs/unicycle_move_to_pose_fixed_learning_helps_avoid_getting_stuck_v1.2.3')
     # unicycle_no_learning_gets_stuck_vis('saved-runs/unicycle_move_to_pose_fixed_no_learning_gets_stuck_v1.2.3/')
+
+    # Dec 28th
+    # Regenerate uncertainty measure replaced with \ubfu
+    unicycle_learning_helps_avoid_getting_stuck()
+    unicycle_no_learning_gets_stuck()

@@ -2206,7 +2206,7 @@ if __name__ == '__main__':
     # unicycle_speed_test_matrix_vector()
 
     # Dec 27th
-    unicycle_mean_cbf_collides_obstacle_vis('saved-runs/unicycle_move_to_pose_fixed_mean_cbf_collides_v1.2.3')
+    # unicycle_mean_cbf_collides_obstacle_vis('saved-runs/unicycle_move_to_pose_fixed_mean_cbf_collides_v1.2.3')
     unicycle_bayes_cbf_safe_obstacle_vis('saved-runs/unicycle_move_to_pose_fixed_mean_cbf_collides_1209-1257')
-    unicycle_learning_helps_avoid_getting_stuck_vis('saved-runs/unicycle_move_to_pose_fixed_learning_helps_avoid_getting_stuck_v1.2.3')
-    unicycle_no_learning_gets_stuck_vis('saved-runs/unicycle_move_to_pose_fixed_no_learning_gets_stuck_v1.2.3/')
+    # unicycle_learning_helps_avoid_getting_stuck_vis('saved-runs/unicycle_move_to_pose_fixed_learning_helps_avoid_getting_stuck_v1.2.3')
+    # unicycle_no_learning_gets_stuck_vis('saved-runs/unicycle_move_to_pose_fixed_no_learning_gets_stuck_v1.2.3/')

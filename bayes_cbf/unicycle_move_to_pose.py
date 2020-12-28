@@ -1005,7 +1005,7 @@ class VisualizerScalarPlotCtrl:
     def _plot_ctrl(self, ax, u_traj):
         #ax.set_yscale('log')
         ax.plot(u_traj)
-        ax.set_ylabel(r'$v$')
+        ax.set_ylabel(r'$|v|$')
 
 class VisualizerScalarPlotCBC:
     def __init__(self):
@@ -1039,7 +1039,7 @@ class VisualizerScalarPlotDetKnl:
 
     def _plot_det_knl(self, ax, det_knl_traj):
         ax.plot(det_knl_traj)
-        ax.set_ylabel(r'$|\underline{\mathbf{u}}^\top\mathbf{B}_0(x,x)\underline{\mathbf{u}} \otimes \mathbf{A}|$')
+        ax.set_ylabel(r'$|\underline{\mathbf{u}}^\top\mathbf{B}_k(\mathbf{x},\mathbf{x})\underline{\mathbf{u}} \otimes \mathbf{A}|$')
         #ax.set_xlabel(r'timesteps')
         ax.set_yscale('log')
 
@@ -1051,6 +1051,7 @@ class Visualizer:
                  scalar_plots = ['Ctrl', 'CBC'],
                  suptitle=None,
                  subplots_adjust_kw=dict(top=0.95),
+                 figsize=(4, 8),
                  animationframepathpatt='data/animation/frame%04d.png'):
         self.planner = planner
         self.dt = dt
@@ -1066,7 +1067,7 @@ class Visualizer:
         self.state_start = None
         self.x_traj, self.y_traj = [], []
         self.state_traj = []
-        self.fig = plt.figure(figsize=(4, 8))
+        self.fig = plt.figure(figsize=figsize)
         self.info = dict()
         self.axes = self._subplots()
 
@@ -1077,6 +1078,8 @@ class Visualizer:
         if self.suptitle:
             self.fig.suptitle(self.suptitle)
         self.fig.subplots_adjust(**self.subplots_adjust_kw)
+        for i in reversed(range(len(self.scalar_plots)-1)):
+            axs[i+1].sharex(axs[i+2])
         return axs
 
     def add_info(self, t, key, value):
@@ -1848,11 +1851,16 @@ unicycle_mean_cbf_collides_obstacle_exp = partial(
                                                 kernel_diag_A=[1e-2, 1e-2, 1e-2]),
                       enable_learning = False),
     exp_tags = ['mean_cbf_collides'])
+
+# Works on Dec 27th
 # Try events_dir = 
-# 'saved-runs/unicycle_move_to_pose_fixed_mean_cbf_collides_1209-1255'
+# 'saved-runs/unicycle_move_to_pose_fixed_mean_cbf_collides_v1.2.3'
 unicycle_mean_cbf_collides_obstacle_vis = partial(playback_logfile,
-        visualizer_kw=dict(suptitle='Mean CBF',
-        subplots_adjust_kw=dict(top=0.95, left=0.15))
+        visualizer_kw=dict(
+            suptitle='Mean CBF',
+            figsize=(3, 6),
+            subplots_adjust_kw=dict(top=0.98, left=0.18, hspace=0.13,
+                                    bottom=0.08 ))
 )
 
 def unicycle_mean_cbf_collides_obstacle(**kw):
@@ -1866,12 +1874,18 @@ unicycle_bayes_cbf_safe_obstacle_exp = recpartial(
     unicycle_mean_cbf_collides_obstacle_exp,
     {'exp_tags' : ['bayes_cbf_safe_obstacle'],
      'simulator.controller_class.max_risk' : 0.01 })
+# Works on Dec 27th
 # Try events_dir = 
 # 'saved-runs/unicycle_move_to_pose_fixed_mean_cbf_collides_1209-1257'
 unicycle_bayes_cbf_safe_obstacle_vis = partial(playback_logfile,
-        visualizer_kw=dict(suptitle='Bayes CBF',
-        subplots_adjust_kw=dict(top=0.95, left=0.15))
+        visualizer_kw=dict(
+            suptitle='Bayes CBF',
+            figsize=(3, 6),
+            subplots_adjust_kw=dict(top=0.98, left=0.18, hspace=0.13,
+                                    bottom=0.08 ))
 )
+
+
 def unicycle_bayes_cbf_safe_obstacle(**kw):
     events_dir = unicycle_bayes_cbf_safe_obstacle_exp(**kw)
     return unicycle_bayes_cbf_safe_obstacle_vis(events_dir)
@@ -1905,7 +1919,17 @@ unicycle_learning_helps_avoid_getting_stuck_exp = partial(
                       train_every_n_steps = 40, # Change this
                       enable_learning = True), # Do not change this
     exp_tags = ['learning_helps_avoid_getting_stuck'])
-unicycle_learning_helps_avoid_getting_stuck_vis = playback_logfile
+
+
+# Dec 27th
+# unicycle_learning_helps_avoid_getting_stuck_vis('saved-runs/unicycle_move_to_pose_fixed_learning_helps_avoid_getting_stuck_v1.2.3')
+unicycle_learning_helps_avoid_getting_stuck_vis = partial(
+    playback_logfile,
+    visualizer_kw=dict(
+        figsize=(3, 6),
+        subplots_adjust_kw=dict(top=0.98, left=0.18, hspace=0.13,
+                                bottom=0.08 ))
+    )
 
 def unicycle_learning_helps_avoid_getting_stuck(**kw):
     events_dir = unicycle_learning_helps_avoid_getting_stuck_exp(**kw)
@@ -1913,17 +1937,21 @@ def unicycle_learning_helps_avoid_getting_stuck(**kw):
 
 
 # Dec 8th
-# Without learning unicycle gets stuck due to high covariance
-# 1. Run unicycle_no_learning_gets_stuck(). Make sure
-#        visualizer_class = Visualizer
-# 2. Check the images in data/animation/
-# 3. Make a video or take the put the image to a paper
 unicycle_no_learning_gets_stuck_exp = recpartial(
     unicycle_learning_helps_avoid_getting_stuck_exp,
     {'exp_tags' : ['no_learning_gets_stuck'],
      'simulator.train_every_n_steps': 200,
      'simulator.visualizer_class.suptitle' : 'No Learning'})
-unicycle_no_learning_gets_stuck_vis = playback_logfile
+
+# Dec 27th
+# unicycle_no_learning_gets_stuck_vis('saved-runs/unicycle_move_to_pose_fixed_no_learning_gets_stuck_v1.2.3/')
+unicycle_no_learning_gets_stuck_vis = partial(
+    playback_logfile,
+    visualizer_kw=dict(
+        figsize=(3, 6),
+        subplots_adjust_kw=dict(top=0.98, left=0.18, hspace=0.13,
+                                bottom=0.08 ))
+    )
 
 def unicycle_no_learning_gets_stuck(**kw):
     events_dir = unicycle_no_learning_gets_stuck_exp(**kw)
@@ -2175,5 +2203,10 @@ if __name__ == '__main__':
     # unicycle_learning_helps_avoid_getting_stuck()
     # unicycle_no_learning_gets_stuck()
 
-    unicycle_speed_test_matrix_vector()
+    # unicycle_speed_test_matrix_vector()
 
+    # Dec 27th
+    unicycle_mean_cbf_collides_obstacle_vis('saved-runs/unicycle_move_to_pose_fixed_mean_cbf_collides_v1.2.3')
+    unicycle_bayes_cbf_safe_obstacle_vis('saved-runs/unicycle_move_to_pose_fixed_mean_cbf_collides_1209-1257')
+    unicycle_learning_helps_avoid_getting_stuck_vis('saved-runs/unicycle_move_to_pose_fixed_learning_helps_avoid_getting_stuck_v1.2.3')
+    unicycle_no_learning_gets_stuck_vis('saved-runs/unicycle_move_to_pose_fixed_no_learning_gets_stuck_v1.2.3/')

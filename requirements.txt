@@ -6,8 +6,8 @@ torch-vision
 cvxpy
 # gurobipy==9.0.0
 # For car
-vtkPlotter
-k3d
+# vtkPlotter
+# k3d
 # Probabilistic programming
 pyro-ppl
 tensorboard

@@ -145,7 +145,8 @@ class ControlAffineExactGP(ExactGP):
         Xdot = F(X)U    if M = 1
         Y = F(X)ᵀ        if M = 0
     """
-    def __init__(self, x_dim, u_dim, likelihood, rank=None, gamma_length_scale_prior=None):
+    def __init__(self, x_dim, u_dim, likelihood, rank=None,
+                 gamma_length_scale_prior=None):
         super().__init__(None, None, likelihood)
         self.matshape = (1+u_dim, x_dim)
         self.decoder = CatEncoder(1, x_dim, 1+u_dim)
@@ -162,8 +163,8 @@ class ControlAffineExactGP(ExactGP):
         )
         prior_args = dict() if gamma_length_scale_prior is None else dict(
             lengthscale_prior=GammaPrior(*gamma_length_scale_prior))
-        self.input_covar = ScaleKernel(
-            RBFKernel(**prior_args) + LinearKernel())
+        self.input_covar = ScaleKernel(RBFKernel(**prior_args))
+            #+ LinearKernel()) # FIXME: how to reduce the variance of LinearKernel
         self.covar_module = HetergeneousMatrixVariateKernel(
             self.task_covar,
             self.input_covar,
@@ -900,7 +901,8 @@ def make_psd(Kb,
 ControlAffineRegressorRankOne = partial(
     ControlAffineRegressor,
     model_class=partial(ControlAffineExactGP,
-                        rank=1))
+                        rank=1,
+                        gamma_length_scale_prior=(1e-3, 1e-3)))
 
 
 class ControlAffineRegressorExact(ControlAffineRegressor):

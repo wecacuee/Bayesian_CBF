@@ -281,7 +281,7 @@ class AckermanDrive:
     def custom_predict_fullmat(self, X):
         A = torch.diag(self.kernel_diag_A)
         B = torch.eye(self.ctrl_size + 1)
-        b = X.shape[0]
+        b = X.shape[0] if X.ndim > 1 else 1
         bI = torch.eye(b)
         return (self.F_func(X).transpose(-2, -1).reshape(-1),
                 torch_kron(bI,
@@ -312,7 +312,7 @@ class LearnedShiftInvariantDynamics:
                                      self.state_size,
                                      self.ctrl_size))
         self.shift_invariant = shift_invariant
-        self._shift_invariant_wrapper = (self._shift_invariant_input
+        self._trans_invariant_wrapper = (self._make_trans_invariant
                                          if shift_invariant else
                                          lambda x: x)
         self.train_every_n_steps = train_every_n_steps
@@ -320,18 +320,18 @@ class LearnedShiftInvariantDynamics:
         self.Xtrain = []
         self.Utrain = []
 
-    def _shift_invariant_input(self, X):
+    def _make_trans_invariant(self, X):
         assert X.shape[-1] == self.state_size
         return torch.cat(
             [torch.zeros((*X.shape[:-1], self.state_size-1)),
              X[..., self.state_size-1:]], dim=-1)
 
     def f_func(self, X):
-        x_orig = self._shift_invariant_wrapper(X)
+        x_orig = self._trans_invariant_wrapper(X)
         return self.mean_dynamics.f_func(x_orig) + self.learned_dynamics.f_func(x_orig)
 
     def g_func(self, X):
-        x_orig = self._shift_invariant_wrapper(X)
+        x_orig = self._trans_invariant_wrapper(X)
         return self.mean_dynamics.g_func(x_orig) + self.learned_dynamics.g_func(x_orig)
 
     def train(self, xi, uopt):
@@ -342,8 +342,8 @@ class LearnedShiftInvariantDynamics:
             # train every n steps
             Xtrain = torch.cat(self.Xtrain).reshape(-1, self.Xtrain[0].shape[-1])
             Utrain = torch.cat(self.Utrain).reshape(-1, self.Utrain[0].shape[-1])
-            XdotTrain = (self.Xtrain[1:, :] - self.Xtrain[:-1, :]) / self.dt
-            self.fit(XdotTrain, self.Xtrain[:-1, :], self.Utrain[:-1, :])
+            XdotTrain = (Xtrain[1:, :] - Xtrain[:-1, :]) / self.dt
+            self.fit(Xtrain[:-1, :], Utrain[:-1, :], XdotTrain)
 
         # record the xi, ui pair
         self.Xtrain.append(xi.detach())
@@ -358,7 +358,7 @@ class LearnedShiftInvariantDynamics:
         assert len(Xtrain) == len(Utrain), \
             "Call train when Xtrain and Utrain are balanced"
 
-        Xtrain = self._shift_invariant_wrapper(Xtrain)
+        Xtrain = self._trans_invariant_wrapper(Xtrain)
 
         XdotMean = self.mean_dynamics.f_func(Xtrain) + (
             self.mean_dynamics.g_func(Xtrain).bmm(Utrain.unsqueeze(-1)).squeeze(-1))
@@ -396,10 +396,14 @@ class LearnedShiftInvariantDynamics:
         return dict(xdot = xdot,
                     x = self.current_state)
 
-    def custom_predict_fullmat(self, Xtest, **kw):
+    def custom_predict_fullmat(self, Xtest_in, **kw):
+        Xtest = (Xtest_in.unsqueeze(0)
+                 if Xtest_in.ndim == 1
+                 else  Xtest_in)
         if not self.enable_learning:
-            return self.mean_dynamics.custom_predict_fullmat(Xtest)
-        Xtest_orig = self._shift_invariant_wrapper(Xtest)
+            meanFX, varFX = self.mean_dynamics.custom_predict_fullmat(Xtest)
+            return  meanFX, varFX
+        Xtest_orig = self._trans_invariant_wrapper(Xtest)
         with torch.no_grad():
             # (b(1+m)n)
             diffFX, diffVarFX = self.learned_dynamics.custom_predict_fullmat(Xtest_orig, **kw)
@@ -934,6 +938,8 @@ class ControllerCLFBayesian:
             constraints.append(
                 cbc_bfc @ uvar + cbc_d >= rho * cp.norm(cbc_A @ uvar + cbc_bfb)
             )
+
+        # print("det(V(x,x)): ", np.linalg.det(cbc_A.T @ cbc_A))
 
         problem = cp.Problem(obj, constraints)
         problem.solve(solver='GUROBI', verbose=False)
@@ -1930,7 +1936,7 @@ unicycle_learning_helps_avoid_getting_stuck_exp = partial(
                                                scalar_plots=['DetKnl', 'CBC']),
                       true_dynamics_gen=partial(AckermanDrive, L = 1.0),
                       mean_dynamics_gen=partial(AckermanDrive, L = 12.0,
-                                                kernel_diag_A=[0.001, 0.001, 0.001]),
+                                                kernel_diag_A=[1.0, 1.0, 1.0]),
                       train_every_n_steps = 40, # Change this
                       enable_learning = True), # Do not change this
     exp_tags = ['learning_helps_avoid_getting_stuck'])
@@ -1956,7 +1962,6 @@ unicycle_no_learning_gets_stuck_exp = recpartial(
     unicycle_learning_helps_avoid_getting_stuck_exp,
     {'exp_tags' : ['no_learning_gets_stuck'],
      'simulator.train_every_n_steps': 200,
-     'simulator.enable_learning' : True,
      'simulator.visualizer_class.suptitle' : 'No Learning'})
 
 # Dec 27th
@@ -2228,4 +2233,4 @@ if __name__ == '__main__':
     # Dec 28th
     # Regenerate uncertainty measure replaced with \ubfu
     unicycle_no_learning_gets_stuck()
-    # unicycle_learning_helps_avoid_getting_stuck()
+    unicycle_learning_helps_avoid_getting_stuck()

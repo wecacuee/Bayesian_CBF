@@ -67,10 +67,8 @@
         -->
         <div class="collapse navbar-collapse">
           <ul class="nav navbar-nav">
-            {% for node in site.posts reversed %}
-            {% capture id %}{{ node.id | remove:'/' | downcase }}{% endcapture %}
-            <li class="p-{{id}}"><a href="#{{id}}">{{node.title}}</a></li>
-            {% endfor %}
+            <li class="p-videos"><a href="#videos">Videos</a></li>
+            <li class="p-presentation"><a href="#presentation">Presentation</a></li>
           </ul>
         </div><!--/.nav-collapse -->
       </div>
@@ -79,14 +77,14 @@
     <div class="container body">
       <div class="starter-template">
           <h1>{{ site.title }}</h1>
-          <div style="justify-content: space-evenly;width:80%;margin:auto">
-              <a href="https://vikasdhiman.info">Vikas Dhiman</a>
-              <a href="https://acsweb.ucsd.edu/~mkhojast/">
-              Mohammad Javad Khojasteh∗
+          <div style="display: flex;;width:80%;margin:auto">
+              <a style="padding:4em" href="https://vikasdhiman.info">Vikas Dhiman</a>
+              <a style="padding:4em" href="https://acsweb.ucsd.edu/~mkhojast/">
+              Mohammad Javad Khojasteh
               </a>
-              <a href="https://web.eng.ucsd.edu/~massimo/Home.html">Massimo Franceschetti
+              <a style="padding:4em" href="https://web.eng.ucsd.edu/~massimo/Home.html">Massimo Franceschetti
               </a>
-              <a href="https://natanaso.github.io/" >
+              <a style="padding:4em" href="https://natanaso.github.io/" >
               Nikolay Atanasov
               </a>
           </div>
@@ -100,28 +98,32 @@
               <a href="https://github.com/wecacuee/Bayesian_CBF">
                   Code
               </a>
-              <a href="" >
+              <a href="https://wecacuee.github.io/BayesCBF-presentation-html/index.html" >
                   Presentation
               </a>
           </div>
-          <img src="assets/unicycle_move_to_pose_fixed_mean_cbf_collides_1209-1257_animation.gif"
-          />
-          <img src="assets/unicycle_move_to_pose_fixed_mean_cbf_collides_v1.2.3_animation.gif"
-          />
-          <img src="assets/unicycle_move_to_pose_fixed_no_learning_gets_stuck_v1.2.3_animation.gif"
-          />
-          <img src="assets/unicycle_move_to_pose_fixed_learning_helps_avoid_getting_stuck_v1.2.3_animation.gif"
-          />
       </div>
       
 
       <!-- Main content
            ================================================== -->
 
-        <div class="page-header" id="{{id}}">
+      <div class="page-header" id="videos">
+          Videos
+      </div>
+
+      <img src="assets/unicycle_move_to_pose_fixed_mean_cbf_collides_1209-1257_animation.gif"
+      />
+      <img src="assets/unicycle_move_to_pose_fixed_mean_cbf_collides_v1.2.3_animation.gif"
+      />
+      <img src="assets/unicycle_move_to_pose_fixed_no_learning_gets_stuck_v1.2.3_animation.gif"
+      />
+      <img src="assets/unicycle_move_to_pose_fixed_learning_helps_avoid_getting_stuck_v1.2.3_animation.gif"
+      />
+        <div class="page-header" id="presentation">
             <h2>Presentation in ITA on Feb 4th, 2020</h2>
-            <iframe src="https://wecacuee.github.io/BayesCBF-presentation-html/index.html" width="600" height="400"></iframe>
         </div>
+        <iframe src="https://wecacuee.github.io/BayesCBF-presentation-html/index.html" width="600" height="400"></iframe>
 
 
     <!-- Bootstrap core JavaScript

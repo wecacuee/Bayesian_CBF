@@ -1078,7 +1078,8 @@ class Visualizer:
                  suptitle=None,
                  subplots_adjust_kw=dict(top=0.95),
                  figsize=(4, 8),
-                 animationframepathpatt='data/animation/frame%04d.png'):
+                 animationframepathpatt='data/animation/frame%04d.png',
+                 plots_ylims=dict()):
         self.planner = planner
         self.dt = dt
         self.cbfs = cbfs
@@ -1087,6 +1088,7 @@ class Visualizer:
         self.suptitle = suptitle
         self.subplots_adjust_kw = subplots_adjust_kw
         self.animationframepathpatt = animationframepathpatt
+        self.scalar_plots_ylims = plots_ylims
 
 
         self.scalar_plots = [self.SCALAR_PLOTS_GEN[s]() for s in scalar_plots]
@@ -1223,8 +1225,12 @@ class Visualizer:
             if (scale > 1e-6).all():
                 draw_ellipse(ax, scale * 1e4, theta, pos)
 
-        for ax, sp in zip(self.axes[1:], self.scalar_plots):
+        for ax, spname, sp in zip(self.axes[1:], self._scalar_plots,
+                                  self.scalar_plots):
             sp.setStateCtrl(ax, self.info, state, uopt, t=t, **kw)
+            if spname in self.scalar_plots_ylims:
+                print("setting ylim", spname, self.scalar_plots_ylims[spname])
+                ax.set_ylim(*self.scalar_plots_ylims[spname])
         mkdir_savefig(self.fig, self.animationframepathpatt % t)
         plt.pause(self.dt)
 
@@ -1950,7 +1956,10 @@ unicycle_learning_helps_avoid_getting_stuck_vis = partial(
     visualizer_kw=dict(
         figsize=(3, 6),
         subplots_adjust_kw=dict(top=0.98, left=0.22, hspace=0.13,
-                                bottom=0.08 ))
+                                bottom=0.08 ),
+        plots_ylims=dict(DetKnl=(1e-7, 100),
+                         CBC=(-0.1,11))
+        )
     )
 
 def unicycle_learning_helps_avoid_getting_stuck(**kw):
@@ -1972,7 +1981,10 @@ unicycle_no_learning_gets_stuck_vis = partial(
     visualizer_kw=dict(
         figsize=(3, 6),
         subplots_adjust_kw=dict(top=0.98, left=0.22, hspace=0.13,
-                                bottom=0.08 ))
+                                bottom=0.08 ),
+        plots_ylims=dict(DetKnl=(1e-7, 100),
+                         CBC=(-0.1,11))
+        )
     )
 
 def unicycle_no_learning_gets_stuck(**kw):
@@ -2214,6 +2226,8 @@ def unicycle_speed_test_matrix_vector_vis(
 def unicycle_speed_test_matrix_vector(**kw):
     events_file = unicycle_speed_test_matrix_vector_exp(**kw)
     return unicycle_speed_test_matrix_vector_vis(events_file)
+
+
 
 
 if __name__ == '__main__':

@@ -44,4 +44,3 @@ Copied to overleaf with script.
 ## 20:38
 
 1. Why is decoupled GP slower than MVGP
-   + Facing cholesky decomposition failures on master branch

@@ -2118,6 +2118,16 @@ def unicycle_speed_test_matrix_vector_exp(
     return events_file
 
 
+def get_grid_from_Xtrain(Xtrain):
+    theta_range = slice(Xtrain[:, 0].min(), Xtrain[:, 0].max(),
+                        (Xtrain[:, 0].max() - Xtrain[:, 0].min()) / 20)
+    omega_range = slice(Xtrain[:, 1].min(), Xtrain[:, 1].max(),
+                        (Xtrain[:, 1].max() - Xtrain[:, 1].min()) / 20)
+
+    theta_omega_grid = np.mgrid[theta_range, omega_range]
+    return theta_omega_grid
+
+
 def compute_errors(regressor_class, sampling_callable, true_dynamics,
                    ntries=5, max_train=200, test_on_grid=False, ntest=400,
                    dt = 0.01, mean_dynamics_gen = None):

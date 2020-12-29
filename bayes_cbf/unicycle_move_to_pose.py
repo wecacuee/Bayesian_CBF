@@ -1049,28 +1049,29 @@ class VisualizerScalarPlotCBC:
         ax.set_xlabel(r'timesteps')
 
 
-class VisualizerScalarPlotDetKnlNoCtrl:
+class VisualizerScalarPlotTraceKnlNoCtrl:
     def __init__(self):
-        self.det_knl_traj = []
+        self.trace_knl_traj = []
 
     def setStateCtrl(self, ax, info, state, uopt, t=None, **kw):
         Fx_var = info[t]['Fx_var']
         Fx_var_np = (to_numpy(Fx_var)
                       if isinstance(Fx_var, torch.Tensor)
                       else Fx_var)
-        self.det_knl_traj.append(np.linalg.det(Fx_var_np))
-        self._plot_det_knl(ax, self.det_knl_traj)
+        self.trace_knl_traj.append(np.trace(Fx_var_np))
+        self._plot_det_knl(ax, self.trace_knl_traj)
 
-    def _plot_det_knl(self, ax, det_knl_traj):
-        ax.plot(det_knl_traj)
-        ax.set_ylabel(r'$|\mathbf{B}_k(\mathbf{x},\mathbf{x}) \otimes \mathbf{A}|$')
+    def _plot_det_knl(self, ax, trace_knl_traj):
+        ax.plot(trace_knl_traj)
+        ax.set_ylabel(r'$\mathbf{tr}(\mathbf{B}_k(\mathbf{x},\mathbf{x}) \otimes \mathbf{A})$')
         #ax.set_xlabel(r'timesteps')
         ax.set_yscale('log')
 
 
 class Visualizer:
     SCALAR_PLOTS_GEN=dict(Ctrl=VisualizerScalarPlotCtrl,
-                          DetKnl=VisualizerScalarPlotDetKnlNoCtrl,
+                          TraceKnl=VisualizerScalarPlotTraceKnlNoCtrl,
+                          DetKnl=VisualizerScalarPlotTraceKnlNoCtrl,
                           CBC=VisualizerScalarPlotCBC)
     def __init__(self, planner, dt, cbfs=[], compute_contour_every_n_steps=20,
                  scalar_plots = ['Ctrl', 'CBC'],
@@ -1933,7 +1934,7 @@ unicycle_learning_helps_avoid_getting_stuck_exp = partial(
                                                suptitle='With Learning',
                                                subplots_adjust_kw=dict(left=0.25,
                                                                        top=0.95),
-                                               scalar_plots=['DetKnl', 'CBC']),
+                                               scalar_plots=['TraceKnl', 'CBC']),
                       true_dynamics_gen=partial(AckermanDrive, L = 1.0),
                       mean_dynamics_gen=partial(AckermanDrive, L = 12.0,
                                                 kernel_diag_A=[1.0, 1.0, 1.0]),

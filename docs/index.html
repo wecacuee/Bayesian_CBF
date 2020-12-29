@@ -1,0 +1,134 @@
+---
+---
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- The above 3 meta tags *must* come first in the head; any other head content must come *after* these tags -->
+    <meta name="description" content="">    
+    <meta name="keywords" content="deep learning, safe control, robots, bayesian learning ">
+    <meta name="author" content="Vikas Dhiman∗, Mohammad Javad Khojasteh∗, Massimo Franceschetti Nikolay Atanasov">
+    <link rel="icon" href="favicon.ico">
+
+    <title>{{ site.title }}</title>
+
+    <!-- Bootstrap core CSS -->
+    <link href="assets/css/bootstrap.min.css" rel="stylesheet">
+
+    <!-- IE10 viewport hack for Surface/desktop Windows 8 bug -->
+    <link href="assets/css/ie10-viewport-bug-workaround.css" rel="stylesheet">
+
+    <!-- Custom styles for this template -->
+    <link href="assets/css/icra18-style.css" rel="stylesheet">
+
+    <!-- Just for debugging purposes. Don't actually copy these 2 lines! -->
+    <!--[if lt IE 9]><script src="../../assets/js/ie8-responsive-file-warning.js"></script><![endif]-->
+    <script src="assets/js/ie-emulation-modes-warning.js"></script>
+
+    <!-- <script src="assets/js/anchor-with-navbar-fix.js"></script> -->
+
+    <!-- HTML5 shim and Respond.js for IE8 support of HTML5 elements and media queries -->
+    <!--[if lt IE 9]>
+      <script src="https://oss.maxcdn.com/html5shiv/3.7.2/html5shiv.min.js"></script>
+      <script src="https://oss.maxcdn.com/respond/1.4.2/respond.min.js"></script>
+    <![endif]-->
+    
+    <script type="text/javascript">
+    <!--
+    function toggleAbstract(divid) {
+      var x = document.getElementById(divid);
+      if (x.style.display === "none") {
+          x.style.display = "block";
+      } else {
+          x.style.display = "none";
+      }
+    }
+    -->
+    </script>    
+    {% if site.favicon %}<link rel="shortcut icon" href="{{ site.favicon }}" type="image/x-icon">{% endif %}
+	{% if site.touch_icon %}<link rel="apple-touch-icon" href="{{ site.touch_icon }}">{% endif %}
+  </head>
+
+  <body>
+    <nav class="navbar navbar-inverse navbar-default navbar-fixed-top">
+      <div class="container">
+      <!--
+        <div class="navbar-header">
+          <button type="button" class="navbar-toggle" data-toggle="collapse" data-target=".navbar-collapse">
+            <span class="sr-only">Toggle navigation</span>
+            <span class="icon-bar"></span>
+            <span class="icon-bar"></span>
+            <span class="icon-bar"></span>
+          </button>
+          <a class="navbar-brand" href="#">Representing a Complex World </br>ICRA 2018 Workshop</a>
+        </div>
+        -->
+        <div class="collapse navbar-collapse">
+          <ul class="nav navbar-nav">
+            {% for node in site.posts reversed %}
+            {% capture id %}{{ node.id | remove:'/' | downcase }}{% endcapture %}
+            <li class="p-{{id}}"><a href="#{{id}}">{{node.title}}</a></li>
+            {% endfor %}
+          </ul>
+        </div><!--/.nav-collapse -->
+      </div>
+    </nav>
+
+    <div class="container body">
+      <div class="starter-template">
+          <h1>{{ site.title }}</h1>
+          <div style="justify-content: space-evenly;width:80%;margin:auto">
+              <a href="https://vikasdhiman.info">Vikas Dhiman</a>
+              <a href="https://acsweb.ucsd.edu/~mkhojast/">
+              Mohammad Javad Khojasteh∗
+              </a>
+              <a href="https://web.eng.ucsd.edu/~massimo/Home.html">Massimo Franceschetti
+              </a>
+              <a href="https://natanaso.github.io/" >
+              Nikolay Atanasov
+              </a>
+          </div>
+          <p>
+              How to guarantee safety when dynamics are being learned?
+          </p>
+          <div style="justify-content: space-evenly;width:80%;margin:auto">
+              <a href="">
+                  Paper
+              </a>
+              <a href="">
+                  Code
+              </a>
+              <a href="" >
+                  Presentation
+              </a>
+          </div>
+          <img src="assets/unicycle_move_to_pose_fixed_mean_cbf_collides_1209-1257_animation.gif"
+          />
+          <img src="assets/unicycle_move_to_pose_fixed_mean_cbf_collides_v1.2.3_animation.gif"
+          />
+          <img src="assets/unicycle_move_to_pose_fixed_no_learning_gets_stuck_v1.2.3_animation.gif"
+          />
+          <img src="assets/unicycle_move_to_pose_fixed_learning_helps_avoid_getting_stuck_v1.2.3_animation.gif"
+          />
+      </div>
+
+      <!-- Main content
+           ================================================== -->
+
+        <div class="page-header" id="{{id}}">
+            <h2>{{ node.title }}</h2>
+        </div>
+
+
+    <!-- Bootstrap core JavaScript
+    ================================================== -->
+    <!-- Placed at the end of the document so the pages load faster -->
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.3/jquery.min.js"></script>
+    <script>window.jQuery || document.write('<script src="../../assets/js/vendor/jquery.min.js"><\/script>')</script>
+    <script src="assets/js/bootstrap.min.js"></script>
+    <!-- IE10 viewport hack for Surface/desktop Windows 8 bug -->
+    <script src="assets/js/ie10-viewport-bug-workaround.js"></script>
+  </body>
+</html>

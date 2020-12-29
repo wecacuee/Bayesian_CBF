@@ -1,0 +1,27 @@
+title: Control Barriers in Bayesian Learning of System Dynamics  
+keywords: "Safe Control, Bayesian Learning"
+author:
+  name: Vikas Dhiman
+  email: wecacuee@github.com
+description: > # this means to ignore newlines until "show_excerpts:"
+  Coming soon
+
+timezone: null
+lsi: false
+markdown: kramdown
+
+show_excerpts: false # set to true to show excerpts on the homepage
+
+
+### template colors, used site-wide via css ###
+colors:
+  black:     '#111111'
+  white:     '#f8f8f8'
+  blue:      '#49a7e9'
+  green:     '#9bcf2f'
+  purple:    '#c869bf'
+  orange:    '#fab125'
+  turquoise: '#0fbfcf'
+
+kramdown:
+  auto_ids:  false

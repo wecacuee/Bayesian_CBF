@@ -1,5 +1,7 @@
-# BayesCBF
-![Python package](https://github.com/wecacuee/BayesCBF/workflows/Python%20package/badge.svg)
+# Control Barriers in Bayesian Learning of System Dynamics
+![Python package](https://github.com/wecacuee/Bayesian_CBF/workflows/Python%20package/badge.svg)
+
+[Website](https://vikasdhiman.info/Bayesian_CBF/)
 
 ## Demo
 

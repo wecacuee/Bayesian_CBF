@@ -557,22 +557,22 @@ class ControlAffineRegressor(DynamicsModel):
                 self.to(dtype=old_dtype)
 
             # 4. v := L \ kb*
-            v = torch.solve(kb_star, Kb_sqrt).solution
+            v = torch.linalg.solve(Kb_sqrt, kb_star)
 
             if grad_check:
                 old_dtype = self.dtype
                 self.double_()
-                v_func = lambda X: torch.solve(kb_star_func(X), Kb_sqrt.double()).solution
+                v_func = lambda X: torch.linalg.solve(Kb_sqrt.double(), kb_star_func(X))
                 with variable_required_grad(Xtest):
                     torch.autograd.gradcheck(v_func, Xtest.double())
                 self.to(dtype=old_dtype)
 
-            vp = torch.solve(kb_star_p, Kb_sqrt).solution if Xtestp_in is not None else v
+            vp = torch.linalg.solve(Kb_sqrt, kb_star_p) if Xtestp_in is not None else v
 
             if grad_check:
                 old_dtype = self.dtype
                 self.double_()
-                v_func = lambda X: torch.solve(kb_star_func(X), Kb_sqrt.double()).solution
+                v_func = lambda X: torch.linalg.solve(Kb_sqrt.double(), kb_star_func(X))
                 with variable_required_grad(Xtest):
                     torch.autograd.gradcheck(v_func, Xtest.double())
                 self.to(dtype=old_dtype)
@@ -868,7 +868,7 @@ class ControlAffineRegressor(DynamicsModel):
 
 def is_psd(X):
     try:
-        torch.cholesky(X)
+        torch.linalg.cholesky(X)
     except RuntimeError as e:
         print(e)
         return False
@@ -886,7 +886,7 @@ def make_psd(Kb,
                 torch.eye(Kb.shape[0], dtype=Kb.dtype, device=Kb.device) *
                 torch.rand(Kb.shape[0], dtype=Kb.dtype, device=Kb.device)
                 )
-            Kb_sqrt = torch.cholesky(Kbp)
+            Kb_sqrt = torch.linalg.cholesky(Kbp)
             break
         except RuntimeError as e:
             if ntry == cholesky_tries - 1:
@@ -1049,7 +1049,7 @@ class ControlAffineRegressorExact(ControlAffineRegressor):
             #     ], dim=0)
             # )
             # v = Lᵀ 𝔅(XU, x*)
-            # v = torch.solve(kb_star, Kb_sqrt).solution # (b, k, (1+m))
+            # v = torch.linalg.solve(Kb_sqrt, kb_star) # (b, k, (1+m))
             b = Xtest.shape[0]
             m = self.u_dim
             n = self.x_dim
@@ -1285,9 +1285,10 @@ class ControlAffineRegressorVector(ControlAffineRegressor):
         if compute_cov:
             # 4. v = L \ 𝔎(XU, x*)
             # 5. Bₖ(x, x') = B₀(x, x') - vᵀ v
-            v = torch.solve(kb_star, # (b, kn, (1+m)n)
-                            Kb_sqrt # (kn, kn)
-                            ).solution # (b, kn, (1+m)n)
+            v = torch.linalg.solve(
+                Kb_sqrt, # (kn, kn)
+                kb_star, # (b, kn, (1+m)n)
+                ) # (b, kn, (1+m)n)
             b = Xtest.shape[0]
             m = self.u_dim
             n = self.x_dim

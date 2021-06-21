@@ -1,4 +1,4 @@
-from abc import ABC, abstractmethod
+from abc import ABC, abstractmethod, abstractproperty
 
 import numpy as np
 import torch
@@ -28,6 +28,23 @@ def uncertainity_vis_kwargs(controller, x, u, dt):
     else:
         vis_kwargs = dict()
     return vis_kwargs
+
+class DynamicsModel(ABC):
+    @abstractproperty
+    def ctrl_size(self):
+        pass
+
+    @abstractproperty
+    def state_size(self):
+        pass
+
+    @abstractmethod
+    def step(self, u, dt):
+        pass
+
+    @abstractmethod
+    def set_init_state(self, x0):
+        pass
 
 def sample_generator_trajectory(dynamics_model, D, dt=0.01, x0=None,
                                 true_model=None,

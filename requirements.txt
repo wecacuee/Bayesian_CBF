@@ -11,3 +11,6 @@ cvxpy
 # Probabilistic programming
 pyro-ppl
 tensorboard
+pybullet
+empy
+gym

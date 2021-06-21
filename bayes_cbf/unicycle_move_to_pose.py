@@ -908,8 +908,8 @@ class ControllerCLFBayesian:
         return map(to_numpy, (A, bfb, bfc, d))
 
     def _cbcs(self, state, t):
-        for cbf, cbf_gamma in zip(self.cbfs, self.cbf_gammas):
-            yield self._cbc_terms(cbf, cbf_gamma, state, t)
+        return [self._cbc_terms(cbf, cbf_gamma, state, t)
+                for cbf, cbf_gamma in zip(self.cbfs, self.cbf_gammas)]
 
     def _factor(self):
         assert self.max_risk <= 0.5 and self.max_risk >= 0
@@ -950,7 +950,8 @@ class ControllerCLFBayesian:
             TBLOG.add_scalar("opt/cost_vel", self.cost_weights[0] *
                              (uvar.value[0] - u_ref[0])**2, t)
             TBLOG.add_scalar("opt/cost_relax", (self.cost_weights[2] * relax.value**2), t)
-            TBLOG.add_scalar("opt/cbc_norm", np.linalg.norm(cbc_A @ uvar.value + cbc_bfb), t)
+            if len(self._cbcs(x, t)):
+                TBLOG.add_scalar("opt/cbc_norm", np.linalg.norm(cbc_A @ uvar.value + cbc_bfb), t)
         else:
             raise ValueError(problem.status)
         # for variable in problem.variables():
@@ -966,15 +967,16 @@ class ControllerCLFBayesian:
             # meanFX.shape = (b(1+m)n), varFX.shape = (b(1+m)n, b(1+m)n)
             meanFX, varFX = self.dynamics.custom_predict_fullmat(x_torch)
             self.visualizer.add_info(t, 'Fx_var', varFX) # B otimes A
-            cbc_sigma = cbc_A @ uvar.value + cbc_bfb
-            cbc_var = torch_to(torch.from_numpy(
-                cbc_sigma.reshape(-1, 1) @ cbc_sigma.reshape(1, -1)),
-                                device=x_torch.device,
-                                dtype=x_torch.dtype)
-            self.visualizer.add_info(t, 'cbcs', self._cbcs)
-            self.visualizer.add_info(t, 'rho', rho)
-            self.visualizer.add_info(t, 'cbc_var', rho**2 * cbc_var)
-            TBLOG.add_scalar("opt/cbc_var", torch.det(cbc_var), t)
+            if len(self._cbcs(x, t)):
+                cbc_sigma = cbc_A @ uvar.value + cbc_bfb
+                cbc_var = torch_to(torch.from_numpy(
+                    cbc_sigma.reshape(-1, 1) @ cbc_sigma.reshape(1, -1)),
+                                    device=x_torch.device,
+                                    dtype=x_torch.dtype)
+                self.visualizer.add_info(t, 'cbcs', self._cbcs)
+                self.visualizer.add_info(t, 'rho', rho)
+                self.visualizer.add_info(t, 'cbc_var', rho**2 * cbc_var)
+                TBLOG.add_scalar("opt/cbc_var", torch.det(cbc_var), t)
         if hasattr(self.dynamics, 'train'):
             self.dynamics.train(x_torch, uopt)
         return uopt
@@ -1035,6 +1037,8 @@ class VisualizerScalarPlotCBC:
         self.cbc_traj = []
 
     def setStateCtrl(self, ax, info, state, uopt, t=None, **kw):
+        if 'cbcs' not in info[t]:
+            return
         cbcs = info[t]['cbcs']
         rho = info[t]['rho']
         uopt_np = to_numpy(uopt)

@@ -94,7 +94,7 @@ def plot_covariance(ax, cov, n_std=3.0, **kwargs):
 
     eigval, eigvec = np.linalg.eig(cov)
     width, height = np.sqrt(eigval) * n_std
-    ellipse = Ellipse((0, 0), width, height, **kwargs)
+    ellipse = Ellipse((0, 0), width, height, fill=False, color='b' **kwargs)
     axis_x = FancyArrowPatch((0,0), (width, 0), mutation_scale=0.1*width, color='r')
     axis_y = FancyArrowPatch((0,0), (0, height), mutation_scale=0.1*height, color='g')
     patches = PatchCollection([ellipse, axis_x, axis_y])

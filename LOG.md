@@ -44,3 +44,10 @@ Copied to overleaf with script.
 ## 20:38
 
 1. Why is decoupled GP slower than MVGP
+
+# July 16th
+
+## 12:28
+
+  + Visualize in 3D
+  + CBF? CLF? Yes for safety

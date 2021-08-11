@@ -231,14 +231,16 @@ def plot_covariance(ax, cov, n_std, axnames=["X", "Y"], scale=1, **kwargs):
     return [ ax.add_patch(p) for p in (ellipse, axis_x, axis_y)]
 
 def plot_covariance_projections(axes, cov3D, axtitle, scale=1):
-    names = (('X', 'Y'), ('Y', 'Z'), ('Z', 'X'))
+    names = (('$x$', '$y$'), ('$y$', r'$\theta$'), (r'$\theta$', '$x$'))
     covariances = (cov3D[:2, :2],
                    cov3D[1:, 1:],
                    cov3D[np.ix_([2, 0], [2, 0])])
     max_height = max(map(partial(cov_ellipse_height, 3.0), covariances))
     for ax, axname, cov in zip(axes, names, covariances):
-        ax.set_title(axtitle + ' on ' + '-'.join(axname), usetex=True, fontsize=8 * scale)
-        ax.tick_params(axis='both', labelsize=6 * scale)
+        ax.set_title(axtitle + ' on ' + '-'.join(axname), usetex=True, fontsize=10 * scale)
+        ax.tick_params(axis='both', labelsize=7 * scale)
+        ax.set_xlabel(axname[0])
+        ax.set_ylabel(axname[1])
         plot_covariance(ax, cov, n_std=3.0, scale=scale)
         ax.set_ylim(-max_height*1.30/2, max_height*1.30/2)
         ax.set_xlim(-max_height*1.30/2, max_height*1.30/2)
@@ -251,8 +253,10 @@ def unicycle_plot_covariances_vis(events_file):
     figs = []
     for name, var_FX_diag_t in (('MVGP', matrix_var_FX_diag_t),
                                 ('Corregionalization', vector_var_FX_diag_t)):
-        fig, axes = plt.subplots(3, 3, figsize=(6, 6), sharey='row',
-                                gridspec_kw=dict(hspace=0.2, wspace=0.40))
+        fig, axes = plt.subplots(3, 3, figsize=(5, 6), sharey='row',
+                                gridspec_kw=dict(hspace=0.05, wspace=0.30,
+                                                 left=0.10, bottom=0.05,
+                                                 right=0.98, top=0.95))
         fig.suptitle(name)
         for i in range(3):
             cov3D = var_FX_diag_t[0, 0, i*3:i*3+3, i*3:i*3+3]
@@ -268,6 +272,8 @@ def unicycle_plot_covariances_vis(events_file):
     plt.show()
 
 if '__main__' == __name__:
+    ## Uncomment this to generate experimental data again
     #events_file = unicycle_plot_covariances_exp()
+    ## Comment this if you do not want to use saved data
     events_file = "docs/saved-runs/unicycle_plot_covariances_v1.6.2-18-g15ad4c0/events.out.tfevents.1626640030.dwarf.12346.0"
     unicycle_plot_covariances_vis(events_file)

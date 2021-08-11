@@ -222,10 +222,12 @@ def plot_covariance(ax, cov, n_std, axnames=["X", "Y"], scale=1, **kwargs):
     anglerad = np.arctan2(eigvec[0, 1], eigvec[0, 0])
     ellipse = Ellipse((0, 0), width, height, angle=np.rad2deg(anglerad),
                       fill=False, color='b', linewidth=2*scale)
-    axis_x_pt = eigvec.T @ np.array([width, 0]) / 2 * 1.20
+    axis_x_pt = eigvec.T @ np.array([width, 0]) / 2
+    if np.all(axis_x_pt < 0): axis_x_pt = -1 * axis_x_pt
     axis_x = Arrow(0, 0, axis_x_pt[0], axis_x_pt[1], color='g')
 
-    axis_y_pt = eigvec.T @ np.array([0, height]) / 2 * 1.20
+    axis_y_pt = eigvec.T @ np.array([0, height]) / 2
+    if np.all(axis_y_pt < 0): axis_y_pt = -1 * axis_y_pt
     axis_y = Arrow(0,0, axis_y_pt[0], axis_y_pt[1], color='g')
 
     return [ ax.add_patch(p) for p in (ellipse, axis_x, axis_y)]

@@ -195,7 +195,7 @@ def plot_pendulum_covariances(
     # ax[1, 2].set_title('cov[f(x), g(x)]')
     # plot_covariance(ax[1, 2], to_numpy(KkXX[0, 0, :2, 2:]))
 
-    plt.savefig('Coregionalization_covariances.pdf')
+    plt.savefig('CoGP_covariances.pdf')
 
 def plot_covariance_3D(ax, cov, n_std=3.0, **kwargs):
     eigval, eigvec = np.linalg.eig(cov)
@@ -254,7 +254,7 @@ def unicycle_plot_covariances_vis(events_file):
     vector_var_FX_diag_t = np.asarray(list(zip(*grouped_by_tag['vector/var_FX_diag_t']))[1])
     figs = []
     for name, var_FX_diag_t in (('MVGP', matrix_var_FX_diag_t),
-                                ('Coregionalization', vector_var_FX_diag_t)):
+                                ('CoGP', vector_var_FX_diag_t)):
         fig, axes = plt.subplots(3, 3, figsize=(5, 6), sharey='row',
                                 gridspec_kw=dict(hspace=0.05, wspace=0.30,
                                                  left=0.10, bottom=0.05,

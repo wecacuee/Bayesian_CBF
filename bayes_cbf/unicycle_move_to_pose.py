@@ -197,9 +197,9 @@ class CartesianDynamics(PolarDynamics):
             name="CartesianDynamics")
 
 
-class AckermanDrive:
+class AckermannDrive:
     """
-    DynamicsModel for AckermanDrive
+    DynamicsModel for AckermannDrive
 
     ẋ = v cos(θ)
     ẏ = v sin(θ)
@@ -272,7 +272,7 @@ class AckermanDrive:
             mean = lambda x: f(x) + g(x) @ u,
             knl = lambda x, xp:  (u_hom @ B @ u_hom) * A,
             shape=(n,),
-            name="AckermanDrive")
+            name="AckermannDrive")
 
     def step(self, u_torch, dt):
         x = self.current_state
@@ -299,7 +299,7 @@ class LearnedShiftInvariantDynamics:
                  dt = None,
                  learned_dynamics = None,
                  learned_dynamics_class = ControlAffineRegressorExactRankOne,
-                 mean_dynamics = AckermanDrive(),
+                 mean_dynamics = AckermannDrive(),
                  max_train = 200,
                  training_iter = 100,
                  shift_invariant = True,
@@ -1678,16 +1678,16 @@ def track_trajectory_ackerman_clf_bayesian(x, x_g, dt = None,
                                            cbf_gammas = None,
                                            numSteps = None,
                                            enable_learning = True,
-                                           mean_dynamics_gen=partial(AckermanDrive,
+                                           mean_dynamics_gen=partial(AckermannDrive,
                                                                      L = 10.0),
-                                           true_dynamics_gen=partial(AckermanDrive,
+                                           true_dynamics_gen=partial(AckermannDrive,
                                                                      L = 1.0),
                                            visualizer_class=Visualizer,
                                            controller_class=ControllerCLFBayesian,
                                            train_every_n_steps = 20,
                                            **kw):
     """
-    mean_dynamics is either ZeroDynamicsModel(m = 2, n = 3) or AckermanDrive(L = 10.0)
+    mean_dynamics is either ZeroDynamicsModel(m = 2, n = 3) or AckermannDrive(L = 10.0)
     """
     visualizer = visualizer_class(
         PiecewiseLinearPlanner(x, x_g, numSteps, dt),
@@ -1827,8 +1827,8 @@ unicycle_demo_track_trajectory_ackerman_clf_bayesian = partial(
                       # cbf_gammas = [],
                       controller_class=ControllerCLFBayesian, # or ControllerCLF
                       visualizer_class=Logger, # or Visualizer
-                      true_dynamics_gen=partial(AckermanDrive, L = 1.0),
-                      mean_dynamics_gen=partial(AckermanDrive, L = 4.0), # or ZeroDynamicsBayesian
+                      true_dynamics_gen=partial(AckermannDrive, L = 1.0),
+                      mean_dynamics_gen=partial(AckermannDrive, L = 4.0), # or ZeroDynamicsBayesian
                       enable_learning = True),
     exp_tags = ['ackerman']
 )
@@ -1855,8 +1855,8 @@ unicycle_force_around_obstacle = partial(
                       cbf_gammas = [5., 5.],
                       controller_class=ControllerCLFBayesian, # or ControllerCLF
                       visualizer_class=Visualizer, # or Logger
-                      true_dynamics_gen=partial(AckermanDrive, L = 1.0),
-                      mean_dynamics_gen=partial(AckermanDrive, L = 1.0,
+                      true_dynamics_gen=partial(AckermannDrive, L = 1.0),
+                      mean_dynamics_gen=partial(AckermannDrive, L = 1.0,
                                                 kernel_diag_A=[1e-2, 1e-2, 1e-2]),
                       enable_learning = False),
     exp_tags = ['around_obstacle'])
@@ -1885,8 +1885,8 @@ unicycle_mean_cbf_collides_obstacle_exp = partial(
                       controller_class=partial(ControllerCLFBayesian,
                                                max_risk=0.5), # or ControllerCLFBayesian
                       visualizer_class=partial(Logger), # or Logger
-                      true_dynamics_gen=partial(AckermanDrive, L = 12.0),
-                      mean_dynamics_gen=partial(AckermanDrive, L = 1.0,
+                      true_dynamics_gen=partial(AckermannDrive, L = 12.0),
+                      mean_dynamics_gen=partial(AckermannDrive, L = 1.0,
                                                 kernel_diag_A=[1e-2, 1e-2, 1e-2]),
                       enable_learning = False),
     exp_tags = ['mean_cbf_collides'])
@@ -1948,8 +1948,8 @@ unicycle_learning_helps_avoid_getting_stuck_exp = partial(
                                                subplots_adjust_kw=dict(left=0.25,
                                                                        top=0.95),
                                                scalar_plots=['TraceKnl', 'CBC']),
-                      true_dynamics_gen=partial(AckermanDrive, L = 1.0),
-                      mean_dynamics_gen=partial(AckermanDrive, L = 12.0,
+                      true_dynamics_gen=partial(AckermannDrive, L = 1.0),
+                      mean_dynamics_gen=partial(AckermannDrive, L = 12.0,
                                                 kernel_diag_A=[1.0, 1.0, 1.0]),
                       train_every_n_steps = 40, # Change this
                       enable_learning = True), # Do not change this
@@ -2027,9 +2027,9 @@ def unicycle_speed_test_matrix_vector_exp(
         state_goal = [0, 0, math.pi/4],
         numSteps = 512,
         dt = 0.01,
-        true_dynamics_gen=partial(AckermanDrive,
+        true_dynamics_gen=partial(AckermannDrive,
                                   L = 1.0),
-        mean_dynamics_gen=partial(AckermanDrive,
+        mean_dynamics_gen=partial(AckermannDrive,
                                   L = 12.0),
         logger_class=partial(TBLogger,
                              exp_tags=['unicycle_speed_test_matrix_vector'],
@@ -2220,7 +2220,7 @@ def unicycle_speed_test_matrix_vector_vis(
         exp_data[gp] = dict(elapsed=elapsed, errors=errors)
     fig, axes = plt.subplots(1,2, figsize=(8, 4.7))
     fig.subplots_adjust(bottom=0.1, wspace=0.20, top=0.90, right=0.95, left=0.1)
-    fig.suptitle('Ackerman Drive')
+    fig.suptitle('Ackermann Drive')
     speed_test_matrix_vector_plot(axes,
                                               training_samples,
                                               exp_data)

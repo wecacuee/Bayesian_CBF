@@ -16,7 +16,7 @@ from matplotlib import transforms
 import bayes_cbf.unicycle_move_to_pose as bayes_cbf_unicycle
 
 from bayes_cbf.misc import TBLogger, to_numpy, load_tensorboard_scalars
-from bayes_cbf.unicycle_move_to_pose import (AckermanDrive, ControllerCLF,
+from bayes_cbf.unicycle_move_to_pose import (AckermannDrive, ControllerCLF,
                                              NoPlanner, CartesianDynamics,
                                              CLFCartesian, VisualizerZ,
                                              LearnedShiftInvariantDynamics)
@@ -35,9 +35,9 @@ def unicycle_plot_covariances_exp(
         state_goal = [0, 0, math.pi/4],
         numSteps = 512,
         dt = 0.01,
-        true_dynamics_gen=partial(AckermanDrive,
+        true_dynamics_gen=partial(AckermannDrive,
                                   L = 1.0),
-        mean_dynamics_gen=partial(AckermanDrive,
+        mean_dynamics_gen=partial(AckermannDrive,
                                   L = 12.0),
         logger_class=partial(TBLogger,
                              exp_tags=['unicycle_plot_covariances'],
@@ -195,7 +195,7 @@ def plot_pendulum_covariances(
     # ax[1, 2].set_title('cov[f(x), g(x)]')
     # plot_covariance(ax[1, 2], to_numpy(KkXX[0, 0, :2, 2:]))
 
-    plt.savefig('Corregionalization_covariances.pdf')
+    plt.savefig('Coregionalization_covariances.pdf')
 
 def plot_covariance_3D(ax, cov, n_std=3.0, **kwargs):
     eigval, eigvec = np.linalg.eig(cov)
@@ -254,7 +254,7 @@ def unicycle_plot_covariances_vis(events_file):
     vector_var_FX_diag_t = np.asarray(list(zip(*grouped_by_tag['vector/var_FX_diag_t']))[1])
     figs = []
     for name, var_FX_diag_t in (('MVGP', matrix_var_FX_diag_t),
-                                ('Corregionalization', vector_var_FX_diag_t)):
+                                ('Coregionalization', vector_var_FX_diag_t)):
         fig, axes = plt.subplots(3, 3, figsize=(5, 6), sharey='row',
                                 gridspec_kw=dict(hspace=0.05, wspace=0.30,
                                                  left=0.10, bottom=0.05,

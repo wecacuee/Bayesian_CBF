@@ -4,7 +4,7 @@ gpytorch@git+https://github.com/wecacuee/gpytorch.git@fractional-outputs-per-inp
 torch
 torch-vision
 cvxpy
-# gurobipy==9.0.0
+gurobipy==9.1.2
 # For car
 # vtkPlotter
 # k3d

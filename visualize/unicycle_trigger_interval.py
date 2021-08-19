@@ -6,7 +6,6 @@ import os
 from functools import partial
 
 import numpy as np
-import torch
 import matplotlib.pyplot as plt
 
 from matplotlib.patches import Ellipse, FancyArrowPatch, Arrow
@@ -24,113 +23,84 @@ from bayes_cbf.unicycle_move_to_pose import (AckermannDrive, ControllerCLF,
 from bayes_cbf.control_affine_model import ControlAffineRegressorExact
 from bayes_cbf.sampling import sample_generator_trajectory
 
-def unicycle_trigger_interval_exp(
-        max_train=200, # testing GPU
-        state_start = [-3, -1, -math.pi/4],
-        state_goal = [0, 0, math.pi/4],
-        numSteps = 512,
-        dt = 0.01,
-        true_dynamics_gen=partial(AckermannDrive,
-                                  L = 1.0),
-        mean_dynamics_gen=partial(AckermannDrive,
-                                  L = 12.0),
-        logger_class=partial(TBLogger,
-                             exp_tags=['unicycle_plot_covariances'],
-                             runs_dir='data/runs'),
-        exps=dict(
-            matrix=dict(
-                regressor_class=partial(
-                    LearnedShiftInvariantDynamics,
-                    learned_dynamics_class=ControlAffineRegressorExact)),
-            vector=dict(
-                regressor_class=partial(
-                    LearnedShiftInvariantDynamics,
-                    learned_dynamics_class=ControlAffineRegressorVector))
-            ),
-):
-    logger = logger_class()
-    bayes_cbf_unicycle.TBLOG = logger.summary_writer
-    true_dynamics_model=true_dynamics_gen()
 
-    # Generate training data
-    Xdot, X, U = sample_generator_trajectory(
-        dynamics_model=true_dynamics_model,
-        D=numSteps,
-        controller=ControllerCLF(
-            NoPlanner(torch.tensor(state_goal)),
-            coordinate_converter = lambda x, x_g: x,
-            dynamics = CartesianDynamics(),
-            clf = CLFCartesian()
-        ).control,
-        visualizer=VisualizerZ(),
-        x0=state_start,
-        dt=dt)
+def rbf_knl(x, xp, sf, ls):
+    return sf**2 * np.exp(-0.5*np.sum((x-xp)**2./ls**2,1))
 
-    # Log training data
-    for t,  (dx, x, u) in enumerate(zip(Xdot, X, U)):
-        logger.add_tensors("traj", dict(dx=dx, x=x, u=u), t)
+def rbf_d_knl_d_x_xp_i(x, xp, i, sf, ls):
+    return -(x[:,i]-xp[:,i])/ls[i]**2 * rbf_knl(x,xp, sf, ls)
 
-    shuffled_order = np.arange(X.shape[0]-1)
+def rbf_d2_knl_d_x_xp_i(x, xp, i, sf, ls):
+    return ls[i]**(-2) * rbf_knl(x,xp, sf, ls) +  (x[:,i]-xp[:,i])/ls[i]**2 * rbf_d_knl_d_x_xp_i(x, xp, i, sf, ls);
 
-    dgp = dict()
-    # Test train split
-    np.random.shuffle(shuffled_order)
-    shuffled_order_t = torch.from_numpy(shuffled_order)
-    train_indices = shuffled_order_t[:max_train]
-    Xtrain = X[train_indices, :]
-    Utrain = U[train_indices, :]
-    XdotTrain = Xdot[train_indices, :]
+def rbf_d3_knl_d_x_xp_i(x, xp, i, sf, ls):
+    return -ls[i]**(-2) * rbf_d_knl_d_x_xp_i(x,xp,i, sf, ls) - ls[i]**(-2) * rbf_d_knl_d_x_xp_i(x,xp,i, sf, ls)
+    +  (x[:,i]-xp[:,i])/ls[i]**2 *rbf_d2_knl_d_x_xp_i(x,xp,i, sf, ls)
 
-    slice_range = []
-    for i, num in enumerate([1, 1, 20]):
-        x_range = slice(*list(map(float,
-                                (Xtrain[:, i].min(),
-                                Xtrain[:, i].max(),
-                                    (Xtrain[:, i].max() - Xtrain[:, i].min()) / num))))
-        slice_range.append(x_range)
-    xtest_grid = np.mgrid[tuple(slice_range)]
-    Xtest = torch.from_numpy(
-        xtest_grid.reshape(-1, Xtrain.shape[-1])).to(
-            dtype=Xtrain.dtype,
-            device=Xtrain.device)
-    # b, n, 1+m
-    FX_true = true_dynamics_model.F_func(Xtest).transpose(-2, -1)
+def pdist(Xtest):
+    return np.linalg.norm(Xtest[:, np.newaxis, :] - Xtest[np.newaxis, :, :])
 
-    logger.add_tensors('Train', dict(Xtrain=Xtrain, Utrain=Utrain,
-                                     XdotTrain=XdotTrain))
-    logger.add_tensors('Test', dict(Xtest=Xtest))
-    for name, kw in exps.items():
-        model = kw['regressor_class'](dt = dt,
-                                      mean_dynamics=mean_dynamics_gen(),
-                                      max_train=max_train)
-        model.fit(Xtrain, Utrain, XdotTrain, training_iter=50)
-        # b(1+m)n
-        FX_learned, var_FX = model.custom_predict_fullmat(Xtest.reshape(-1, Xtest.shape[-1]))
-        b = Xtest.shape[0]
-        n = true_dynamics_model.state_size
-        m = true_dynamics_model.ctrl_size
-        var_FX_t = var_FX.reshape(b, (1+m)*n, b, (1+m)*n)
-        var_FX_diag_t = torch.empty((b, (1+m)*n, (1+m)*n),
-                                    dtype=var_FX_t.dtype,
-                                    device=var_FX_t.device)
-        for i in range(b):
-            var_FX_diag_t[i, :, :] = var_FX_t[i, :, i, :]
+def ndgridj(grid_min, grid_max, ns):
+    # generates a grid and returns all combnations of that grid in a list
+    # In:
+    #   grid_min   1  x D  lower bounds of grid for each dimension separately
+    #   grid_max   1  x D  upper bounds of grid for each dimension separately
+    #   ns         1  x D  number of points for each dimension separately
+    # Out:
+    #   grid       Prod(ns) x D
+    #   dist        1  x 1   distances in the grid
+    #
+    # Copyright (c) by Jonas Umlauft (TUM) under BSD License
+    # Last modif ied: Jonas Umlauft 10/2018:
 
-        # log FX_learned and var_FX_diag_t
-        logger.add_tensors(name, dict(var_FX_diag_t=to_numpy(var_FX_diag_t)),
-                           max_train)
-
-    # Find the latest edited event file from log dir
-    events_file = max(
-        glob.glob(osp.join(logger.experiment_logs_dir, "*.tfevents*")),
-        key=lambda f: os.stat(f).st_mtime)
-    return events_file
-
+    D = len(ns)
+    return np.moveaxis(
+        np.mgrid[tuple(slice(min_, max_, n*(1j))
+                  for min_, max_, n in zip(grid_min, grid_max, ns))],
+        0, -1).reshape(-1, D)
 
 def unicycle_trigger_interval_vis(events_file):
     grouped_by_tag = load_tensorboard_scalars(events_file)
-    matrix_var_FX_diag_t = np.asarray(list(zip(*grouped_by_tag['matrix/var_FX_diag_t']))[1])
+    knl_lengthscales = np.asarray(list(zip(*grouped_by_tag['vis/knl_lengthscale']))[1])
+    knl_scalefactors = np.asarray(list(zip(*grouped_by_tag['vis/knl_scalefactor']))[1])
+    knl_As = np.asarray(list(zip(*grouped_by_tag['vis/knl_A']))[1])
+    knl_Bs = np.asarray(list(zip(*grouped_by_tag['vis/knl_B']))[1])
+    x_traj = np.asarray(list(zip(*grouped_by_tag['vis/state']))[1])
+
+    E = x_traj.shape[-1]
+    Nte = 1e4
+    deltaL = 1e-2
+    Ndte = np.floor(np.power(Nte,1/E)).astype(np.int64)
+    Nte = (Ndte**E).astype(np.int64) # Round to a power of E
+    XteMin = [-1, -1, -np.pi/10]
+    XteMax = [1, 1, np.pi/10] # Xrange and n data points
+
+    nsteps = knl_lengthscales.shape[0]
+    Lfh_traj = np.empty(nsteps)
+    for t in range(nsteps):
+        sf = knl_scalefactors[t]
+        ls = knl_lengthscales[t]
+        Lk = np.linalg.norm(sf**2 *np.exp(-0.5)/ls);
+
+        Xtest = ndgridj(XteMin, XteMax, Ndte*np.ones(E)) + x_traj[t]
+
+        r = np.max(pdist(Xtest))
+        Lfs = np.zeros((E, 1));
+        for e in range(E):
+            maxk = max(rbf_d2_knl_d_x_xp_i(Xtest, Xtest, e, sf, ls));
+            Lkds = np.zeros((Nte, 1));
+            for nte in range(Nte):
+                Lkds[nte] = max(rbf_d3_knl_d_x_xp_i(Xtest, Xtest[nte:nte+1, :], e, sf, ls));
+            Lkd = np.max(Lkds)
+            Lfs[e] = np.sqrt(2*np.log(2*E/deltaL))*maxk + 12*np.sqrt(6*E)*max(
+                maxk, np.sqrt(r*Lkd)) # Eq (11) from the paper
+        end
+        Lfh =  np.linalg.norm(Lfs) #  Eq (11) continued
+        print("Computed Lipschtz constant is ", Lfh);
+        Lfh_traj[t] = Lfh
 
 if '__main__' == __name__:
-    events_file = "docs/saved-runs/unicycle_plot_covariances_v1.6.2-18-g15ad4c0/events.out.tfevents.1626640030.dwarf.12346.0"
+    events_file = unicycle_learning_helps_avoid_getting_stuck_exp()
+    print(events_file)
+    # events_file = 'data/runs/unicycle_move_to_pose_fixed_learning_helps_avoid_getting_stuck_v1.6.2-28-g529d7ff/events.out.tfevents.1629329336.dwarf.20145.0'
     unicycle_trigger_interval_vis(events_file)

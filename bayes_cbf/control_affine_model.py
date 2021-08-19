@@ -161,8 +161,13 @@ class ControlAffineExactGP(ExactGP):
             IndexKernel(num_tasks=self.matshape[0],
                         rank=(self.matshape[0] if rank is None else rank))
         )
-        prior_args = dict() if gamma_length_scale_prior is None else dict(
-            lengthscale_prior=GammaPrior(*gamma_length_scale_prior))
+        prior_args = dict(ard_num_dims=x_dim)
+        prior_args = (dict(**prior_args)
+                      if gamma_length_scale_prior is None
+                      else dict(lengthscale_prior=GammaPrior(
+                              *gamma_length_scale_prior),
+                                **prior_args)
+        )
         self.input_covar = ScaleKernel(RBFKernel(**prior_args))
             #+ LinearKernel()) # FIXME: how to reduce the variance of LinearKernel
         self.covar_module = HetergeneousMatrixVariateKernel(
@@ -696,6 +701,9 @@ class ControlAffineRegressor(DynamicsModel):
     def _A_mat(self):
         return self.model.covar_module.task_covar_module.U.covar_matrix.evaluate()
 
+    def _B_mat(self):
+        return self.model.covar_module.task_covar_module.V.covar_matrix.evaluate()
+
     def f_func_mean(self, Xtest_in):
         Xtest = (Xtest_in.unsqueeze(0)
                  if Xtest_in.ndim == 1
@@ -865,6 +873,20 @@ class ControlAffineRegressor(DynamicsModel):
     def load(self, path='/tmp/saved.pickle'):
         self.load_state_dict(torch.load(path))
 
+    def get_kernel_param(self, name):
+        if name == 'A':
+            return self._A_mat()
+        elif name == 'B':
+            return self._B_mat()
+        elif  name == 'scalefactor':
+            assert isinstance(self.model.input_covar, ScaleKernel)
+            return self.model.input_covar.outputscale
+        elif name == 'lengthscale':
+            assert isinstance(self.model.input_covar.base_kernel, RBFKernel)
+            return self.model.input_covar.base_kernel.lengthscale
+        else:
+            raise ValueError('Unknown param %s' % name)
+
 
 def is_psd(X):
     try:
@@ -920,7 +942,7 @@ class ControlAffineRegressorExact(ControlAffineRegressor):
         else:
             Utest = self._ensure_device_dtype(Utest_in)
             UHtest = torch.cat((Utest.new_full((Utest.shape[0], 1), UHfill),
-            Utest), dim=-1)
+                                Utest), dim=-1)
         if Utestp_in is None:
             UHtestp = UHtest
         else:

@@ -353,6 +353,9 @@ class LearnedShiftInvariantDynamics:
         self.Utrain.append(uopt.detach())
         assert len(self.Xtrain) == len(self.Utrain)
 
+    def get_kernel_param(self, name):
+        return self.learned_dynamics.get_kernel_param(name)
+
     def fit(self, Xtrain, Utrain, XdotTrain, training_iter=100):
         if not len(Xtrain):
             LOG.info("Nothing to fit")
@@ -809,7 +812,8 @@ class ControllerCLFBayesian:
                  ctrl_max = [10., np.pi*5],
                  ctrl_ref = [0., 0.],
                  max_risk = 1e-2,
-                 visualizer = None):
+                 visualizer = None
+    ):
         self.u_dim = 2
         self.planner = planner
         self.coordinate_converter = coordinate_converter
@@ -832,7 +836,7 @@ class ControllerCLFBayesian:
     @staticmethod
     def convert_cbc_terms_to_socp_terms(bfe, e, V, bfv, v, extravars,
                                         testing=True):
-        assert (V.eig()[0][:, 0].abs() > 0).all()
+        assert (torch.linalg.eigvals(V).real.abs() > 0).all()
         assert v.abs() > 0
         m = bfe.shape[-1]
         bfc = bfe.new_zeros((m+extravars))
@@ -853,7 +857,7 @@ class ControllerCLFBayesian:
 
             # [1, u] Asq [1; u] = |L[1; u]|_2 = |[0, A] [y_1; y_2; u] + b|_2
             n_constraints = m+1
-            L = torch.cholesky(Asq) # (m+1) x (m+1)
+            L = torch.linalg.cholesky(Asq) # (m+1) x (m+1)
 
         if testing:
             np.testing.assert_allclose(L @ L.T, Asq, rtol=1e-2, atol=1e-3)
@@ -887,7 +891,7 @@ class ControllerCLFBayesian:
         (bfe, e), (V, bfv, v), mean, var = cbc2_quadratic_terms(
             lambda u: self._clc(state, state_goal, u, t) * -1.0,
             state, torch.rand(m))
-        assert (V.eig()[0][:, 0].abs() > 0).all()
+        assert (torch.linalg.eigvals(V).real.abs() > 0).all()
         assert v.abs() > 0
         A, bfb, bfc, d = self.convert_cbc_terms_to_socp_terms(
             bfe, e, V, bfv, v, 0)
@@ -966,6 +970,11 @@ class ControllerCLFBayesian:
             fu_gp = self.dynamics.fu_func_gp(uopt)
             self.visualizer.add_info(t, 'xtp1',
                                      x_torch + fu_gp.mean(x_torch) * self.planner.dt)
+            # max extent of the region?
+            self.visualizer.add_info(t, 'knl_lengthscale', self.dynamics.get_kernel_param('lengthscale'))
+            self.visualizer.add_info(t, 'knl_scalefactor', self.dynamics.get_kernel_param('scalefactor'))
+            self.visualizer.add_info(t, 'knl_A', self.dynamics.get_kernel_param('A'))
+            self.visualizer.add_info(t, 'knl_B', self.dynamics.get_kernel_param('B'))
             self.visualizer.add_info(t, 'Fxu_var', fu_gp.knl(x_torch, x_torch))
             # meanFX.shape = (b(1+m)n), varFX.shape = (b(1+m)n, b(1+m)n)
             meanFX, varFX = self.dynamics.custom_predict_fullmat(x_torch)

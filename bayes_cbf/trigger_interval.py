@@ -1,5 +1,8 @@
 import torch
 
+def compute_L_d2_kxxp_dx_dxp(Xtest_grid, d2_kxxp_dx_dxp):
+    pass
+
 def max_kernel_xbounds(Xtest_grid, A, uBu, d2_kxxp_dx_dxp):
     return torch.max(torch.diag(A) * uBu * d2_kxxp_dx_dxp(Xtest_grid))
 

@@ -647,7 +647,7 @@ class ObstacleCBF:
         >>> testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
         """
         gcbf = torch.zeros_like(state)
-        gcbf[:2] = 2*(state[:2]-self.center)
+        gcbf[..., :2] = 2*(state[..., :2]-self.center)
         return gcbf
 
     def _grad_cbf_heading(self, state):
@@ -664,16 +664,16 @@ class ObstacleCBF:
         >>> testing.assert_allclose(njac, ajac, rtol=1e-3, atol=1e-4)
         """
         gcbf = torch.zeros_like(state)
-        θ = state[2]
-        good_heading = state[:2] - self.center
+        θ = state[..., 2]
+        good_heading = state[..., :2] - self.center
         ρ = torch.norm(good_heading)
-        α = torch.atan2(good_heading[1], good_heading[0])
+        α = torch.atan2(good_heading[..., 1], good_heading[..., 0])
         # ∂ / ∂ x cos(α-θ) = sin(α - θ) y / ρ²
-        gcbf[0] = (α - θ).sin() * good_heading[1] / ρ**2
+        gcbf[..., 0] = (α - θ).sin() * good_heading[..., 1] / ρ**2
         # ∂ / ∂ y cos(α-θ) = - sin(α - θ) x / ρ²
-        gcbf[1] = - (α - θ).sin() * good_heading[0] / ρ**2
+        gcbf[..., 1] = - (α - θ).sin() * good_heading[..., 0] / ρ**2
         # ∂ / ∂ θ cos(θ-α) = - sin(θ - α)
-        gcbf[2] = - (θ-α).sin()
+        gcbf[..., 2] = - (θ-α).sin()
         return gcbf
 
     def _grad_cbf_terms(self, state):

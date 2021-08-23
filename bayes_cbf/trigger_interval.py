@@ -85,11 +85,7 @@ def numerical_lipschitz_estimate(Xtest, ej, sf, ls, knl_Aii, knl_uBu):
 
 def unicycle_trigger_interval_compute(
         events_file,
-        out_file_Lfh_traj,
-        out_file_Lfh_num_traj,
-        out_file_tau_traj,
-        out_file_tau_num_traj,
-        out_file_xvel_traj,
+        out_data_files,
         Nte = 1e3, # Number of testing samples on the grid
         deltaL = 1e-4, # Prob of f being Lipschitz cont
         zeta = 1e-2, # Margin of CBC separation
@@ -173,8 +169,8 @@ def unicycle_trigger_interval_compute(
         tau_num_traj[t] = tau_num
         print("Numerical trigger time at %d is " % t, tau_num);
 
-    np.savetxt(out_file_xvel_traj, xvel_traj)
-    np.savetxt(out_file_Lfh_traj, Lfh_traj)
-    np.savetxt(out_file_Lfh_num_traj, Lfh_num_traj)
-    np.savetxt(out_file_tau_traj, tau_traj)
-    np.savetxt(out_file_tau_num_traj, tau_num_traj)
+    np.savetxt(out_data_files['xvel.np.txt'], xvel_traj)
+    np.savetxt(out_data_files['Lfh.np.txt'], Lfh_traj)
+    np.savetxt(out_data_files['Lfh_num.np.txt'], Lfh_num_traj)
+    np.savetxt(out_data_files['tau.np.txt'], tau_traj)
+    np.savetxt(out_data_files['tau_num.np.txt'], tau_num_traj)

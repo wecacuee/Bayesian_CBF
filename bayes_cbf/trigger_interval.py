@@ -65,30 +65,30 @@ def ndgridj(grid_min, grid_max, ns):
         0, -1).reshape(-1, D)
 
 
-def numerical_lipschitz_estimate(Xtest, sf, ls, knl_A, knl_B):
+def numerical_lipschitz_estimate(Xtest, ej, sf, ls, knl_Aii, knl_uBu):
     ## Compute Lipschitz constant numerically
-    # 
+    #
     ### Compute Lipschitz constant by using derivative kernel 
     ### Could not use it as a function because ddkdxidxpi wont pass as an
     ### argument
-    grad_f_mu = np.zeros_like(Xtest) # must be ExN
+    grad_f_mu = np.zeros_like(Xtest[:, ej]) # must be ExN
     N, E = Xtest.shape
-    grad_f_sigma = np.zeros((N, E, E))
-    for e in range(E):
-        grad_f_sigma[:, e, e] = rbf_d2_knl_d_x_xp_i(Xtest, Xtest, e, sf, ls)
-    x = scistat.norm.rvs(size=(N, E))
-    grad_fs_i =  (x[..., None, :] * grad_f_sigma).sum(axis=-2) + grad_f_mu
-    grad_fs_prob = scistat.norm.pdf(x) * 1e-2
-    gradnorms = np.sqrt(np.sum(grad_fs_i^2,1))
-    [Lf, idx] =  np.max(gradnorms)
-    Lfprob = grad_fs_prob(idx);
-    ### sampleGPRFromKnl pasted
-    return
+    grad_f_sigma = knl_Aii * knl_uBu * rbf_d2_knl_d_x_xp_i(Xtest, Xtest, ej, sf, ls)
+    w = scistat.norm.rvs(size=(N,))
+    grad_fs_i =  w * grad_f_sigma + grad_f_mu
+    grad_fs_prob = scistat.norm.pdf(w) * 1e-4
+    gradnorms = np.abs(grad_fs_i)
+    idx =  np.argmax(gradnorms)
+    Lf = gradnorms[idx]
+    Lfprob = grad_fs_prob[idx];
+    return [Lf, Lfprob]
 
 def unicycle_trigger_interval_compute(
         events_file,
         out_file_Lfh_traj,
+        out_file_Lfh_num_traj,
         out_file_tau_traj,
+        out_file_tau_num_traj,
         out_file_xvel_traj,
         Nte = 1e3, # Number of testing samples on the grid
         deltaL = 1e-4, # Prob of f being Lipschitz cont
@@ -121,7 +121,9 @@ def unicycle_trigger_interval_compute(
 
     nsteps = knl_lengthscales.shape[0]
     Lfh_traj = np.empty(nsteps)
+    Lfh_num_traj = np.empty(nsteps)
     tau_traj = np.empty(nsteps)
+    tau_num_traj = np.empty(nsteps)
     xvel_traj = np.empty(nsteps)
 
     Xtest_grid = ndgridj(XteMin, XteMax, Ndte*np.ones(E))
@@ -138,6 +140,8 @@ def unicycle_trigger_interval_compute(
 
         Xtest = Xtest_grid + x_traj[t]
         Lfs = np.zeros((E, E));
+        Lfs_num = np.zeros((E, E))
+        deltaL_num = np.zeros((E, E))
         for ei in range(E):
             for ej in range(E):
                 maxk = max(A[ei,ei] * uBu * rbf_d2_knl_d_x_xp_i(Xtest, Xtest, ej, sf, ls));
@@ -147,9 +151,14 @@ def unicycle_trigger_interval_compute(
                 Lkd_j = np.max(Lkds_j)
                 Lfs[ei, ej] = np.sqrt(2*np.log(2*(E**2)/deltaL))*maxk + 12*np.sqrt(6*E)*max(
                     maxk, np.sqrt(r*A[ei,ei]*Lkd_j)) # Eq (11) from the paper
+                Lfs_num[ei, ej], deltaL_num[ei, ej] = numerical_lipschitz_estimate(Xtest, ej, sf, ls, A[ei,ei], uBu);
         Lfh =  np.linalg.norm(Lfs)/E #  Eq (11) continued
         Lfh_traj[t] = Lfh
         print("Computed Lipschtz constant at %d is " % t, Lfh);
+
+        Lfh_num = np.linalg.norm(Lfs_num)/E
+        Lfh_num_traj[t] = Lfh_num
+        print("Numerical Lipschtz constant at %d is " % t, Lfh_num);
 
         Lh = max(torch.max(h.grad_cbf(torch.from_numpy(Xtest))).item() for h in hs)
         xvel = np.linalg.norm(x_pred_traj[t] - x_traj[t])/dt
@@ -160,6 +169,12 @@ def unicycle_trigger_interval_compute(
         tau_traj[t] = tau
         print("Computed trigger time at %d is " % t, tau);
 
+        tau_num = (1/Lfh_num)*np.log(1+Lfh_num * zeta/((Lfh_num + L_alpha)*Lh*np.linalg.norm(xvel)))
+        tau_num_traj[t] = tau_num
+        print("Numerical trigger time at %d is " % t, tau_num);
+
     np.savetxt(out_file_xvel_traj, xvel_traj)
     np.savetxt(out_file_Lfh_traj, Lfh_traj)
+    np.savetxt(out_file_Lfh_num_traj, Lfh_num_traj)
     np.savetxt(out_file_tau_traj, tau_traj)
+    np.savetxt(out_file_tau_num_traj, tau_num_traj)

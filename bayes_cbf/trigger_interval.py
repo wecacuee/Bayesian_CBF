@@ -76,7 +76,7 @@ def numerical_lipschitz_estimate(Xtest, ej, sf, ls, knl_Aii, knl_uBu):
     grad_f_sigma = knl_Aii * knl_uBu * rbf_d2_knl_d_x_xp_i(Xtest, Xtest, ej, sf, ls)
     w = scistat.norm.rvs(size=(N,))
     grad_fs_i =  w * grad_f_sigma + grad_f_mu
-    grad_fs_prob = scistat.norm.pdf(w) * 1e-4
+    grad_fs_prob = scistat.norm.pdf(w) * 1e-2
     gradnorms = np.abs(grad_fs_i)
     idx =  np.argmax(gradnorms)
     Lf = gradnorms[idx]
@@ -158,6 +158,7 @@ def unicycle_trigger_interval_compute(
 
         Lh = max(torch.max(h.grad_cbf(torch.from_numpy(Xtest))).item() for h in hs)
         xvel = np.linalg.norm(x_pred_traj[t] - x_traj[t])/dt
+        #xvel = np.linalg.norm((x_traj[t] - x_traj[t-1]) if t >= 1 else (x_pred_traj[t] - x_traj[t]))/dt
         xvel_traj[t] = xvel
         print("Computed velocity %d is " % t, xvel);
 

@@ -14,8 +14,10 @@ def unicycle_trigger_interval_vis(data_files):
     tau_traj = np.loadtxt(data_files['tau.np.txt'])
     tau_num_traj = np.loadtxt(data_files['tau_num.np.txt'])
     xvel_traj = np.loadtxt(data_files['xvel.np.txt'])
-    fig, ax = plt.subplots(2,2, figsize=(6.5, 4), sharex=True,
-                           gridspec_kw=dict(hspace=0.05, wspace=0.3, left=0.10, right=0.95))
+    fig, ax = plt.subplots(2,2, figsize=(4.5, 3), sharex=True,
+                           gridspec_kw=dict(hspace=0.05, wspace=0.4, left=0.15,
+                                            right=0.95,
+                                            bottom=0.15))
     ax[0, 0].semilogy(range(Lfh_traj.shape[0]), Lfh_traj)
     ax[0, 0].set_ylabel(r'$L_{\mathbf{f}_k}$')
     ax[1, 0].semilogy(range(tau_traj.shape[0]), tau_traj)
@@ -36,7 +38,7 @@ if '__main__' == __name__:
     # events_file = max(glob.glob(osp.join(events_dir, '*tfevents*')),
     #                   key=lambda f: os.stat(f).st_mtime)
     # events_file = 'docs/saved-runs/unicycle_move_to_pose_fixed_learning_helps_avoid_getting_stuck_v1.6.2-29-gffc84c6/events.out.tfevents.1629403712.dwarf.9630.0'
-    events_file = 'data/runs/unicycle_move_to_pose_fixed_learning_helps_avoid_getting_stuck_v1.6.3-1-g5fa08e8/events.out.tfevents.1629498656.dwarf.4257.0'
+    events_file = 'docs/saved-runs/unicycle_move_to_pose_fixed_learning_helps_avoid_getting_stuck_v1.6.3-1-g5fa08e8/events.out.tfevents.1629498656.dwarf.4257.0'
     events_dir = osp.dirname(events_file)
     data_file_basenames = [
         "Lfh.np.txt",

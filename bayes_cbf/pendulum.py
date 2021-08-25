@@ -1119,9 +1119,10 @@ def learn_dynamics_matrix_vector_plot(
         collabels=[r'$f(x)_{i}$', r'$g(x)_{{{{i},1}}$']
 ):
     fig, axs = plt.subplots(3, 4, sharex=True, sharey=True, squeeze=False,
-                            figsize=(10, 6.0))
-    fig.subplots_adjust(wspace=0.2, hspace=0.2, left=0.10, right=0.95,
-                        bottom=0.07, top=0.90)
+                            figsize=(10, 4.0),
+                            gridspec_kw=dict(
+                                wspace=0.2, hspace=0.2, left=0.10, right=0.95,
+                                bottom=0.10, top=0.90))
     csets_fx = None
     csets_gx = None
     exp_error_data = []
@@ -1207,7 +1208,7 @@ def learn_dynamics_matrix_vector_plot(
         ax.plot(Xtrain[:, 0], Xtrain[:, 1], marker='+', linestyle='', color='r')
         ax.set_xlim(xmin, xmax)
         ax.set_ylim(ymin, ymax)
-    fig.suptitle(figtitle, fontsize='x-large')
+    fig.suptitle('', fontsize='x-large')
     if hasattr(fig, "canvas") and hasattr(fig.canvas, "set_window_title"):
         fig.canvas.set_window_title(figtitle)
     return fig, exp_error_data
@@ -1443,4 +1444,5 @@ if __name__ == '__main__':
     #speed_test_matrix_vector()
     #
     # Aug 25, 2021
-    speed_test_matrix_vector_vis(events_file='docs/saved-runs/speed_test_matrix_vector_v1.6.1/events.out.tfevents.1608668171.dwarf.28939.1')
+    # speed_test_matrix_vector_vis(events_file='docs/saved-runs/speed_test_matrix_vector_v1.6.1/events.out.tfevents.1608668171.dwarf.28939.1')
+    learn_dynamics_matrix_vector_vis(events_file='docs/saved-runs/learn_matrix_vector_v1.5.2-2-g31b30e1/events.out.tfevents.1608660837.dwarf.18847.0')

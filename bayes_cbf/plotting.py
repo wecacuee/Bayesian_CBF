@@ -237,7 +237,7 @@ def speed_test_matrix_vector_plot(
                      label=gp_conf['label'])
         axes[0].set_xlabel(xlabel)
         axes[0].set_ylabel(elapsed_ylabel)
-        axes[0].legend()
+        axes[0].legend(prop=dict(size=8))
 
         ys = np.vstack(exp_data[gp]['errors'])
         ymean = np.median(ys, axis=1)

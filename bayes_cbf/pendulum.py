@@ -1412,8 +1412,8 @@ def speed_test_matrix_vector_vis(
         training_samples, elapsed = zip(*logdata[gp + '/elapsed'])
         training_samples, errors = zip(*logdata[gp + '/errors'])
         exp_data[gp] = dict(elapsed=elapsed, errors=errors)
-    fig, axes = plt.subplots(1,2, figsize=(8, 4.7))
-    fig.subplots_adjust(bottom=0.1, wspace=0.20, top=0.90, right=0.95, left=0.1)
+    fig, axes = plt.subplots(1,2, figsize=(6, 2.5))
+    fig.subplots_adjust(bottom=0.2, wspace=0.20, top=0.90, right=0.95, left=0.10)
     fig.suptitle('Pendulum')
     speed_test_matrix_vector_plot(axes,
                                   training_samples,
@@ -1439,5 +1439,8 @@ if __name__ == '__main__':
     #run_pendulum_control_cbf_clf()
     # learn_dynamics()
     #run_pendulum_control_online_learning()
-    learn_dynamics_matrix_vector()
-    speed_test_matrix_vector()
+    # learn_dynamics_matrix_vector()
+    #speed_test_matrix_vector()
+    #
+    # Aug 25, 2021
+    speed_test_matrix_vector_vis(events_file='docs/saved-runs/speed_test_matrix_vector_v1.6.1/events.out.tfevents.1608668171.dwarf.28939.1')

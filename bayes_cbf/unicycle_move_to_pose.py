@@ -2227,15 +2227,15 @@ def unicycle_speed_test_matrix_vector_vis(
         training_samples, elapsed = zip(*logdata[gp + '/elapsed'])
         training_samples, errors = zip(*logdata[gp + '/errors'])
         exp_data[gp] = dict(elapsed=elapsed, errors=errors)
-    fig, axes = plt.subplots(1,2, figsize=(8, 4.7))
-    fig.subplots_adjust(bottom=0.1, wspace=0.20, top=0.90, right=0.95, left=0.1)
+    fig, axes = plt.subplots(1,2, figsize=(6, 2.5))
+    fig.subplots_adjust(bottom=0.2, wspace=0.20, top=0.90, right=0.95, left=0.15)
     fig.suptitle('Ackermann Drive')
     speed_test_matrix_vector_plot(axes,
-                                              training_samples,
-                                              exp_data)
+                                  training_samples,
+                                  exp_data)
     plot_file = osp.join(events_dir, 'speed_test_mat_vec_ind.pdf')
     fig.savefig(plot_file)
-    # subprocess.run(["xdg-open", plot_file])
+    subprocess.run(["xdg-open", plot_file])
     return plot_file
 
 
@@ -2276,5 +2276,10 @@ if __name__ == '__main__':
     # unicycle_no_learning_gets_stuck()
     # unicycle_learning_helps_avoid_getting_stuck()
 
-    unicycle_no_learning_gets_stuck_vis('saved-runs/unicycle_move_to_pose_fixed_no_learning_gets_stuck_v1.6.2/')
-    unicycle_learning_helps_avoid_getting_stuck_vis('saved-runs/unicycle_move_to_pose_fixed_learning_helps_avoid_getting_stuck_v1.6.2/')
+    # Aug 25th
+    # unicycle_no_learning_gets_stuck_vis('saved-runs/unicycle_move_to_pose_fixed_no_learning_gets_stuck_v1.6.2/')
+    # unicycle_learning_helps_avoid_getting_stuck_vis('saved-runs/unicycle_move_to_pose_fixed_learning_helps_avoid_getting_stuck_v1.6.2/')
+
+    # Aug 25th
+
+    unicycle_speed_test_matrix_vector_vis('docs/saved-runs/unicycle_speed_test_matrix_vector_v1.6.1-1-gd845a15/events.out.tfevents.1608669492.dwarf.656.0')

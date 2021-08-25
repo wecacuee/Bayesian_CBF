@@ -168,7 +168,7 @@ def run_pendulum_experiment(#parameters
     if ground_truth_model:
         controller = partial(controller, mass=mass, gravity=gravity, length=length)
     damge_perc,time_vec,theta_vec,omega_vec,u_vec = sampling_pendulum(
-        PendulumEnv(tau, m, g, l),
+        PendulumEnv(tau, mass, gravity, length),
         numSteps, x0=(theta0,omega0), controller=controller)
     plot_results(time_vec, omega_vec, theta_vec, u_vec)
     return (damge_perc,time_vec,theta_vec,omega_vec,u_vec)
@@ -393,7 +393,8 @@ class ControlCBFCLFLearned:
         LOG.info("Training model with datasize {}".format(XdotTrain.shape[0]))
         self.dgp.fit(Xtrain[:-1, :], Utrain[:-1, :], XdotTrain)
 
-    def controller(self, theta, w):
+    def controller(self, x):
+        theta, w = x
         if len(self.Xtrain) % self.train_every_n_steps == 0:
             # train every n steps
             self.train()
@@ -465,5 +466,5 @@ def run_pendulum_control_online_learning():
 if __name__ == '__main__':
     #run_pendulum_control_trival()
     #run_pendulum_control_cbf_clf()
-    learn_dynamics()
-    #run_pendulum_control_online_learning()
+    # learn_dynamics()
+    run_pendulum_control_online_learning()

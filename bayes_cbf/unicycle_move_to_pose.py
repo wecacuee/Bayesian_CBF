@@ -370,14 +370,15 @@ class LearnedShiftInvariantDynamics:
             self.mean_dynamics.g_func(Xtrain).bmm(Utrain.unsqueeze(-1)).squeeze(-1))
         XdotError = XdotTrain - XdotMean
 
-        LOG.info("Training model with datasize {}".format(XdotTrain.shape[0]))
         if XdotTrain.shape[0] > self.max_train:
             indices = np.arange(XdotTrain.shape[0])
-            shuffled_indices = torch.from_numpy(np.random.shuffle(indices))
+            np.random.shuffle(indices)
+            shuffled_indices = torch.from_numpy(indices)
             #indices = torch.randint(XdotTrain.shape[0], (self.max_train,))
             train_indices = (shuffled_indices[:self.max_train]
                              if XdotTrain.shape[0] > self.max_train
                              else shuffled_indices)
+            LOG.info("Training model with datasize {}".format(train_indices.shape[0]))
             train_data = Xtrain[train_indices, :], Utrain[train_indices, :], XdotError[train_indices, :],
         else:
             train_data = Xtrain, Utrain, XdotError
@@ -1219,7 +1220,10 @@ class Visualizer:
         xy_plan_traj = [self.planner.plan(ti)[:2] for ti in range(0, t, 10)]
         if len(xy_plan_traj):
             x_plan_traj, y_plan_traj = zip(*xy_plan_traj)
-            ax.plot(x_plan_traj, y_plan_traj, 'g+', linewidth=0.01)
+            nsteps = len(x_plan_traj)
+            step_size = max(nsteps // 200, 1)
+            ax.plot(x_plan_traj[::step_size], y_plan_traj[::step_size],
+                    'g+', linewidth=0.01)
         x, y, theta = state
         self.x_traj.append(x)
         self.y_traj.append(y)
@@ -1880,13 +1884,13 @@ unicycle_force_around_obstacle_mult = partial(
              kwvariations([[1e-2, 1e-2, 1e-2],
                            [5e-2, 5e-2, 5e-2]])})))
 
-# Dec 9th
+# Aug 25th, 2021
 # Recipe for Mean CBF visualization that collides
 unicycle_mean_cbf_collides_obstacle_exp = partial(
     unicycle_demo,
     simulator=partial(track_trajectory_ackerman_clf_bayesian,
-                      dt = 0.05,
-                      numSteps = 200,
+                      dt = 0.001,
+                      numSteps = 2000,
                       cbfs = partial(
                           obstacles_at_mid_from_start_and_goal,
                           term_weights=[0.7, 0.3]),
@@ -1944,8 +1948,8 @@ def unicycle_bayes_cbf_safe_obstacle(**kw):
 unicycle_learning_helps_avoid_getting_stuck_exp = partial(
     unicycle_demo,
     simulator=partial(track_trajectory_ackerman_clf_bayesian,
-                      dt = 0.01,
-                      numSteps = 200,
+                      dt = 0.001,
+                      numSteps = 2000,
                       cbfs = partial(
                           obstacles_at_mid_from_start_and_goal,
                           term_weights=[0.7, 0.3]),
@@ -1960,7 +1964,7 @@ unicycle_learning_helps_avoid_getting_stuck_exp = partial(
                       true_dynamics_gen=partial(AckermannDrive, L = 1.0),
                       mean_dynamics_gen=partial(AckermannDrive, L = 12.0,
                                                 kernel_diag_A=[1.0, 1.0, 1.0]),
-                      train_every_n_steps = 40, # Change this
+                      train_every_n_steps = 400, # Change this
                       enable_learning = True), # Do not change this
     exp_tags = ['learning_helps_avoid_getting_stuck'])
 
@@ -1987,7 +1991,7 @@ def unicycle_learning_helps_avoid_getting_stuck(**kw):
 unicycle_no_learning_gets_stuck_exp = recpartial(
     unicycle_learning_helps_avoid_getting_stuck_exp,
     {'exp_tags' : ['no_learning_gets_stuck'],
-     'simulator.train_every_n_steps': 200,
+     'simulator.train_every_n_steps': 2000,
      'simulator.visualizer_class.suptitle' : 'No Learning'})
 
 # Dec 27th
@@ -2281,5 +2285,12 @@ if __name__ == '__main__':
     # unicycle_learning_helps_avoid_getting_stuck_vis('saved-runs/unicycle_move_to_pose_fixed_learning_helps_avoid_getting_stuck_v1.6.2/')
 
     # Aug 25th
-
-    unicycle_speed_test_matrix_vector_vis('docs/saved-runs/unicycle_speed_test_matrix_vector_v1.6.1-1-gd845a15/events.out.tfevents.1608669492.dwarf.656.0')
+    # unicycle_speed_test_matrix_vector_vis('docs/saved-runs/unicycle_speed_test_matrix_vector_v1.6.1-1-gd845a15/events.out.tfevents.1608669492.dwarf.656.0')
+    #
+    # unicycle_mean_cbf_collides_obstacle()
+    # unicycle_bayes_cbf_safe_obstacle()
+    # unicycle_no_learning_gets_stuck()
+    # unicycle_learning_helps_avoid_getting_stuck()
+    #
+    # Aug 26th, 2021
+    unicycle_learning_helps_avoid_getting_stuck_vis('data/runs/unicycle_move_to_pose_fixed_learning_helps_avoid_getting_stuck_v1.6.3-7-ga7b97f5')

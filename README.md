@@ -93,3 +93,18 @@ pytest
   ``` shellsession
   pendulum_control_online_learning
   ```
+
+## Please cite
+
+``` bibtex
+@article{dhiman2021TACControlBarriers,
+  author={Dhiman, Vikas and Khojasteh, Mohammad Javad and Franceschetti, Massimo and Atanasov, Nikolay},
+  journal={IEEE Transactions on Automatic Control},
+  title={Control Barriers in Bayesian Learning of System Dynamics},
+  year={2021},
+  volume={},
+  number={},
+  pages={1-1},
+  doi={10.1109/TAC.2021.3137059}
+  }
+```

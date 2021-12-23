@@ -8,7 +8,7 @@ from bayes_cbf.unicycle_move_to_pose import (ControllerCLFBayesian,
                                              LearnedShiftInvariantDynamics,
                                              CLFCartesian,
                                              obstacles_at_mid_from_start_and_goal,
-                                             AckermanDrive)
+                                             AckermannDrive)
 from bayes_cbf.cbc2 import cbc2_quadratic_terms
 
 def test_convert_cbc_terms_to_socp_term(m = 2,
@@ -46,7 +46,7 @@ def test_cbc2_quadratic_terms():
             PiecewiseLinearPlanner(x, x_g, numSteps, dt),
             coordinate_converter = lambda x, x_g: x,
             dynamics = LearnedShiftInvariantDynamics(dt = dt,
-                                                     mean_dynamics = AckermanDrive()),
+                                                     mean_dynamics = AckermannDrive()),
             clf = clf,
             cbfs = obstacles_at_mid_from_start_and_goal(x , x_g),
             cbf_gammas = torch.tensor(cbf_gammas)

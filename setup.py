@@ -1,8 +1,8 @@
-import os
 import os.path as osp
 import sys
 from setuptools import setup, find_packages
 from setuptools.command.test import test as TestCommand
+from bayes_cbf import __version__
 
 
 class Pytest(TestCommand):
@@ -16,7 +16,6 @@ def rel2abs(relpath, basedir=osp.dirname(__file__) or '.'):
     return osp.join(basedir, relpath)
 
 
-from bayes_cbf import __version__
 
 setup(name="bayes_cbf",
       version=__version__,

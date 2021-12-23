@@ -28,6 +28,7 @@ from bayes_cbf.control_affine_model import (ControlAffineRegressor, LOG as CALOG
                                             ControlAffineRegVectorDiag,
                                             is_psd)
 from bayes_cbf.sampling import sample_generator_trajectory
+from bayes_cbf.pendulum import sampling_pendulum_data, ControlRandom
 
 def unicycle_plot_covariances_exp(
         max_train=200, # testing GPU

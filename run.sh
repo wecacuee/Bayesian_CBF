@@ -1,0 +1,25 @@
+#!/bin/bash
+
+python3 <<EOF
+from bayes_cbf.unicycle_move_to_pose import unicycle_mean_cbf_collides_obstacle
+unicycle_mean_cbf_collides_obstacle()
+
+from bayes_cbf.unicycle_move_to_pose import unicycle_bayes_cbf_safe_obstacle
+unicycle_bayes_cbf_safe_obstacle()
+
+from bayes_cbf.unicycle_move_to_pose import unicycle_no_learning_gets_stuck
+unicycle_no_learning_gets_stuck()
+
+from bayes_cbf.unicycle_move_to_pose import unicycle_learning_helps_avoid_getting_stuck
+unicycle_learning_helps_avoid_getting_stuck()
+
+from bayes_cbf.pendulum import learn_dynamics_matrix_vector
+learn_dynamics_matrix_vector()
+
+from bayes_cbf.pendulum import speed_test_matrix_vector
+speed_test_matrix_vector()
+EOF
+
+python3 visualize/pendulum_covariances.py
+python3 visualize/unicycle_covariances.py
+python3 visualize/unicycle_trigger_interval.py

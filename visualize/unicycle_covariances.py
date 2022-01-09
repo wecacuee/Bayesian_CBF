@@ -276,7 +276,7 @@ def unicycle_plot_covariances_vis(events_file):
 
 if '__main__' == __name__:
     ## Uncomment this to generate experimental data again
-    #events_file = unicycle_plot_covariances_exp()
+    events_file = unicycle_plot_covariances_exp()
     ## Comment this if you do not want to use saved data
-    events_file = "docs/saved-runs/unicycle_plot_covariances_v1.6.2-18-g15ad4c0/events.out.tfevents.1626640030.dwarf.12346.0"
+    # events_file = "docs/saved-runs/unicycle_plot_covariances_v1.6.2-18-g15ad4c0/events.out.tfevents.1626640030.dwarf.12346.0"
     unicycle_plot_covariances_vis(events_file)

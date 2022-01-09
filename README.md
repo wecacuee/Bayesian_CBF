@@ -73,26 +73,21 @@ pytest
 
 ## Pendulum demos
 
-1. A script to run pendulum example with random controller (No learning)
-  ``` shellsession
-  run_pendulum_control_trivial
-  ```
+1. To run pendulum example and compare MVGP with CoGP
 
-2. A script to run pendulum example with CBF-CLF-controller (No learning)
-  ``` shellsession
-  run_pendulum_control_cbf_clf
-  ```
+``` python
+from bayes_cbf.pendulum import learn_dynamics_matrix_vector
+learn_dynamics_matrix_vector()
 
-3. A script to run Bayesian learning on pendulum example with random controller.
-  ``` shellsession
-  pendulum_learn_dynamics
-  ```
+```
 
-4. A script to run Bayesian learning on pendulum example with CBF-CLF
-   controller.
-  ``` shellsession
-  pendulum_control_online_learning
-  ```
+2. To compare the computation requirement for MVGP vs CoGP vs diagonal
+
+```python
+from bayes_cbf.pendulum import speed_test_matrix_vector
+speed_test_matrix_vector()
+```
+
 
 ## Please cite
 

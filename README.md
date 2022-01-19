@@ -2,6 +2,8 @@
 ![Python package](https://github.com/wecacuee/Bayesian_CBF/workflows/Python%20package/badge.svg)
 
 [Website](https://vikasdhiman.info/Bayesian_CBF/)
+[Paper](./TAC313705.pdf)
+[Capsule](https://codeocean.com/capsule/0004536/tree)
 
 ## Demo
 

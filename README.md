@@ -94,6 +94,24 @@ speed_test_matrix_vector()
 ## Please cite
 
 ``` bibtex
+@InProceedings{khojasteh2020probabilistic,
+  title = 	 {Probabilistic Safety Constraints for Learned High Relative Degree System Dynamics},
+  author =       {Khojasteh, Mohammad Javad and Dhiman, Vikas and Franceschetti, Massimo and Atanasov, Nikolay},
+  booktitle = 	 {Proceedings of the 2nd Conference on Learning for Dynamics and Control},
+  pages = 	 {781--792},
+  year = 	 {2020},
+  editor = 	 {Bayen, Alexandre M. and Jadbabaie, Ali and Pappas, George and Parrilo, Pablo A. and Recht, Benjamin and Tomlin, Claire and Zeilinger, Melanie},
+  volume = 	 {120},
+  series = 	 {Proceedings of Machine Learning Research},
+  month = 	 {10--11 Jun},
+  publisher =    {PMLR},
+  pdf = 	 {http://proceedings.mlr.press/v120/khojasteh20a/khojasteh20a.pdf},
+  url = 	 {https://proceedings.mlr.press/v120/khojasteh20a.html}
+}
+
+```
+
+``` bibtex
 @article{dhiman2021TACControlBarriers,
   author={Dhiman, Vikas and Khojasteh, Mohammad Javad and Franceschetti, Massimo and Atanasov, Nikolay},
   journal={IEEE Transactions on Automatic Control},

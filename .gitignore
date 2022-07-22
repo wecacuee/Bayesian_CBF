@@ -11,3 +11,5 @@ plots/*.npz
 data
 nohup.out
 tests/__init__.py
+/site
+/docs/_site

@@ -1,0 +1,31 @@
+
+(nautilus:24066): GLib-GIO-CRITICAL **: 08:36:53.489: g_dbus_proxy_new_sync: assertion 'G_IS_DBUS_CONNECTION (connection)' failed
+
+(nautilus:24066): libunity-CRITICAL **: 08:36:53.494: unity-launcher.vala:157: Unable to connect to session bus: Could not connect: Connection refused
+
+(nautilus:24066): libunity-CRITICAL **: 08:36:53.494: unity-launcher.vala:157: Unable to connect to session bus: Could not connect: Connection refused
+
+(nautilus:24066): libunity-CRITICAL **: 08:36:53.494: unity-launcher.vala:157: Unable to connect to session bus: Could not connect: Connection refused
+Error creating proxy: Could not connect: Connection refused (g-io-error-quark, 39)
+Error creating proxy: Could not connect: Connection refused (g-io-error-quark, 39)
+Error creating proxy: Could not connect: Connection refused (g-io-error-quark, 39)
+Error creating proxy: Could not connect: Connection refused (g-io-error-quark, 39)
+Error creating proxy: Could not connect: Connection refused (g-io-error-quark, 39)
+
+(nautilus:24066): dconf-WARNING **: 08:36:53.564: failed to commit changes to dconf: Could not connect: Connection refused
+
+(nautilus:24066): dconf-WARNING **: 08:36:53.564: failed to commit changes to dconf: Could not connect: Connection refused
+
+(nautilus:24066): dconf-WARNING **: 08:36:53.835: failed to commit changes to dconf: Could not connect: Connection refused
+
+(nautilus:24066): LIBDBUSMENU-GLIB-WARNING **: 08:36:53.855: Unable to get session bus: Could not connect: Connection refused
+
+(nautilus:24066): LIBDBUSMENU-GLIB-WARNING **: 08:36:53.855: Unable to get session bus: Could not connect: Connection refused
+
+(nautilus:24066): LIBDBUSMENU-GLIB-WARNING **: 08:36:53.855: Unable to get session bus: Could not connect: Connection refused
+
+(nautilus:24066): dconf-WARNING **: 08:36:53.889: failed to commit changes to dconf: Could not connect: Connection refused
+
+(nautilus:24066): dconf-WARNING **: 10:45:45.225: failed to commit changes to dconf: Could not connect: Connection refused
+
+(nautilus:24066): GLib-GIO-CRITICAL **: 10:45:45.232: g_dbus_connection_call_internal: assertion 'G_IS_DBUS_CONNECTION (connection)' failed

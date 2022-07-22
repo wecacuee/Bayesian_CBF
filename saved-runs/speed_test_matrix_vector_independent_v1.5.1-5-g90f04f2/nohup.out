@@ -1,0 +1,2 @@
+
+(evince:27410): dbind-WARNING **: 23:58:54.724: Couldn't connect to accessibility bus: Failed to connect to socket /tmp/dbus-balcg4V6JG: Connection refused

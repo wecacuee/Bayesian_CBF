@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <!-- The above 3 meta tags *must* come first in the head; any other head content must come *after* these tags -->
+        <meta name="description" content="">    
+        <meta name="keywords" content="deep learning, safe control, robots, bayesian learning ">
+        <meta name="author" content="Vikas Dhiman∗, Mohammad Javad Khojasteh∗, Massimo Franceschetti Nikolay Atanasov">
+        <link rel="icon" href="favicon.ico">
+
+        <title>Control Barriers in Bayesian Learning of System Dynamics</title>
+
+        <!-- Bootstrap core CSS -->
+        <link href="assets/css/bootstrap.min.css" rel="stylesheet">
+
+        <!-- IE10 viewport hack for Surface/desktop Windows 8 bug -->
+        <link href="assets/css/ie10-viewport-bug-workaround.css" rel="stylesheet">
+
+        <!-- Custom styles for this template -->
+        <link href="assets/css/icra18-style.css" rel="stylesheet">
+
+        <script type="text/x-mathjax-config">
+         MathJax.Hub.Config({
+             tex2jax: {inlineMath: [['$','$'], ['\\(','\\)']]}
+         });
+        </script>
+        <script type="text/javascript" async
+                src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/MathJax.js?config=TeX-MML-AM_CHTML">
+        </script>
+
+        <!-- Just for debugging purposes. Don't actually copy these 2 lines! -->
+        <!--[if lt IE 9]><script src="../../assets/js/ie8-responsive-file-warning.js"></script><![endif]-->
+        <script src="assets/js/ie-emulation-modes-warning.js"></script>
+
+        <!-- <script src="assets/js/anchor-with-navbar-fix.js"></script> -->
+
+        <!-- HTML5 shim and Respond.js for IE8 support of HTML5 elements and media queries -->
+        <!--[if lt IE 9]>
+            <script src="https://oss.maxcdn.com/html5shiv/3.7.2/html5shiv.min.js"></script>
+            <script src="https://oss.maxcdn.com/respond/1.4.2/respond.min.js"></script>
+        <![endif]-->
+        
+        <script type="text/javascript">
+         <!--
+                                       function toggleAbstract(divid) {
+                                           var x = document.getElementById(divid);
+                                           if (x.style.display === "none") {
+                                               x.style.display = "block";
+                                           } else {
+                                               x.style.display = "none";
+                                           }
+                                       }
+         -->
+        </script>    
+        
+        
+    </head>
+    <body>
+        <div style="display:none" >
+            $$
+            \newcommand{\bfu}{\mathbf{u}}
+            \newcommand{\tr}{\mathbf{tr}}
+            \newcommand{\bfB}{\mathbf{B}}
+            \newcommand{\bfx}{\mathbf{x}}
+            \newcommand{\bfA}{\mathbf{A}}
+            $$
+        </div>
+        <br/>
+        <center>
+            <span style="font-size:42px">Control Barriers in Bayesian Learning of System Dynamics</span>
+            
+        </center>
+
+        <br/><br/>
+        <table width="800px" align="center">
+            <tbody><tr>
+                <td width="150px" align="center">
+                    <center>
+                        <span style="font-size:20px"><a href="https://vikasdhiman.info">Vikas Dhiman</a></span>
+                    </center>
+                </td>
+
+                <td width="150px" align="center">
+                    <center>
+                        <span style="font-size:20px"><a href="https://acsweb.ucsd.edu/~mkhojast/">Mohammad Javad Khojasteh</a></span>
+                    </center>
+                </td>
+
+                <td width="150px" align="center">
+                    <center>
+                        <span style="font-size:20px"><a href="https://web.eng.ucsd.edu/~massimo/Home.html">Massimo Franceschetti</a></span>
+                    </center>
+                </td>
+
+                <td width="150px" align="center">
+                    <center>
+                        <span style="font-size:20px"><a href="https://natanaso.github.io/">Nikolay Atanasov</a></span>
+                    </center>
+                </td>
+            </tr>
+            </tbody></table>
+        <hr/>
+
+
+        <table width="400px" align="center">
+            <tbody><tr>
+                <td width="100px" align="center">
+                    <center>
+                        <span style="font-size:20px"><a href="">[Paper]</a></span>
+                    </center>
+                </td>
+                
+                <td width="100px" align="center">
+                    <center>
+                        <span style="font-size:20px"><a href="https://github.com/wecacuee/Bayesian_CBF">[Code]</a></span>
+                    </center>
+                </td>
+                
+            </tr>
+            </tbody></table>
+
+        <br/>
+        
+
+        <br/>
+        This paper focuses on learning a model of system dynamics online while satisfying safety constraints. Our objective is to avoid offline system identification or hand-specified models and allow a system to safely and autonomously estimate and adapt its own model during operation. Given streaming observations of the system state, we use Bayesian learning to obtain a distribution over the system dynamics. Specifically, we use a matrix variate Gaussian process (MVGP) regression approach with efficient covariance factorization to learn the drift and input gain terms of a nonlinear control-affine system. The MVGP distribution is then used to optimize the system behavior and ensure safety with high probability, by specifying control Lyapunov function (CLF) and control barrier function (CBF) chance constraints. We show that a safe control policy can be synthesized for systems with arbitrary relative degree and probabilistic CLF-CBF constraints by solving a second order cone program (SOCP). Finally, we extend our design to a self-triggering formulation, adaptively determining the time at which a new control input needs to be applied in order to guarantee safety.
+        <br/><br/>
+
+
+
+        <center>
+            <span style="font-size:28px"> Comparing two controllers, one that accounts for variance of estimated dynamics (Bayes CBF), while other does not (Mean CBF).
+            </span></center>
+
+        <br/>
+        <table width="600px" align="center">
+            <tbody><tr>
+                <td width="600px">
+                    <center>
+                        <img src="assets/unicycle_move_to_pose_fixed_mean_cbf_collides_1209-1257_animation.gif" height="450"
+                        />
+                        <img src="assets/unicycle_move_to_pose_fixed_mean_cbf_collides_v1.2.3_animation.gif" height="450"
+                        />
+                        <br/>
+                    </center>
+                </td>
+            </tr>
+            <tr><td width="600px">
+                <center>
+                    <span style="font-size:18px">
+                        Comparison of enforcing CBF constraints with Ackermann dynamics when accounting (<i>Bayes CBF</i>) and not accounting (<i>Mean CBF</i>) for the variance in the dynamics estimate.
+                        The top row shows the Ackermann vehicle trajectory in dashed blue with two obstacles in red, obtained 
+                        The contour plots shows the minimum of the SCBC values corresponding to the two obstacles, evaluated on the $(x,y)$ grid while keeping $\theta$ and $\bfu$ fixed. 
+                        The middle row shows the magnitude of the velocity input over time.
+                        The bottom row shows the minimum of the two SCBC values over time. 
+                        Enforcing safety using only the mean CBC (<i>Mean CBF</i>) results in a collision, while accounting for stochastic CBC (<i>Bayes CBF</i>) constraint causes the Ackermann vehicle to slow down and turn away from the unsafe region.
+                    </span></center>
+            </td>
+            </tr>
+            </tbody></table>
+        <br/>
+
+        <center>
+            <span style="font-size:28px"> Comparing two controllers, one that uses learning and other that does not.
+            </span></center>
+
+        <br/>
+        <table width="600px" align="center">
+            <tbody><tr>
+                <td width="600px">
+                    <center>
+                        <img src="assets/unicycle_move_to_pose_fixed_no_learning_gets_stuck_v1.2.3_animation.gif"
+                             height="450"
+                        />
+                        <img src="assets/unicycle_move_to_pose_fixed_learning_helps_avoid_getting_stuck_v1.2.3_animation.gif"
+                             height="450"
+                        />
+                    </center>
+                </td>
+            </tr>
+            <tr><td width="600px">
+                <center>
+                    <span style="font-size:18px">
+                        The effect of online dynamics learning (right) versus no online learning (left) on the safe control of an Ackermann vehicle.
+                        The top row shows the vehicle trajectory in dashed blue with two obstacles in red.
+                        The middle row shows the trace of the covariance matrix $\tr(\bfB_k(\bfx, \bfx) \otimes \bfA)$, which we use as a measure of uncertainty.
+                        The bottom row shows the minimum of the two probabilistic safety constraint over time.
+                        Note that without learning, the vehicle gets stuck between the two obstacles because the uncertainty in the dynamics is too high, i.e., the safety condition cannot be rendered positive.
+                        With online learning, however, the uncertainty is reduced enough to allow the safety condition to become positive in the area between the two obstacles.
+                        The dynamics distribution is updated every 40 time steps.
+                        Note the drop in uncertainty in the middle row at these time steps.
+                    </span></center>
+            </td>
+            </tr>
+            </tbody></table>
+        <br/>
+
+        <hr/>
+        <center><h1>Code</h1></center>
+        <center> <br/>
+            <span style="font-size:28px"><a href="https://github.com/wecacuee/Bayesian_CBF">[github]</a>
+
+                <span style="font-size:28px"></span>
+                <br/>
+            </span></center><table width="800px" align="center">
+                <tbody><tr></tr>
+                </tbody></table>
+                <br/>
+                <hr/>
+
+                <center><h1>Citation</h1></center>
+                <center> <br/>
+                    <span style="font-size:18px"><i>If you find our papers/code useful for your research, please cite our work as follows. </i>
+                        <br/>
+                    </span></center><left> <br/>
+                        <span style="font-size:18px">1. V. Dhiman, M. Khojasteh, M. Franceschetti, N. Atanasov. <a href="https://vikasdhiman.info/Bayesian_CBF/">
+                            Control Barriers in <i>Bayesian</i> Learning of System Dynamics
+                        </a>. In Submission 2020
+                        <br/><br/>
+                        <pre>
+@misc{dhiman2020control,
+  title={Control Barriers in Bayesian Learning of System Dynamics},
+  author={Dhiman, Vikas and Khojasteh, Mohammad Javad and Franceschetti, Massimo and Atanasov, Nikolay},
+  url = {https://vikasdhiman.info/Bayesian_CBF},
+  year={2020}
+}
+                        </pre>
+                        </span></left><br/><br/><left> <br/>
+
+                            <span style="font-size:18px">1. M. Khojasteh, V. Dhiman, M. Franceschetti, N. Atanasov. <a href="http://proceedings.mlr.press/v120/khojasteh20a.html">
+                                Probabilistic Safety Constraints for Learned High Relative Degree System Dynamics
+                            </a>.
+                            In Learning for Dynamics and Control, PMLR 120:781-792, 2020.
+                            <br/><br/>
+                            <pre>
+@InProceedings{pmlr-v120-khojasteh20a,
+ title = {Probabilistic Safety Constraints for Learned High Relative Degree System Dynamics},
+ author = {Khojasteh, Mohammad Javad and Dhiman, Vikas and Franceschetti, Massimo and Atanasov, Nikolay},
+ booktitle = {Learning for Dynamics and Control},
+ pages = {781--792},
+ year = {2020},
+ volume = {120},
+ series = {Proceedings of Machine Learning Research},
+ address = {The Cloud},
+ month = {10--11 Jun},
+ publisher = {PMLR},
+ pdf = {http://proceedings.mlr.press/v120/khojasteh20a/khojasteh20a.pdf},
+ url = {http://proceedings.mlr.press/v120/khojasteh20a.html},
+ }
+                            </pre>
+                            </span>
+                        </left>
+
+                        <hr/>
+
+                        <table width="1100px" align="center">
+                            <tbody><tr>
+                                <td>
+                                    <left>
+                                        <center><h1>Acknowledgements</h1></center>
+                                        We gratefully acknowledge support from ARL DCIST CRA W911NF-17-2-0181 and NSF awards CNS-1446891, ECCS-1917177, and IIS-2007141.
+                                        <br/>
+                                        This webpage template was borrowed from <a href="https://thaipduong.github.io/sbkm/">https://thaipduong.github.io/sbkm/</a>.
+                                    </left>
+                                </td>
+                            </tr>
+                            </tbody></table>
+
+                        <br/><br/>
+    </body></html>

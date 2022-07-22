@@ -3,6 +3,7 @@ site_url: https://vikasdhiman.info/Bayesian_CBF/
 nav:
     - Home: index.html
     - Api: api.md
+    - README: README.md
 
 theme:
   name: "readthedocs"

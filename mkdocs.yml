@@ -2,11 +2,17 @@ site_name: Control Barriers in Bayesian Learning of System Dynamics
 site_url: https://vikasdhiman.info/Bayesian_CBF/
 nav:
     - Home: index.html
-    - Api: api.md
+    - Code Reference: reference/
 
 theme:
   name: "readthedocs"
 
 plugins:
 - search
+- gen-files:
+    scripts:
+    - docs/gen_ref_pages.py  #
+- literate-nav:
+    nav_file: SUMMARY.md
+- section-index
 - mkdocstrings

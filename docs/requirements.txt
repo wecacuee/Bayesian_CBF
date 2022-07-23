@@ -3,3 +3,4 @@ mkdocstrings
 mkdocs-gen-files
 mkdocs-literate-nav
 mkdocs-section-index
+mkdocs-material

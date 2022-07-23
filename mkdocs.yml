@@ -5,7 +5,7 @@ nav:
     - Code Reference: reference/
 
 theme:
-  name: "readthedocs"
+  name: "material"
 
 plugins:
 - search
@@ -16,3 +16,4 @@ plugins:
     nav_file: SUMMARY.md
 - section-index
 - mkdocstrings
+

@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><link rel="canonical" href="https://vikasdhiman.info/Bayesian_CBF/reference/bayes_cbf/matrix_variate_multitask_kernel/" />
+      <link rel="shortcut icon" href="../../../img/favicon.ico" />
+    <title>matrix_variate_multitask_kernel - Control Barriers in Bayesian Learning of System Dynamics</title>
+    <link rel="stylesheet" href="../../../css/theme.css" />
+    <link rel="stylesheet" href="../../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/10.5.0/styles/github.min.css" />
+        <link href="../../../assets/_mkdocstrings.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "matrix_variate_multitask_kernel";
+        var mkdocs_page_input_path = "reference/bayes_cbf/matrix_variate_multitask_kernel.md";
+        var mkdocs_page_url = "/Bayesian_CBF/reference/bayes_cbf/matrix_variate_multitask_kernel/";
+      </script>
+    
+    <script src="../../../js/jquery-3.6.0.min.js" defer></script>
+    <!--[if lt IE 9]>
+      <script src="../../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/10.5.0/highlight.min.js"></script>
+      <script>hljs.initHighlightingOnLoad();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../../.." class="icon icon-home"> Control Barriers in Bayesian Learning of System Dynamics
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../..">Home</a>
+                </li>
+              </ul>
+              
+                      <p class="caption"><span class="caption-text">Code Reference</span></p>
+              
+              <ul class="current">
+                  <li class="toctree-l1 current"><a class="reference internal current" href="#">bayes_cbf</a>
+    <ul class="current">
+    </ul>
+                  </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../..">Control Barriers in Bayesian Learning of System Dynamics</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../../.." class="icon icon-home" alt="Docs"></a> &raquo;</li>
+          <li>Code Reference &raquo;</li>
+          <li>bayes_cbf &raquo;</li>
+          <li>bayes_cbf &raquo;</li>
+      <li>matrix_variate_multitask_kernel</li>
+    <li class="wy-breadcrumbs-aside">
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <div class="doc doc-object doc-module">
+
+
+<a id="bayes_cbf.matrix_variate_multitask_kernel"></a>
+  <div class="doc doc-contents first">
+
+  
+
+  <div class="doc doc-children">
+
+
+
+
+
+
+
+
+<div class="doc doc-object doc-class">
+
+
+
+<h2 id="bayes_cbf.matrix_variate_multitask_kernel.MatrixVariateIndexKernel" class="doc doc-heading">
+        <code>MatrixVariateIndexKernel</code>
+
+
+</h2>
+
+
+  <div class="doc doc-contents ">
+      <p class="doc doc-class-bases">
+        Bases: <code><span title="gpytorch.kernels.Kernel">Kernel</span></code></p>
+
+  
+      <p>Wraps IndexKernel to represent
+https://en.wikipedia.org/wiki/Matrix_normal_distribution</p>
+<p>P(X | M, U, V) = exp(-0.5 tr[ V⁻¹ (X - M)ᵀ U⁻¹ (X-M) ] ) / √((2π)ⁿᵖ|V|ⁿ|U|ᵖ)</p>
+<p>vec(X) ~ 𝒩(M, V ⊗ U)</p>
+<p>This kernel represents the covariance_matrix V ⊗ U given V and U.</p>
+
+
+        <details class="quote">
+          <summary>Source code in <code>bayes_cbf/matrix_variate_multitask_kernel.py</code></summary>
+          <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">18</span>
+<span class="normal">19</span>
+<span class="normal">20</span>
+<span class="normal">21</span>
+<span class="normal">22</span>
+<span class="normal">23</span>
+<span class="normal">24</span>
+<span class="normal">25</span>
+<span class="normal">26</span>
+<span class="normal">27</span>
+<span class="normal">28</span>
+<span class="normal">29</span>
+<span class="normal">30</span>
+<span class="normal">31</span>
+<span class="normal">32</span>
+<span class="normal">33</span>
+<span class="normal">34</span>
+<span class="normal">35</span>
+<span class="normal">36</span>
+<span class="normal">37</span>
+<span class="normal">38</span>
+<span class="normal">39</span>
+<span class="normal">40</span>
+<span class="normal">41</span>
+<span class="normal">42</span>
+<span class="normal">43</span>
+<span class="normal">44</span>
+<span class="normal">45</span>
+<span class="normal">46</span>
+<span class="normal">47</span>
+<span class="normal">48</span>
+<span class="normal">49</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span> <span class="nc">MatrixVariateIndexKernel</span><span class="p">(</span><span class="n">Kernel</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Wraps IndexKernel to represent</span>
+<span class="sd">    https://en.wikipedia.org/wiki/Matrix_normal_distribution</span>
+
+<span class="sd">    P(X | M, U, V) = exp(-0.5 tr[ V⁻¹ (X - M)ᵀ U⁻¹ (X-M) ] ) / √((2π)ⁿᵖ|V|ⁿ|U|ᵖ)</span>
+
+<span class="sd">    vec(X) ~ 𝒩(M, V ⊗ U)</span>
+
+<span class="sd">    This kernel represents the covariance_matrix V ⊗ U given V and U.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">U</span> <span class="p">:</span> <span class="n">IndexKernel</span><span class="p">,</span> <span class="n">V</span><span class="p">:</span> <span class="n">IndexKernel</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">MatrixVariateIndexKernel</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">U</span> <span class="o">=</span> <span class="n">U</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">V</span> <span class="o">=</span> <span class="n">V</span>
+        <span class="n">n</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">U</span><span class="o">.</span><span class="n">raw_var</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
+        <span class="n">p</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">V</span><span class="o">.</span><span class="n">raw_var</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">matshape</span> <span class="o">=</span> <span class="p">(</span><span class="n">n</span><span class="p">,</span><span class="n">p</span><span class="p">)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">covar_matrix</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">U</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">U</span><span class="o">.</span><span class="n">covar_matrix</span>
+        <span class="n">V</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">V</span><span class="o">.</span><span class="n">covar_matrix</span>
+        <span class="k">return</span> <span class="n">KroneckerProductLazyTensor</span><span class="p">(</span><span class="n">V</span><span class="p">,</span> <span class="n">U</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">i1</span><span class="p">,</span> <span class="n">i2</span><span class="p">,</span> <span class="o">**</span><span class="n">params</span><span class="p">):</span>
+        <span class="k">assert</span> <span class="n">i1</span><span class="o">.</span><span class="n">dtype</span> <span class="ow">in</span> <span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span>
+        <span class="k">assert</span> <span class="n">i2</span><span class="o">.</span><span class="n">dtype</span> <span class="ow">in</span> <span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span>
+        <span class="n">covar_matrix</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">covar_matrix</span>
+        <span class="n">res</span> <span class="o">=</span> <span class="n">InterpolatedLazyTensor</span><span class="p">(</span><span class="n">base_lazy_tensor</span><span class="o">=</span><span class="n">covar_matrix</span><span class="p">,</span>
+                                     <span class="n">left_interp_indices</span><span class="o">=</span><span class="n">i1</span><span class="p">,</span> <span class="n">right_interp_indices</span><span class="o">=</span><span class="n">i2</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">res</span>
+</code></pre></div></td></tr></table></div>
+        </details>
+
+  
+
+  <div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+  </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h2 id="bayes_cbf.matrix_variate_multitask_kernel.MatrixVariateKernel" class="doc doc-heading">
+        <code>MatrixVariateKernel</code>
+
+
+</h2>
+
+
+  <div class="doc doc-contents ">
+      <p class="doc doc-class-bases">
+        Bases: <code><span title="gpytorch.kernels.Kernel">Kernel</span></code></p>
+
+  
+      <p>Kernel supporting Kronecker style matrix variate Gaussian processes (where every
+data point is evaluated at every task).</p>
+<p>Given a base covariance module to be used for the data, :math:<code>K_{XX}</code>,
+this kernel computes a task kernel of specified size :math:<code>K_{TT}</code> and
+returns :math:<code>K = K_{TT} \otimes K_{XX}</code>. as an
+:obj:<code>gpytorch.lazy.KroneckerProductLazyTensor</code>.</p>
+
+  <p><strong>Parameters:</strong></p>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Type</th>
+        <th>Description</th>
+        <th>Default</th>
+      </tr>
+    </thead>
+    <tbody>
+        <tr>
+          <td><code>task_covar_module</code></td>
+          <td>
+          </td>
+          <td><p>obj:<code>gpytorch.kernels.IndexKernel</code>):
+Kernel to use as the task kernel</p></td>
+          <td>
+              <em>required</em>
+          </td>
+        </tr>
+        <tr>
+          <td><code>data_covar_module</code></td>
+          <td>
+          </td>
+          <td><p>obj:<code>gpytorch.kernels.Kernel</code>):
+Kernel to use as the data kernel.</p></td>
+          <td>
+              <em>required</em>
+          </td>
+        </tr>
+        <tr>
+          <td><code>num_tasks</code></td>
+          <td>
+                <code>int</code>
+          </td>
+          <td><p>Number of tasks</p></td>
+          <td>
+              <em>required</em>
+          </td>
+        </tr>
+        <tr>
+          <td><code>batch_size</code></td>
+          <td>
+                <code>int</code>
+          </td>
+          <td><p>Set if the MultitaskKernel is operating on batches of data (and you
+want different parameters for each batch)</p></td>
+          <td>
+              <em>required</em>
+          </td>
+        </tr>
+        <tr>
+          <td><code>rank</code></td>
+          <td>
+                <code>int</code>
+          </td>
+          <td><p>Rank of index kernel to use for task covariance matrix.</p></td>
+          <td>
+              <em>required</em>
+          </td>
+        </tr>
+        <tr>
+          <td><code>task_covar_prior</code></td>
+          <td>
+          </td>
+          <td><p>obj:<code>gpytorch.priors.Prior</code>):
+Prior to use for task kernel. See :class:<code>gpytorch.kernels.IndexKernel</code> for details.</p></td>
+          <td>
+              <em>required</em>
+          </td>
+        </tr>
+    </tbody>
+  </table>
+
+
+        <details class="quote">
+          <summary>Source code in <code>bayes_cbf/matrix_variate_multitask_kernel.py</code></summary>
+          <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">62</span>
+<span class="normal">63</span>
+<span class="normal">64</span>
+<span class="normal">65</span>
+<span class="normal">66</span>
+<span class="normal">67</span>
+<span class="normal">68</span>
+<span class="normal">69</span>
+<span class="normal">70</span>
+<span class="normal">71</span>
+<span class="normal">72</span>
+<span class="normal">73</span>
+<span class="normal">74</span>
+<span class="normal">75</span>
+<span class="normal">76</span>
+<span class="normal">77</span>
+<span class="normal">78</span>
+<span class="normal">79</span>
+<span class="normal">80</span>
+<span class="normal">81</span>
+<span class="normal">82</span>
+<span class="normal">83</span>
+<span class="normal">84</span>
+<span class="normal">85</span>
+<span class="normal">86</span>
+<span class="normal">87</span>
+<span class="normal">88</span>
+<span class="normal">89</span>
+<span class="normal">90</span>
+<span class="normal">91</span>
+<span class="normal">92</span>
+<span class="normal">93</span>
+<span class="normal">94</span>
+<span class="normal">95</span>
+<span class="normal">96</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span> <span class="nc">MatrixVariateKernel</span><span class="p">(</span><span class="n">Kernel</span><span class="p">):</span>
+    <span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Kernel supporting Kronecker style matrix variate Gaussian processes (where every</span>
+<span class="sd">    data point is evaluated at every task).</span>
+
+<span class="sd">    Given a base covariance module to be used for the data, :math:`K_{XX}`,</span>
+<span class="sd">    this kernel computes a task kernel of specified size :math:`K_{TT}` and</span>
+<span class="sd">    returns :math:`K = K_{TT} \otimes K_{XX}`. as an</span>
+<span class="sd">    :obj:`gpytorch.lazy.KroneckerProductLazyTensor`.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        task_covar_module (:obj:`gpytorch.kernels.IndexKernel`):</span>
+<span class="sd">            Kernel to use as the task kernel</span>
+<span class="sd">        data_covar_module (:obj:`gpytorch.kernels.Kernel`):</span>
+<span class="sd">            Kernel to use as the data kernel.</span>
+<span class="sd">        num_tasks (int):</span>
+<span class="sd">            Number of tasks</span>
+<span class="sd">        batch_size (int, optional):</span>
+<span class="sd">            Set if the MultitaskKernel is operating on batches of data (and you</span>
+<span class="sd">            want different parameters for each batch)</span>
+<span class="sd">        rank (int):</span>
+<span class="sd">            Rank of index kernel to use for task covariance matrix.</span>
+<span class="sd">        task_covar_prior (:obj:`gpytorch.priors.Prior`):</span>
+<span class="sd">            Prior to use for task kernel. See :class:`gpytorch.kernels.IndexKernel` for details.&quot;&quot;&quot;</span>
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">num_tasks</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">prod</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">task_covar_module</span><span class="o">.</span><span class="n">matshape</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task_covar_module</span><span class="p">,</span> <span class="n">data_covar_module</span><span class="p">,</span> <span class="n">decoder</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">task_covar_module</span> <span class="o">=</span> <span class="n">task_covar_module</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">data_covar_module</span> <span class="o">=</span> <span class="n">data_covar_module</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">decoder</span> <span class="o">=</span> <span class="n">decoder</span>
+</code></pre></div></td></tr></table></div>
+        </details>
+
+  
+
+  <div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+  </div>
+
+</div>
+
+
+
+
+  </div>
+
+  </div>
+
+</div>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../ilqr/" class="btn btn-neutral float-left" title="ilqr"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../matrix_variate_multitask_model/" class="btn btn-neutral float-right" title="matrix_variate_multitask_model">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+    
+      <span><a href="../ilqr/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../matrix_variate_multitask_model/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script>var base_url = '../../..';</script>
+    <script src="../../../js/theme_extra.js" defer></script>
+    <script src="../../../js/theme.js" defer></script>
+      <script src="../../../search/main.js" defer></script>
+    <script defer>
+        window.onload = function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        };
+    </script>
+
+</body>
+</html>

@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><link rel="canonical" href="https://vikasdhiman.info/Bayesian_CBF/reference/bayes_cbf/optimizers/" />
+      <link rel="shortcut icon" href="../../../img/favicon.ico" />
+    <title>optimizers - Control Barriers in Bayesian Learning of System Dynamics</title>
+    <link rel="stylesheet" href="../../../css/theme.css" />
+    <link rel="stylesheet" href="../../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/10.5.0/styles/github.min.css" />
+        <link href="../../../assets/_mkdocstrings.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "optimizers";
+        var mkdocs_page_input_path = "reference/bayes_cbf/optimizers.md";
+        var mkdocs_page_url = "/Bayesian_CBF/reference/bayes_cbf/optimizers/";
+      </script>
+    
+    <script src="../../../js/jquery-3.6.0.min.js" defer></script>
+    <!--[if lt IE 9]>
+      <script src="../../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/10.5.0/highlight.min.js"></script>
+      <script>hljs.initHighlightingOnLoad();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../../.." class="icon icon-home"> Control Barriers in Bayesian Learning of System Dynamics
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../..">Home</a>
+                </li>
+              </ul>
+              
+                      <p class="caption"><span class="caption-text">Code Reference</span></p>
+              
+              <ul class="current">
+                  <li class="toctree-l1 current"><a class="reference internal current" href="#">bayes_cbf</a>
+    <ul class="current">
+    </ul>
+                  </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../..">Control Barriers in Bayesian Learning of System Dynamics</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../../.." class="icon icon-home" alt="Docs"></a> &raquo;</li>
+          <li>Code Reference &raquo;</li>
+          <li>bayes_cbf &raquo;</li>
+          <li>bayes_cbf &raquo;</li>
+      <li>optimizers</li>
+    <li class="wy-breadcrumbs-aside">
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <div class="doc doc-object doc-module">
+
+
+<a id="bayes_cbf.optimizers"></a>
+  <div class="doc doc-contents first">
+
+  
+
+  <div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+
+<h2 id="bayes_cbf.optimizers.convert_socp_to_cvxopt_format" class="doc doc-heading">
+<code class="highlight language-python"><span class="n">convert_socp_to_cvxopt_format</span><span class="p">(</span><span class="n">c</span><span class="p">,</span> <span class="n">socp_constraints</span><span class="p">)</span></code>
+
+</h2>
+
+
+  <div class="doc doc-contents ">
+  
+      <p>socp_constraints = [(Nameₖ, (Aₖ, bfbₖ, bfcₖ, dₖ), ...]</p>
+<p>min_u   cᵀu
+   s.t. dₖ + bfcₖ u ≻ |Aₖ u + bfbₖ|₂</p>
+<p>min cᵀu
+s.t Gₖ x + sₖ = hₖ,    k = 0, ..., M
+    A x = b
+    h₀ - G₀ x ⪰ 0     # Component wise inequalities
+    hₖ[0] - Gₖ[0, :] x ⪰ | hₖ[1:] - Gₖ[1:, :] x |₂,    k = 1, ..., M</p>
+
+      <details class="quote">
+        <summary>Source code in <code>bayes_cbf/optimizers.py</code></summary>
+        <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 6</span>
+<span class="normal"> 7</span>
+<span class="normal"> 8</span>
+<span class="normal"> 9</span>
+<span class="normal">10</span>
+<span class="normal">11</span>
+<span class="normal">12</span>
+<span class="normal">13</span>
+<span class="normal">14</span>
+<span class="normal">15</span>
+<span class="normal">16</span>
+<span class="normal">17</span>
+<span class="normal">18</span>
+<span class="normal">19</span>
+<span class="normal">20</span>
+<span class="normal">21</span>
+<span class="normal">22</span>
+<span class="normal">23</span>
+<span class="normal">24</span>
+<span class="normal">25</span>
+<span class="normal">26</span>
+<span class="normal">27</span>
+<span class="normal">28</span>
+<span class="normal">29</span>
+<span class="normal">30</span>
+<span class="normal">31</span>
+<span class="normal">32</span>
+<span class="normal">33</span>
+<span class="normal">34</span>
+<span class="normal">35</span>
+<span class="normal">36</span>
+<span class="normal">37</span>
+<span class="normal">38</span>
+<span class="normal">39</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span> <span class="nf">convert_socp_to_cvxopt_format</span><span class="p">(</span><span class="n">c</span><span class="p">,</span> <span class="n">socp_constraints</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    socp_constraints = [(Nameₖ, (Aₖ, bfbₖ, bfcₖ, dₖ), ...]</span>
+
+<span class="sd">    min_u   cᵀu</span>
+<span class="sd">       s.t. dₖ + bfcₖ u ≻ |Aₖ u + bfbₖ|₂</span>
+
+<span class="sd">    min cᵀu</span>
+<span class="sd">    s.t Gₖ x + sₖ = hₖ,    k = 0, ..., M</span>
+<span class="sd">        A x = b</span>
+<span class="sd">        h₀ - G₀ x ⪰ 0     # Component wise inequalities</span>
+<span class="sd">        hₖ[0] - Gₖ[0, :] x ⪰ | hₖ[1:] - Gₖ[1:, :] x |₂,    k = 1, ..., M</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">m</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">c</span><span class="p">)</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
+    <span class="n">Gqs</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">hqs</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="p">(</span><span class="n">A</span><span class="p">,</span> <span class="n">bfb</span><span class="p">,</span> <span class="n">bfc</span><span class="p">,</span> <span class="n">d</span><span class="p">)</span> <span class="ow">in</span> <span class="n">socp_constraints</span><span class="p">:</span>
+        <span class="c1"># (name, (A, b, c, d))</span>
+        <span class="c1"># |Au + bfb| &lt; bfc&#39; u + d</span>
+        <span class="c1"># s.t. ||Ax + b||_2 &lt;= c&#39;x + d</span>
+        <span class="c1"># But || h₁ - G₁x ||₂ ≺ h₀ - g₀&#39; x</span>
+        <span class="c1"># G = [g₀&#39;; G₁] = [-c&#39;; -A]</span>
+        <span class="c1"># h = [h₀; h₁] = [d; b]</span>
+        <span class="n">Gqi</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">A</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">+</span><span class="mi">1</span><span class="p">,</span> <span class="n">m</span><span class="p">))</span>
+        <span class="n">Gqi</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="p">:]</span> <span class="o">=</span> <span class="o">-</span><span class="n">bfc</span>
+        <span class="n">Gqi</span><span class="p">[</span><span class="mi">1</span><span class="p">:,</span> <span class="p">:]</span> <span class="o">=</span> <span class="o">-</span><span class="n">A</span>
+        <span class="n">Gqs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">Gqi</span><span class="p">)</span>
+        <span class="n">hqi</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">A</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">+</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>
+        <span class="n">hqi</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">d</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+        <span class="n">hqi</span><span class="p">[</span><span class="mi">1</span><span class="p">:,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">bfb</span>
+        <span class="n">hqs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">hqi</span><span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">c</span><span class="p">,</span> <span class="n">Gqs</span><span class="p">,</span> <span class="n">hqs</span>
+</code></pre></div></td></tr></table></div>
+      </details>
+  </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+
+<h2 id="bayes_cbf.optimizers.optimizer_socp_cvxopt" class="doc doc-heading">
+<code class="highlight language-python"><span class="n">optimizer_socp_cvxopt</span><span class="p">(</span><span class="n">u0</span><span class="p">,</span> <span class="n">linear_objective</span><span class="p">,</span> <span class="n">socp_constraints</span><span class="p">)</span></code>
+
+</h2>
+
+
+  <div class="doc doc-contents ">
+  
+      <p>Solve the optimization problem</p>
+<p>min_u   A u + b
+   s.t. h₀ - (G u)₀ ≻ |h₁ - (Gu)₁ |₂</p>
+<p>u0: reference control signal
+linear_objective: (</p>
+<p>convert to cvxopt format and pass to cvxopt</p>
+<p>min cᵀu
+s.t Gₖ x + sₖ = hₖ,    k = 0, ..., M
+    A x = b
+    s₀ ⪰ 0            # Component wise inequalities
+    sₖ₀ ⪰ | sₖ₁ |₂,    k = 1, ..., M</p>
+<p>min cᵀu
+s.t Gₖ x + sₖ = hₖ,    k = 0, ..., M
+    A x = b
+    h₀ - G₀ x ⪰ 0     # Component wise inequalities
+    hₖ[0] - Gₖ[0, :] x ⪰ | hₖ[1:] - Gₖ[1:, :] x |₂,    k = 1, ..., M</p>
+
+      <details class="quote">
+        <summary>Source code in <code>bayes_cbf/optimizers.py</code></summary>
+        <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">41</span>
+<span class="normal">42</span>
+<span class="normal">43</span>
+<span class="normal">44</span>
+<span class="normal">45</span>
+<span class="normal">46</span>
+<span class="normal">47</span>
+<span class="normal">48</span>
+<span class="normal">49</span>
+<span class="normal">50</span>
+<span class="normal">51</span>
+<span class="normal">52</span>
+<span class="normal">53</span>
+<span class="normal">54</span>
+<span class="normal">55</span>
+<span class="normal">56</span>
+<span class="normal">57</span>
+<span class="normal">58</span>
+<span class="normal">59</span>
+<span class="normal">60</span>
+<span class="normal">61</span>
+<span class="normal">62</span>
+<span class="normal">63</span>
+<span class="normal">64</span>
+<span class="normal">65</span>
+<span class="normal">66</span>
+<span class="normal">67</span>
+<span class="normal">68</span>
+<span class="normal">69</span>
+<span class="normal">70</span>
+<span class="normal">71</span>
+<span class="normal">72</span>
+<span class="normal">73</span>
+<span class="normal">74</span>
+<span class="normal">75</span>
+<span class="normal">76</span>
+<span class="normal">77</span>
+<span class="normal">78</span>
+<span class="normal">79</span>
+<span class="normal">80</span>
+<span class="normal">81</span>
+<span class="normal">82</span>
+<span class="normal">83</span>
+<span class="normal">84</span>
+<span class="normal">85</span>
+<span class="normal">86</span>
+<span class="normal">87</span>
+<span class="normal">88</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span> <span class="nf">optimizer_socp_cvxopt</span><span class="p">(</span><span class="n">u0</span><span class="p">,</span> <span class="n">linear_objective</span><span class="p">,</span> <span class="n">socp_constraints</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Solve the optimization problem</span>
+
+<span class="sd">    min_u   A u + b</span>
+<span class="sd">       s.t. h₀ - (G u)₀ ≻ |h₁ - (Gu)₁ |₂</span>
+
+<span class="sd">    u0: reference control signal</span>
+<span class="sd">    linear_objective: (</span>
+
+<span class="sd">    convert to cvxopt format and pass to cvxopt</span>
+
+<span class="sd">    min cᵀu</span>
+<span class="sd">    s.t Gₖ x + sₖ = hₖ,    k = 0, ..., M</span>
+<span class="sd">        A x = b</span>
+<span class="sd">        s₀ ⪰ 0            # Component wise inequalities</span>
+<span class="sd">        sₖ₀ ⪰ | sₖ₁ |₂,    k = 1, ..., M</span>
+
+<span class="sd">    min cᵀu</span>
+<span class="sd">    s.t Gₖ x + sₖ = hₖ,    k = 0, ..., M</span>
+<span class="sd">        A x = b</span>
+<span class="sd">        h₀ - G₀ x ⪰ 0     # Component wise inequalities</span>
+<span class="sd">        hₖ[0] - Gₖ[0, :] x ⪰ | hₖ[1:] - Gₖ[1:, :] x |₂,    k = 1, ..., M</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="kn">from</span> <span class="nn">cvxopt</span> <span class="kn">import</span> <span class="n">solvers</span><span class="p">,</span> <span class="n">matrix</span>
+    <span class="n">c</span><span class="p">,</span> <span class="n">Gqs</span><span class="p">,</span> <span class="n">hqs</span> <span class="o">=</span> <span class="n">convert_socp_to_cvxopt_format</span><span class="p">(</span><span class="n">linear_objective</span><span class="p">,</span>
+                                                <span class="n">socp_constraints</span><span class="p">)</span>
+    <span class="n">inputs_socp</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="n">c</span> <span class="o">=</span> <span class="n">matrix</span><span class="p">(</span><span class="n">c</span><span class="p">),</span>
+                       <span class="n">Gq</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="nb">map</span><span class="p">(</span><span class="n">matrix</span><span class="p">,</span> <span class="n">Gqs</span><span class="p">)),</span>
+                       <span class="n">hq</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="nb">map</span><span class="p">(</span><span class="n">matrix</span><span class="p">,</span> <span class="n">hqs</span><span class="p">)))</span>
+    <span class="c1">#print(&quot;optimizers.py:72&quot;, inputs_socp)</span>
+    <span class="n">sol</span> <span class="o">=</span> <span class="n">solvers</span><span class="o">.</span><span class="n">socp</span><span class="p">(</span><span class="o">**</span><span class="n">inputs_socp</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">sol</span><span class="p">[</span><span class="s1">&#39;status&#39;</span><span class="p">]</span> <span class="o">!=</span> <span class="s1">&#39;optimal&#39;</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">sol</span><span class="p">[</span><span class="s1">&#39;status&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="s1">&#39;primal infeasible&#39;</span><span class="p">:</span>
+            <span class="n">y_uopt</span> <span class="o">=</span> <span class="n">sol</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;z&#39;</span><span class="p">,</span> <span class="n">u0</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">y_uopt</span> <span class="o">=</span> <span class="n">u0</span>
+
+        <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">{c}</span><span class="s2">.T [y, u]</span><span class="se">\n</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">c</span><span class="o">=</span><span class="n">c</span><span class="p">)</span>
+              <span class="o">+</span> <span class="s2">&quot;s.t. &quot;</span>
+              <span class="o">+</span> <span class="s2">&quot;&quot;</span><span class="o">.</span><span class="n">join</span><span class="p">((</span><span class="s2">&quot; sq = </span><span class="si">{hq}</span><span class="s2"> - </span><span class="si">{Gq}</span><span class="s2"> [</span><span class="si">{y_uopt}</span><span class="s2">]</span><span class="se">\n</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">hq</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">hq</span><span class="p">),</span>
+                                                             <span class="n">Gq</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">Gq</span><span class="p">),</span>
+                                                             <span class="n">y_uopt</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">y_uopt</span><span class="p">))</span>
+                     <span class="k">for</span> <span class="n">Gq</span><span class="p">,</span> <span class="n">hq</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">Gqs</span><span class="p">,</span> <span class="n">hqs</span><span class="p">))))</span>
+        <span class="k">raise</span> <span class="n">InfeasibleProblemError</span><span class="p">(</span><span class="s2">&quot;Infeasible problem: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">sol</span><span class="p">[</span><span class="s1">&#39;status&#39;</span><span class="p">])</span>
+
+    <span class="k">return</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">sol</span><span class="p">[</span><span class="s1">&#39;x&#39;</span><span class="p">])</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">u0</span><span class="o">.</span><span class="n">dtype</span><span class="p">)</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+      </details>
+  </div>
+
+</div>
+
+
+
+  </div>
+
+  </div>
+
+</div>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../numpy2torch/" class="btn btn-neutral float-left" title="numpy2torch"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../pendulum/" class="btn btn-neutral float-right" title="pendulum">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+    
+      <span><a href="../numpy2torch/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../pendulum/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script>var base_url = '../../..';</script>
+    <script src="../../../js/theme_extra.js" defer></script>
+    <script src="../../../js/theme.js" defer></script>
+      <script src="../../../search/main.js" defer></script>
+    <script defer>
+        window.onload = function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        };
+    </script>
+
+</body>
+</html>
